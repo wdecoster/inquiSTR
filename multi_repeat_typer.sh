@@ -18,5 +18,10 @@ if [ -f $plot ]; then
  rm $plot
 fi
 
+plot=/home/wdecoster/p200/workflow_results/multi_repeat_typer/somatic_variation.html``
+if [ -f $plot ]; then
+ rm $plot
+fi
+
 
 snakemake -s /home/wdecoster/p200/workflows/multi_repeat_typer.smk --cores 24 --use-conda
