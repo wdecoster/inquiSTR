@@ -24,4 +24,4 @@ if [ -f $plot ]; then
 fi
 
 
-snakemake -s /home/wdecoster/p200/workflows/multi_repeat_typer.smk --cores 24 --use-conda
+snakemake -s /home/wdecoster/repositories/inquistr/multi_repeat_typer.smk --cores 24 --use-conda

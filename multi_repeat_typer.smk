@@ -20,10 +20,10 @@ def get_region(wildcards):
 #IDS, = glob_wildcards("/home/wdecoster/p200/phased_bams/{id}.bam")
 IDS = [os.path.basename(p).replace('.bam', '') for p in glob.glob("/home/wdecoster/p200/phased_bams/*.bam") if os.path.isfile(p)]
 outdir = "/home/wdecoster/p200/workflow_results/multi_repeat_typer/"
-if os.path.isfile(os.path.join(os.path.dirname(workflow.basedir), "data/repeats_for_repeat_typing.bed")):
-    bed = os.path.join(os.path.dirname(workflow.basedir), "data/repeats_for_repeat_typing.bed")
+if os.path.isfile(os.path.join(workflow.basedir, "data/repeats_for_repeat_typing.bed")):
+    bed = os.path.join(workflow.basedir, "data/repeats_for_repeat_typing.bed")
 else:
-    bed = os.path.join(os.path.dirname(workflow.basedir), "data/repeats_from_Chintalaphani.bed")
+    bed = os.path.join(workflow.basedir, "data/repeats_from_Chintalaphani.bed")
 ref = "/home/wdecoster/GRCh38_recommended/GRCh38.fa"
 targets = process_targets(bed)
 
@@ -43,10 +43,10 @@ rule repeat_typer:
         os.path.join(outdir, "logs/repeat_typer_{id}_{locus}.log")
     params:
         ref = ref,
-        script = os.path.join(os.path.dirname(workflow.basedir), "scripts/repeat_typer.py"),
+        script = os.path.join(workflow.basedir, "scripts/repeat_typer.py"),
         region = get_region
     conda:
-        os.path.join(os.path.dirname(workflow.basedir), "envs/repeat_typer.yml")
+        os.path.join(workflow.basedir, "envs/repeat_typer.yml")
     shell:
         "python {params.script} \
         --bam {input} \
@@ -63,9 +63,9 @@ rule combine_calls:
     log:
         os.path.join(outdir, "logs/combine_calls.log")
     params:
-        script = os.path.join(os.path.dirname(workflow.basedir), "scripts/combine_repeat_calls.py")
+        script = os.path.join(workflow.basedir, "scripts/combine_repeat_calls.py")
     conda:
-        os.path.join(os.path.dirname(workflow.basedir), "envs/combine_repeats.yml")
+        os.path.join(workflow.basedir, "envs/combine_repeats.yml")
     shell:
         "python {params.script} --fas {input} --output {output} 2> {log}"
 
@@ -77,9 +77,9 @@ rule add_sample_info:
     log:
         os.path.join(outdir, "logs/add_sample_info.log")
     params:
-        script = os.path.join(os.path.dirname(workflow.basedir), "scripts/add_sample_info_to_all_repeats.py")
+        script = os.path.join(workflow.basedir, "scripts/add_sample_info_to_all_repeats.py")
     conda:
-        os.path.join(os.path.dirname(workflow.basedir), "envs/add_sample_info.yml")
+        os.path.join(workflow.basedir, "envs/add_sample_info.yml")
     shell:
         "python {params.script} {input} > {output} 2> {log}"
 
@@ -92,9 +92,9 @@ rule plot_lengths:
     log:
         os.path.join(outdir, "logs/plot_lengths.log")
     params:
-        script = os.path.join(os.path.dirname(workflow.basedir), "scripts/plot_repeat_length_distribution.py")
+        script = os.path.join(workflow.basedir, "scripts/plot_repeat_length_distribution.py")
     conda:
-        os.path.join(os.path.dirname(workflow.basedir), "envs/plot_repeats.yml")
+        os.path.join(workflow.basedir, "envs/plot_repeats.yml")
     shell:
         "python {params.script} {input} > {output} 2> {log}"
 
@@ -107,9 +107,9 @@ rule somatic_variation:
     log:
         os.path.join(outdir, "logs/somatic_variation.log")
     params:
-        script = os.path.join(os.path.dirname(workflow.basedir), "scripts/somatic_variation.py")
+        script = os.path.join(workflow.basedir, "scripts/somatic_variation.py")
     conda:
-        os.path.join(os.path.dirname(workflow.basedir), "envs/combine_repeats.yml")
+        os.path.join(workflow.basedir, "envs/combine_repeats.yml")
     shell:
         "python {params.script} --fas {input} --output {output} 2> {log}"
 
@@ -121,8 +121,8 @@ rule plot_somatic_variation:
     log:
         os.path.join(outdir, "logs/plot_somatic_variation.log")
     params:
-        script = os.path.join(os.path.dirname(workflow.basedir), "scripts/plot_somatic_variation.py")
+        script = os.path.join(workflow.basedir, "scripts/plot_somatic_variation.py")
     conda:
-        os.path.join(os.path.dirname(workflow.basedir), "envs/plot_repeats.yml")
+        os.path.join(workflow.basedir, "envs/plot_repeats.yml")
     shell:
         "python {params.script} {input} > {output} 2> {log}"
