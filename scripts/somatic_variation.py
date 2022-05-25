@@ -56,7 +56,7 @@ def determine_variation(spanning_lengths):
     or the maximum of clipped reads"""
     if len(spanning_lengths) > 1:
         median = np.median(spanning_lengths)
-        return np.mean([abs(median - i) for i in spanning_lengths])
+        return np.median([abs(median - i) for i in spanning_lengths])
     else:
         return np.nan
 
