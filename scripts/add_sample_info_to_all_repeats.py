@@ -37,7 +37,10 @@ def main():
     print(f"{header}\tgentli_id\tphenotype")
     for line in repeats:
         individual = g.run_to_individual(line.split("\t")[0].split("_")[-1].split("u")[0])
-        path = cohort.loc[individual, "path"]
+        try:
+            path = cohort.loc[individual, "path"]
+        except KeyError:
+            path = "Unavailable"
         print(f"{line.rstrip()}\t{individual}\t{path}")
 
 
