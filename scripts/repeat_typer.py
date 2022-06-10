@@ -8,41 +8,38 @@ import sys
 
 
 class Repeat(object):
-    def __init__(self, read, position, length, type, aligner, softclip_side=None):
-        self.read = read
+    def __init__(self, read, position, length, type, aligner=None, softclip_side=None):
         self.name = read.query_name
-        self.read_position = position
         self.length = -length if type == "contraction" else length
         self.type = type
         self.softclip_side = softclip_side
         self.phase = read.get_tag("HP") if read.has_tag("HP") else "Unp"
         self.phaseset = read.get_tag("PS") if read.has_tag("PS") else "Unp"
-        self.aligner = aligner
-        self.seq = self.get_seq()
+        self.seq = self.get_seq(read, position, aligner)
 
-    def get_seq(self):
+    def get_seq(self, read, read_position, aligner):
         if self.type == "contraction":
             return ""
         else:
-            seq = self.read.query_sequence[self.read_position : self.read_position + self.length]
+            seq = read.query_sequence[read_position : read_position + self.length]
         if self.type == "softclip":
-            seq, type = self.realign_softclip(seq)
+            seq, type = self.realign_softclip(seq, read, aligner)
             if seq:
                 self.length = len(seq)
                 self.type = type
         return seq
 
-    def realign_softclip(self, seq):
+    def realign_softclip(self, seq, read, aligner):
         """
         Check if the end of the softclip doesn't align in the region
         Using a small fasta of ~20kb with the simple repeat masked
         If it does align, it is an insertion/spanning alignment or duplex
         """
         try:
-            hit = next(self.aligner.map(seq))
+            hit = next(aligner.map(seq))
         except StopIteration:  # If no alignment is found the seq remains as is
             return seq, "softclip"
-        orig_strand = "-1" if self.read.is_reverse else "1"
+        orig_strand = "-1" if read.is_reverse else "1"
         # indicates softclip is the duplex of the original alignment
         if orig_strand == "1" and hit.strand != 1:
             return None, None
@@ -60,48 +57,53 @@ def main():
     realign_fasta = make_realignment_fasta(args.ref, contig=chrom, start=start, stop=end)
     a = mp.Aligner(realign_fasta, preset="map-ont")
     for read in AlignmentFile(args.bam).fetch(contig=chrom, start=start, stop=end):
+        if (
+            start < read.reference_start < end
+            or start < read.reference_end < end
+            or read.mapping_quality <= 10
+        ):
+            continue
         softclip_side = "left"
         calls = []
         read_position = 0
         reference_position = read.reference_start + 1
-        if read.mapping_quality > 10:
-            for operation, length in read.cigartuples:
-                if operation in [0, 7, 8]:
-                    read_position += length
-                    reference_position += length
-                elif operation == 3:
-                    reference_position += length
-                elif operation == 2:
-                    if length >= args.minlen and start < reference_position < end:
-                        calls.append(Repeat(read, read_position, length, "contraction", aligner=a))
-                    reference_position += length
-                elif operation == 4:
-                    if length >= args.minlen and start < reference_position < end:
-                        calls.append(
-                            Repeat(
-                                read,
-                                read_position,
-                                length,
-                                "softclip",
-                                aligner=a,
-                                softclip_side=softclip_side,
-                            )
+        for operation, length in read.cigartuples:
+            if operation in [0, 7, 8]:
+                read_position += length
+                reference_position += length
+            elif operation == 3:
+                reference_position += length
+            elif operation == 2:
+                if length >= args.minlen and start < reference_position < end:
+                    calls.append(Repeat(read, read_position, length, "contraction"))
+                reference_position += length
+            elif operation == 4:
+                if length >= args.minlen and start < reference_position < end:
+                    calls.append(
+                        Repeat(
+                            read,
+                            read_position,
+                            length,
+                            "softclip",
+                            aligner=a,
+                            softclip_side=softclip_side,
                         )
-                    read_position += length
-                elif operation == 1:
-                    if length >= args.minlen and start < reference_position < end:
-                        calls.append(Repeat(read, read_position, length, "insert", aligner=a))
-                    read_position += length
-                softclip_side = "right"
-            calls = [
-                c for c in calls if c.seq is not None
-            ]  # That would be a duplex read [I don't remember this comment]
-            if calls:
-                combine_calls_per_read(
-                    calls,
-                    locus=args.locus,
-                    ignore_contractions=args.ignore_contractions,
-                )
+                    )
+                read_position += length
+            elif operation == 1:
+                if length >= args.minlen and start < reference_position < end:
+                    calls.append(Repeat(read, read_position, length, "insert"))
+                read_position += length
+            softclip_side = "right"
+        calls = [
+            c for c in calls if c.seq is not None
+        ]  # That would be a duplex read [I don't remember this comment]
+        if calls:
+            output_calls(
+                calls,
+                locus=args.locus,
+                ignore_contractions=args.ignore_contractions,
+            )
 
 
 def process_region(region, wobble):
@@ -114,7 +116,7 @@ def process_region(region, wobble):
     return chrom, start - wobble_length, end + wobble_length
 
 
-def combine_calls_per_read(calls, locus, ignore_contractions=False):
+def output_calls(calls, locus, ignore_contractions=False):
     metadata = {
         "locus": locus,
         "reverse": calls[0].read.is_reverse,
