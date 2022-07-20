@@ -3,14 +3,14 @@ use rust_htslib::bam::ext::BamRecordExtensions;
 use rust_htslib::bam::record::{Aux, Cigar};
 use rust_htslib::{bam, bam::Read};
 use std::collections::HashMap;
+use std::path::PathBuf;
 
-/// Simple program to greet a person
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
 struct Args {
     /// Bam file to genotype
     #[clap(value_parser)]
-    bam: String,
+    bam: PathBuf,
 
     /// region string to genotype expansion in
     #[clap(short, long, value_parser)]
@@ -38,7 +38,7 @@ fn main() {
     println!("inquiSTR done!");
 }
 
-fn genotype_repeat(bamf: String, region: String, wobble: f32, minlen: u32) {
+fn genotype_repeat(bamf: PathBuf, region: String, wobble: f32, minlen: u32) {
     let (chrom, start, end) = process_region(region, wobble);
 
     let mut bam = bam::IndexedReader::from_path(&bamf)
@@ -56,14 +56,14 @@ fn genotype_repeat(bamf: String, region: String, wobble: f32, minlen: u32) {
             continue;
         }
 
-        let mut read_position = 0;
+        // let mut read_position = 0;
         let mut reference_position = r.reference_start() + 1;
         let phase = get_phase(&r);
         let mut call: i64 = 0;
         for entry in r.cigar().iter() {
             match entry {
                 Cigar::Match(len) | Cigar::Equal(len) | Cigar::Diff(len) => {
-                    read_position += *len as i64;
+                    // read_position += *len as i64;
                     reference_position += *len as i64;
                 }
                 Cigar::Del(len) => {
@@ -76,13 +76,13 @@ fn genotype_repeat(bamf: String, region: String, wobble: f32, minlen: u32) {
                     if *len > minlen && start < reference_position && reference_position < end {
                         call += *len as i64;
                     }
-                    read_position += *len as i64;
+                    // read_position += *len as i64;
                 }
                 Cigar::Ins(len) => {
                     if *len > minlen && start < reference_position && reference_position < end {
                         call += *len as i64;
                     }
-                    read_position += *len as i64;
+                    // read_position += *len as i64;
                 }
                 Cigar::RefSkip(len) => reference_position += *len as i64,
                 _ => (),
@@ -148,7 +148,7 @@ fn verify_app() {
 #[test]
 fn test_region() {
     genotype_repeat(
-        "/home/wouter/test.bam".to_string(),
+        PathBuf::from("/home/wouter/test.bam"),
         "chr7:154778571-154779363".to_string(),
         0.5,
         5,
