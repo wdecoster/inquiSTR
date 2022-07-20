@@ -1,4 +1,5 @@
 use clap::Parser;
+use log::info;
 use rust_htslib::bam::ext::BamRecordExtensions;
 use rust_htslib::bam::record::{Aux, Cigar};
 use rust_htslib::{bam, bam::Read};
@@ -9,7 +10,7 @@ use std::path::PathBuf;
 #[clap(author, version, about, long_about = None)]
 struct Args {
     /// Bam file to genotype
-    #[clap(value_parser)]
+    #[clap(parse(from_os_str))]
     bam: PathBuf,
 
     /// region string to genotype expansion in
@@ -29,27 +30,49 @@ struct Args {
 
     /// fraction to extend the region intervals
     #[clap(short, long, value_parser, default_value_t = 0.5)]
-    wobble: f32,
+    wobble: f64,
 }
-fn main() {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    env_logger::init();
     let args = Args::parse();
-    genotype_repeat(args.bam, args.region, args.wobble, args.minlen);
-
-    println!("inquiSTR done!");
+    info!("Collected arguments");
+    match genotype_repeat(args.bam, args.region, args.wobble, args.minlen) {
+        Ok(out) => {
+            println!("{}", out)
+        }
+        Err(error) => {
+            return Err(error.into());
+        }
+    }
+    Ok(())
 }
 
-fn genotype_repeat(bamf: PathBuf, region: String, wobble: f32, minlen: u32) {
-    let (chrom, start, end) = process_region(region, wobble);
+fn genotype_repeat(
+    bamp: PathBuf,
+    region: String,
+    wobble: f64,
+    minlen: u32,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let (chrom, start, end) = process_region(region, wobble).unwrap();
+    assert!(bamp.is_file());
+
+    let bamf = bamp.into_os_string().into_string().unwrap();
 
     let mut bam = bam::IndexedReader::from_path(&bamf)
         .ok()
         .expect("Error opening indexed BAM.");
-    let tid = bam.header().tid(chrom.as_bytes()).unwrap();
-    bam.fetch((tid, start, end)).unwrap();
+
+    if let Some(tid) = bam.header().tid(chrom.as_bytes()) {
+        bam.fetch((tid, start, end)).unwrap();
+    } else {
+        panic!("Chromosome {} not found in the bam file", chrom)
+    }
     let mut calls: HashMap<u8, Vec<i64>> = HashMap::new();
     calls.insert(1, Vec::new());
     calls.insert(2, Vec::new());
     calls.insert(0, Vec::new());
+    info!("Checks passed, genotyping repeat");
+
     for r in bam.records() {
         let r = r.ok().expect("Error reading BAM file in region.");
         if start < r.reference_start() || r.reference_end() < end || r.mapq() <= 10 {
@@ -90,30 +113,48 @@ fn genotype_repeat(bamf: PathBuf, region: String, wobble: f32, minlen: u32) {
         }
         calls.get_mut(&phase).unwrap().push(call);
     }
-    println!(
+    info!(
+        "Used {}+{} reads for genotyping",
+        calls[&1].len(),
+        calls[&2].len()
+    );
+    Ok(format!(
         "collected H1: {:?}, H2: {:?}",
         median(&calls[&1]),
         median(&calls[&2])
-    );
+    ))
 }
 
 /// parse a region string and extend the start and begin by a wobble space
 /// defined by a wobble fraction relative to the interval length
-fn process_region(reg: String, wobble: f32) -> (String, i64, i64) {
+fn process_region(
+    reg: String,
+    wobble: f64,
+) -> Result<(String, i64, i64), Box<dyn std::error::Error>> {
+    assert!(
+        wobble >= 0.0,
+        "Wobble argument should be a positive float, received {}",
+        wobble
+    );
+
     let chrom = reg.split(':').collect::<Vec<&str>>()[0];
     let interval = reg.split(":").collect::<Vec<&str>>()[1];
-    let start: f32 = interval.split("-").collect::<Vec<&str>>()[0]
+    let start: f64 = interval.split("-").collect::<Vec<&str>>()[0]
         .parse()
         .unwrap();
-    let end: f32 = interval.split("-").collect::<Vec<&str>>()[1]
+    let end: f64 = interval.split("-").collect::<Vec<&str>>()[1]
         .parse()
         .unwrap();
+    assert!(
+        end - start > 0.0,
+        r#"Invalid region: begin has to be smaller than end."#
+    );
     let wobble_length = ((end - start) * wobble) / 2.0;
-    (
+    Ok((
         chrom.to_string(),
         (start - wobble_length) as i64,
         (end + wobble_length) as i64,
-    )
+    ))
 }
 
 fn get_phase(record: &bam::Record) -> u8 {
@@ -139,6 +180,12 @@ fn median(array: &Vec<i64>) -> f64 {
     }
 }
 
+#[cfg(test)]
+#[ctor::ctor]
+fn init() {
+    env_logger::init();
+}
+
 #[test]
 fn verify_app() {
     use clap::CommandFactory;
@@ -146,11 +193,57 @@ fn verify_app() {
 }
 
 #[test]
-fn test_region() {
+fn test_region() -> Result<(), Box<dyn std::error::Error>> {
     genotype_repeat(
-        PathBuf::from("/home/wouter/test.bam"),
+        PathBuf::from("/home/wdecoster/test-data/test.bam"),
         "chr7:154778571-154779363".to_string(),
         0.5,
         5,
-    );
+    )?;
+    Ok(())
+}
+
+#[test]
+#[should_panic]
+fn test_wrong_bam_path() {
+    match genotype_repeat(
+        PathBuf::from("/home/wdecoster/wrong_path_to_test-data/test.bam"),
+        "chr7:154778571-154779363".to_string(),
+        0.5,
+        5,
+    ) {
+        Ok(it) => it,
+        Err(_) => return (),
+    };
+}
+
+#[test]
+#[should_panic]
+fn test_wrong_interval() {
+    match process_region("chr7:154779363-154778571".to_string(), 0.5) {
+        Ok(it) => it,
+        Err(_) => return (),
+    };
+}
+#[test]
+#[should_panic]
+fn test_negative_wobble() {
+    match process_region("chr7:154778571-154779363".to_string(), -0.5) {
+        Ok(it) => it,
+        Err(_) => return (),
+    };
+}
+
+#[test]
+#[should_panic]
+fn test_region_wrong_chromosome() {
+    match genotype_repeat(
+        PathBuf::from("/home/wdecoster/test-data/test.bam"),
+        "7:154778571-154779363".to_string(),
+        0.5,
+        5,
+    ) {
+        Ok(it) => it,
+        Err(_) => return (),
+    };
 }
