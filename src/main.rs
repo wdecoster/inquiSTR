@@ -41,7 +41,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("{}", out)
         }
         Err(error) => {
-            return Err(error.into());
+            return Err(error);
         }
     }
     Ok(())
@@ -58,9 +58,7 @@ fn genotype_repeat(
 
     let bamf = bamp.into_os_string().into_string().unwrap();
 
-    let mut bam = bam::IndexedReader::from_path(&bamf)
-        .ok()
-        .expect("Error opening indexed BAM.");
+    let mut bam = bam::IndexedReader::from_path(&bamf).expect("Error opening indexed BAM.");
 
     if let Some(tid) = bam.header().tid(chrom.as_bytes()) {
         bam.fetch((tid, start, end)).unwrap();
@@ -74,7 +72,7 @@ fn genotype_repeat(
     info!("Checks passed, genotyping repeat");
 
     for r in bam.records() {
-        let r = r.ok().expect("Error reading BAM file in region.");
+        let r = r.expect("Error reading BAM file in region.");
         if start < r.reference_start() || r.reference_end() < end || r.mapq() <= 10 {
             continue;
         }
@@ -138,11 +136,11 @@ fn process_region(
     );
 
     let chrom = reg.split(':').collect::<Vec<&str>>()[0];
-    let interval = reg.split(":").collect::<Vec<&str>>()[1];
-    let start: f64 = interval.split("-").collect::<Vec<&str>>()[0]
+    let interval = reg.split(':').collect::<Vec<&str>>()[1];
+    let start: f64 = interval.split('-').collect::<Vec<&str>>()[0]
         .parse()
         .unwrap();
-    let end: f64 = interval.split("-").collect::<Vec<&str>>()[1]
+    let end: f64 = interval.split('-').collect::<Vec<&str>>()[1]
         .parse()
         .unwrap();
     assert!(
@@ -161,12 +159,12 @@ fn get_phase(record: &bam::Record) -> u8 {
     match record.aux(b"HP") {
         Ok(value) => {
             if let Aux::U8(v) = value {
-                return v;
+                v
             } else {
                 panic!("Unexpected type of Aux {:?}", value)
             }
         }
-        Err(_e) => return 0,
+        Err(_e) => 0,
     }
 }
 
