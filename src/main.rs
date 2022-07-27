@@ -49,7 +49,7 @@ enum Commands {
     Association {},
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() {
     env_logger::init();
     let args = Cli::parse();
     info!("Collected arguments");
@@ -60,14 +60,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             region_file,
             minlen,
             wobble,
-        } => match genotype_repeats(bam, region, region_file, wobble, minlen) {
-            Ok(out) => {
-                println!("{}", out)
-            }
-            Err(error) => {
-                return Err(error);
-            }
-        },
+        } => genotype_repeats(bam, region, region_file, wobble, minlen),
         Commands::Combine {} => {
             println!("Not implemented!")
         }
@@ -81,8 +74,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("Not implemented!")
         }
     }
-
-    Ok(())
 }
 
 fn genotype_repeats(
@@ -91,7 +82,7 @@ fn genotype_repeats(
     region_file: Option<PathBuf>,
     wobble: f64,
     minlen: u32,
-) -> Result<String, Box<dyn std::error::Error>> {
+) {
     assert!(bamp.is_file(), "ERROR: No such file {}!", bamp.display());
     match (region, region_file) {
         (Some(_region), Some(_region_file)) => {
@@ -103,19 +94,29 @@ fn genotype_repeats(
         (Some(region), None) => {
             let (chrom, start, end) = process_region(region, wobble).unwrap();
             let bamf = bamp.into_os_string().into_string().unwrap();
-            genotype_repeat(bamf, chrom, start, end, minlen)
+            genotype_repeat(&bamf, chrom, start, end, minlen);
         }
-        (None, Some(region_file)) => panic!("Not implemented to use {}!", region_file.display()),
+        (None, Some(region_file)) => {
+            use bio::io::bed;
+            let mut reader =
+                bed::Reader::from_file(region_file.into_os_string().into_string().unwrap())
+                    .unwrap();
+            let bamf = bamp.into_os_string().into_string().unwrap();
+            for record in reader.records() {
+                let rec = record.expect("Error reading bed record.");
+                genotype_repeat(
+                    &bamf,
+                    rec.chrom().to_string(),
+                    rec.start().try_into().unwrap(),
+                    rec.end().try_into().unwrap(),
+                    minlen,
+                );
+            }
+        }
     }
 }
 
-fn genotype_repeat(
-    bamf: String,
-    chrom: String,
-    start: i64,
-    end: i64,
-    minlen: u32,
-) -> Result<String, Box<dyn std::error::Error>> {
+fn genotype_repeat(bamf: &String, chrom: String, start: i64, end: i64, minlen: u32) {
     let mut bam = bam::IndexedReader::from_path(&bamf).expect("Error opening indexed BAM.");
 
     if let Some(tid) = bam.header().tid(chrom.as_bytes()) {
@@ -170,11 +171,11 @@ fn genotype_repeat(
         calls[&1].len(),
         calls[&2].len()
     );
-    Ok(format!(
+    println!(
         "{chrom}:{start}-{end}\t{:?}\t{:?}",
         median(&calls[&1]),
         median(&calls[&2])
-    ))
+    );
 }
 
 /// parse a region string and extend the start and begin by a wobble space
@@ -245,30 +246,49 @@ fn verify_app() {
 }
 
 #[test]
-fn test_region() -> Result<(), Box<dyn std::error::Error>> {
+fn test_region() {
     genotype_repeats(
         PathBuf::from("/home/wdecoster/test-data/test.bam"),
         Some("chr7:154778571-154779363".to_string()),
         None,
         0.5,
         5,
-    )?;
-    Ok(())
+    );
+}
+
+#[test]
+fn test_region_bed() {
+    genotype_repeats(
+        PathBuf::from("/home/wdecoster/test-data/test.bam"),
+        None,
+        Some(PathBuf::from("/home/wdecoster/test-data/test.bed")),
+        0.5,
+        5,
+    );
+}
+
+#[test]
+#[should_panic]
+fn test_no_region() {
+    genotype_repeats(
+        PathBuf::from("/home/wdecoster/wrong_path_to_test-data/test.bam"),
+        None,
+        None,
+        0.5,
+        5,
+    );
 }
 
 #[test]
 #[should_panic]
 fn test_wrong_bam_path() {
-    match genotype_repeats(
+    genotype_repeats(
         PathBuf::from("/home/wdecoster/wrong_path_to_test-data/test.bam"),
         Some("chr7:154778571-154779363".to_string()),
         None,
         0.5,
         5,
-    ) {
-        Ok(it) => it,
-        Err(_) => "yiek".to_string(),
-    };
+    );
 }
 
 #[test]
@@ -291,14 +311,11 @@ fn test_negative_wobble() {
 #[test]
 #[should_panic]
 fn test_region_wrong_chromosome() {
-    match genotype_repeats(
+    genotype_repeats(
         PathBuf::from("/home/wdecoster/test-data/test.bam"),
         Some("7:154778571-154779363".to_string()),
         None,
         0.5,
         5,
-    ) {
-        Ok(it) => it,
-        Err(_) => "yiek".to_string(),
-    };
+    );
 }
