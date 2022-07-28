@@ -1,5 +1,6 @@
 use clap::{Parser, Subcommand};
 use log::info;
+use rayon::prelude::*;
 use rust_htslib::bam::ext::BamRecordExtensions;
 use rust_htslib::bam::record::{Aux, Cigar};
 use rust_htslib::{bam, bam::Read};
@@ -39,6 +40,10 @@ enum Commands {
         /// fraction to extend the region intervals
         #[clap(short, long, value_parser, default_value_t = 0.5)]
         wobble: f64,
+
+        /// Number of parallel threads to use
+        #[clap(short, long, value_parser, default_value_t = 8)]
+        threads: usize,
     },
     /// Combine lengths from multiple bams to a TSV
     Combine {},
@@ -61,7 +66,8 @@ fn main() {
             region_file,
             minlen,
             wobble,
-        } => genotype_repeats(bam, region, region_file, wobble, minlen),
+            threads,
+        } => genotype_repeats(bam, region, region_file, wobble, minlen, threads),
         Commands::Combine {} => {
             println!("Not implemented!")
         }
@@ -83,6 +89,7 @@ fn genotype_repeats(
     region_file: Option<PathBuf>,
     wobble: f64,
     minlen: u32,
+    threads: usize,
 ) {
     assert!(bamp.is_file(), "ERROR: No such file {}!", bamp.display());
     match (region, region_file) {
@@ -99,20 +106,28 @@ fn genotype_repeats(
         }
         (None, Some(region_file)) => {
             use bio::io::bed;
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build_global()
+                .unwrap();
             let mut reader =
                 bed::Reader::from_file(region_file.into_os_string().into_string().unwrap())
                     .unwrap();
             let bamf = bamp.into_os_string().into_string().unwrap();
-            for record in reader.records() {
-                let rec = record.expect("Error reading bed record.");
-                genotype_repeat(
-                    &bamf,
-                    rec.chrom().to_string(),
-                    rec.start().try_into().unwrap(),
-                    rec.end().try_into().unwrap(),
-                    minlen,
-                );
-            }
+            reader
+                .records()
+                .into_iter()
+                .par_bridge()
+                .for_each(|record| {
+                    let rec = record.expect("Error reading bed record.");
+                    genotype_repeat(
+                        &bamf,
+                        rec.chrom().to_string(),
+                        rec.start().try_into().unwrap(),
+                        rec.end().try_into().unwrap(),
+                        minlen,
+                    );
+                });
         }
     }
 }
@@ -257,6 +272,7 @@ fn test_region() {
         None,
         0.5,
         5,
+        4,
     );
 }
 
@@ -268,6 +284,7 @@ fn test_region_bed() {
         Some(PathBuf::from("/home/wdecoster/test-data/test.bed")),
         0.5,
         5,
+        4,
     );
 }
 
@@ -280,6 +297,7 @@ fn test_no_region() {
         None,
         0.5,
         5,
+        4,
     );
 }
 
@@ -292,6 +310,7 @@ fn test_wrong_bam_path() {
         None,
         0.5,
         5,
+        4,
     );
 }
 
@@ -321,5 +340,6 @@ fn test_region_wrong_chromosome() {
         None,
         0.5,
         5,
+        4,
     );
 }

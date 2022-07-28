@@ -11,6 +11,7 @@ rust-htslib = "*"
 log = "0.4.0"
 env_logger = "0.8.4"
 bio = "*"
+rayon = "1.5.3"
 
 [dev-dependencies]
 ctor = "*"
