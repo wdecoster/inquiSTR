@@ -4,6 +4,7 @@ use rust_htslib::bam::ext::BamRecordExtensions;
 use rust_htslib::bam::record::{Aux, Cigar};
 use rust_htslib::{bam, bam::Read};
 use std::collections::HashMap;
+use std::f64::NAN;
 use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
@@ -224,6 +225,9 @@ fn get_phase(record: &bam::Record) -> u8 {
 }
 
 fn median(array: &Vec<i64>) -> f64 {
+    if array.is_empty() {
+        return NAN;
+    }
     if (array.len() % 2) == 0 {
         let ind_left = array.len() / 2 - 1;
         let ind_right = array.len() / 2;
