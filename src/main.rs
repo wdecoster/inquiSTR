@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand};
-use log::info;
+use log::{error, info};
 use rayon::prelude::*;
 use rust_htslib::bam::ext::BamRecordExtensions;
 use rust_htslib::bam::record::{Aux, Cigar};
@@ -137,61 +137,61 @@ fn genotype_repeat(bamf: &String, chrom: String, start: i64, end: i64, minlen: u
 
     if let Some(tid) = bam.header().tid(chrom.as_bytes()) {
         bam.fetch((tid, start, end)).unwrap();
-    } else {
-        panic!("Chromosome {chrom} not found in the bam file")
-    }
-    let mut calls: HashMap<u8, Vec<i64>> = HashMap::new();
-    calls.insert(1, Vec::new());
-    calls.insert(2, Vec::new());
-    calls.insert(0, Vec::new());
-    info!("Checks passed, genotyping repeat");
 
-    for r in bam.records() {
-        let r = r.expect("Error reading BAM file in region.");
-        if start < r.reference_start() || r.reference_end() < end || r.mapq() <= 10 {
-            continue;
-        }
+        let mut calls: HashMap<u8, Vec<i64>> =
+            HashMap::from([(1, Vec::new()), (2, Vec::new()), (0, Vec::new())]);
 
-        let mut reference_position = r.reference_start() + 1;
-        let phase = get_phase(&r);
-        let mut call: i64 = 0;
-        for entry in r.cigar().iter() {
-            match entry {
-                Cigar::Match(len) | Cigar::Equal(len) | Cigar::Diff(len) => {
-                    reference_position += *len as i64;
-                }
-                Cigar::Del(len) => {
-                    if *len > minlen && start < reference_position && reference_position < end {
-                        call -= *len as i64;
-                    }
-                    reference_position += *len as i64;
-                }
-                Cigar::SoftClip(len) => {
-                    if *len > minlen && start < reference_position && reference_position < end {
-                        call += *len as i64;
-                    }
-                }
-                Cigar::Ins(len) => {
-                    if *len > minlen && start < reference_position && reference_position < end {
-                        call += *len as i64;
-                    }
-                }
-                Cigar::RefSkip(len) => reference_position += *len as i64,
-                _ => (),
+        info!("Checks passed, genotyping repeat");
+
+        for r in bam.records() {
+            let r = r.expect("Error reading BAM file in region.");
+            if start < r.reference_start() || r.reference_end() < end || r.mapq() <= 10 {
+                continue;
             }
+
+            let mut reference_position = r.reference_start() + 1;
+            let phase = get_phase(&r);
+            let mut call: i64 = 0;
+            for entry in r.cigar().iter() {
+                match entry {
+                    Cigar::Match(len) | Cigar::Equal(len) | Cigar::Diff(len) => {
+                        reference_position += *len as i64;
+                    }
+                    Cigar::Del(len) => {
+                        if *len > minlen && start < reference_position && reference_position < end {
+                            call -= *len as i64;
+                        }
+                        reference_position += *len as i64;
+                    }
+                    Cigar::SoftClip(len) => {
+                        if *len > minlen && start < reference_position && reference_position < end {
+                            call += *len as i64;
+                        }
+                    }
+                    Cigar::Ins(len) => {
+                        if *len > minlen && start < reference_position && reference_position < end {
+                            call += *len as i64;
+                        }
+                    }
+                    Cigar::RefSkip(len) => reference_position += *len as i64,
+                    _ => (),
+                }
+            }
+            calls.get_mut(&phase).unwrap().push(call);
         }
-        calls.get_mut(&phase).unwrap().push(call);
+        info!(
+            "Used {}+{} reads for genotyping",
+            calls[&1].len(),
+            calls[&2].len()
+        );
+        println!(
+            "{chrom}:{start}-{end}\t{:?}\t{:?}",
+            median(&calls[&1]),
+            median(&calls[&2])
+        );
+    } else {
+        error!("Chromosome {chrom} not found in the bam file")
     }
-    info!(
-        "Used {}+{} reads for genotyping",
-        calls[&1].len(),
-        calls[&2].len()
-    );
-    println!(
-        "{chrom}:{start}-{end}\t{:?}\t{:?}",
-        median(&calls[&1]),
-        median(&calls[&2])
-    );
 }
 
 /// parse a region string and extend the start and begin by a wobble space
@@ -332,7 +332,6 @@ fn test_negative_wobble() {
 }
 
 #[test]
-#[should_panic]
 fn test_region_wrong_chromosome() {
     genotype_repeats(
         PathBuf::from("/home/wdecoster/test-data/test.bam"),
