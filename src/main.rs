@@ -1,3 +1,4 @@
+use bio::io::bed;
 use clap::{Parser, Subcommand};
 use log::{error, info};
 use rayon::prelude::*;
@@ -7,6 +8,7 @@ use rust_htslib::{bam, bam::Read};
 use std::collections::HashMap;
 use std::f64::NAN;
 use std::path::PathBuf;
+use std::sync::Mutex;
 
 #[derive(Parser, Debug)]
 #[clap(author, version, about="Tool to genotype STRs from long reads", long_about = None)]
@@ -91,21 +93,31 @@ fn genotype_repeats(
     minlen: u32,
     threads: usize,
 ) {
-    assert!(bamp.is_file(), "ERROR: No such file {}!", bamp.display());
+    if !bamp.is_file() {
+        error!(
+            "ERROR: path to bam file {} is not valid!\n\n",
+            bamp.display()
+        );
+        panic!();
+    };
     match (region, region_file) {
         (Some(_region), Some(_region_file)) => {
-            panic!("ERROR: Specify either a region (-r) or region_file (-R), not both!")
+            error!("ERROR: Specify either a region (-r) or region_file (-R), not both!\n\n");
+            panic!();
         }
         (None, None) => {
-            panic!("ERROR: Specify one of region (-r) or region_file (-R)!")
+            error!("ERROR: Specify one of region (-r) or region_file (-R)!\n\n");
+            panic!();
         }
         (Some(region), None) => {
             let (chrom, start, end) = process_region(region, wobble).unwrap();
             let bamf = bamp.into_os_string().into_string().unwrap();
-            genotype_repeat(&bamf, chrom, start, end, minlen);
+            match genotype_repeat(&bamf, chrom, start, end, minlen) {
+                Ok(output) => println!("{output}"),
+                Err(chrom) => error!("Contig {chrom} not found in bam file"),
+            };
         }
         (None, Some(region_file)) => {
-            use bio::io::bed;
             rayon::ThreadPoolBuilder::new()
                 .num_threads(threads)
                 .build_global()
@@ -114,26 +126,48 @@ fn genotype_repeats(
                 bed::Reader::from_file(region_file.into_os_string().into_string().unwrap())
                     .unwrap();
             let bamf = bamp.into_os_string().into_string().unwrap();
+            let chrom_reported = Mutex::new(Vec::new());
             reader
                 .records()
                 .into_iter()
                 .par_bridge()
                 .for_each(|record| {
                     let rec = record.expect("Error reading bed record.");
-                    genotype_repeat(
+                    match genotype_repeat(
                         &bamf,
                         rec.chrom().to_string(),
                         rec.start().try_into().unwrap(),
                         rec.end().try_into().unwrap(),
                         minlen,
-                    );
+                    ) {
+                        Ok(output) => println!("{output}"),
+                        Err(chrom) => {
+                            let mut chroms_reported = chrom_reported.lock().unwrap();
+                            if !chroms_reported.contains(&chrom) {
+                                error!("Contig {chrom} not found in bam file");
+                                chroms_reported.push(chrom);
+                            }
+                        }
+                    };
                 });
         }
     }
 }
 
-fn genotype_repeat(bamf: &String, chrom: String, start: i64, end: i64, minlen: u32) {
-    let mut bam = bam::IndexedReader::from_path(&bamf).expect("Error opening indexed BAM.");
+fn genotype_repeat(
+    bamf: &String,
+    chrom: String,
+    start: i64,
+    end: i64,
+    minlen: u32,
+) -> Result<String, String> {
+    let mut bam = match bam::IndexedReader::from_path(&bamf) {
+        Ok(handle) => handle,
+        Err(e) => {
+            error!("Error opening BAM {}.\n{}", bamf, e);
+            panic!();
+        }
+    };
 
     if let Some(tid) = bam.header().tid(chrom.as_bytes()) {
         bam.fetch((tid, start, end)).unwrap();
@@ -144,7 +178,7 @@ fn genotype_repeat(bamf: &String, chrom: String, start: i64, end: i64, minlen: u
         info!("Checks passed, genotyping repeat");
 
         for r in bam.records() {
-            let r = r.expect("Error reading BAM file in region.");
+            let r = r.expect("Error reading BAM file in region {chrom}:{start}-{end}.");
             if start < r.reference_start() || r.reference_end() < end || r.mapq() <= 10 {
                 continue;
             }
@@ -184,13 +218,13 @@ fn genotype_repeat(bamf: &String, chrom: String, start: i64, end: i64, minlen: u
             calls[&1].len(),
             calls[&2].len()
         );
-        println!(
+        Ok(format!(
             "{chrom}:{start}-{end}\t{:?}\t{:?}",
             median(&calls[&1]),
             median(&calls[&2])
-        );
+        ))
     } else {
-        error!("Chromosome {chrom} not found in the bam file")
+        Err(chrom)
     }
 }
 
@@ -292,7 +326,7 @@ fn test_region_bed() {
 #[should_panic]
 fn test_no_region() {
     genotype_repeats(
-        PathBuf::from("/home/wdecoster/wrong_path_to_test-data/test.bam"),
+        PathBuf::from("/home/wdecoster/test-data/test.bam"),
         None,
         None,
         0.5,
