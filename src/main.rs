@@ -5,10 +5,38 @@ use rayon::prelude::*;
 use rust_htslib::bam::ext::BamRecordExtensions;
 use rust_htslib::bam::record::{Aux, Cigar};
 use rust_htslib::{bam, bam::Read};
+use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::f64::NAN;
 use std::path::PathBuf;
 use std::sync::Mutex;
+
+// #[derive(Eq)]
+// struct Genotype {
+//     chrom: String,
+//     start: u64,
+//     end: u64,
+//     phase1: f64,
+//     phase2: f64
+// }
+
+// impl Ord for Genotype {
+//     fn cmp(&self, other: &Self) -> Ordering {
+//         self.height.cmp(&other.height)
+//     }
+// }
+
+// impl PartialOrd for Person {
+//     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+//         Some(self.cmp(other))
+//     }
+// }
+
+// impl PartialEq for Person {
+//     fn eq(&self, other: &Self) -> bool {
+//         self.height == other.height
+//     }
+// }
 
 #[derive(Parser, Debug)]
 #[clap(author, version, about="Tool to genotype STRs from long reads", long_about = None)]
@@ -113,7 +141,7 @@ fn genotype_repeats(
             let (chrom, start, end) = process_region(region, wobble).unwrap();
             let bamf = bamp.into_os_string().into_string().unwrap();
             match genotype_repeat(&bamf, chrom, start, end, minlen) {
-                Ok(output) => println!("{output}"),
+                Ok(output) => write_genotype(output),
                 Err(chrom) => error!("Contig {chrom} not found in bam file"),
             };
         }
@@ -127,29 +155,31 @@ fn genotype_repeats(
                     .unwrap();
             let bamf = bamp.into_os_string().into_string().unwrap();
             let chrom_reported = Mutex::new(Vec::new());
-            reader
-                .records()
-                .into_iter()
-                .par_bridge()
-                .for_each(|record| {
-                    let rec = record.expect("Error reading bed record.");
-                    match genotype_repeat(
-                        &bamf,
-                        rec.chrom().to_string(),
-                        rec.start().try_into().unwrap(),
-                        rec.end().try_into().unwrap(),
-                        minlen,
-                    ) {
-                        Ok(output) => println!("{output}"),
-                        Err(chrom) => {
-                            let mut chroms_reported = chrom_reported.lock().unwrap();
-                            if !chroms_reported.contains(&chrom) {
-                                error!("Contig {chrom} not found in bam file");
-                                chroms_reported.push(chrom);
-                            }
+            let genotypes = Mutex::new(Vec::new());
+            reader.records().par_bridge().for_each(|record| {
+                let rec = record.expect("Error reading bed record.");
+                match genotype_repeat(
+                    &bamf,
+                    rec.chrom().to_string(),
+                    rec.start().try_into().unwrap(),
+                    rec.end().try_into().unwrap(),
+                    minlen,
+                ) {
+                    Ok(output) => {
+                        let mut geno = genotypes.lock().unwrap();
+                        geno.push(output);
+                    }
+                    Err(chrom) => {
+                        let mut chroms_reported = chrom_reported.lock().unwrap();
+                        if !chroms_reported.contains(&chrom) {
+                            error!("Contig {chrom} not found in bam file");
+                            chroms_reported.push(chrom);
                         }
-                    };
-                });
+                    }
+                };
+            });
+            let mut genotypes = genotypes.lock().unwrap();
+            genotypes.sort_unstable_by(|chrom, start, end, _, _| (k.0, k.1, k.2));
         }
     }
 }
@@ -160,7 +190,7 @@ fn genotype_repeat(
     start: i64,
     end: i64,
     minlen: u32,
-) -> Result<String, String> {
+) -> Result<(String, i64, i64, f64, f64), String> {
     let mut bam = match bam::IndexedReader::from_path(&bamf) {
         Ok(handle) => handle,
         Err(e) => {
@@ -218,14 +248,15 @@ fn genotype_repeat(
             calls[&1].len(),
             calls[&2].len()
         );
-        Ok(format!(
-            "{chrom}:{start}-{end}\t{:?}\t{:?}",
-            median(&calls[&1]),
-            median(&calls[&2])
-        ))
+        Ok((chrom, start, end, median(&calls[&1]), median(&calls[&2])))
     } else {
         Err(chrom)
     }
+}
+
+fn write_genotype(genotype: (String, i64, i64, f64, f64)) {
+    let (chrom, start, end, phase1, phase2) = genotype;
+    println!("{chrom}\t{start}\t{end}\t{phase1}\t{phase2}");
 }
 
 /// parse a region string and extend the start and begin by a wobble space
