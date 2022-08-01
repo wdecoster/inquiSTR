@@ -8,44 +8,62 @@ use rust_htslib::{bam, bam::Read};
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::f64::NAN;
+use std::fmt;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-// #[derive(Eq)]
-// struct Genotype {
-//     chrom: String,
-//     start: u64,
-//     end: u64,
-//     phase1: f64,
-//     phase2: f64
-// }
+// This struct keeps the genotype information and allows to compare them and thus sort them on chromosomal location
+struct Genotype {
+    chrom: String,
+    start: i64,
+    end: i64,
+    phase1: f64,
+    phase2: f64,
+}
 
-// impl Ord for Genotype {
-//     fn cmp(&self, other: &Self) -> Ordering {
-//         self.height.cmp(&other.height)
-//     }
-// }
+impl Ord for Genotype {
+    fn cmp(&self, other: &Self) -> Ordering {
+        (self.chrom.clone(), &self.start, &self.end).cmp(&(
+            other.chrom.clone(),
+            &other.start,
+            &other.end,
+        ))
+    }
+}
 
-// impl PartialOrd for Person {
-//     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-//         Some(self.cmp(other))
-//     }
-// }
+impl PartialOrd for Genotype {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
 
-// impl PartialEq for Person {
-//     fn eq(&self, other: &Self) -> bool {
-//         self.height == other.height
-//     }
-// }
+impl PartialEq for Genotype {
+    fn eq(&self, other: &Self) -> bool {
+        (self.chrom.clone(), &self.start, &self.end)
+            == (other.chrom.clone(), &other.start, &other.end)
+    }
+}
 
+impl Eq for Genotype {}
+
+// How to print the struct, in bed-like format
+impl fmt::Display for Genotype {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(
+            f,
+            "{}\t{}\t{}\t{}\t{}",
+            self.chrom, self.start, self.end, self.phase1, self.phase2
+        )
+    }
+}
+// The arguments end up in the Cli struct
 #[derive(Parser, Debug)]
 #[clap(author, version, about="Tool to genotype STRs from long reads", long_about = None)]
 struct Cli {
-    /// Bam file to genotype
     #[clap(subcommand)]
     command: Commands,
 }
-
+// Every subcommand is a variation of the Commands Enum, and has its arguments defined below
 #[derive(Debug, Subcommand)]
 enum Commands {
     /// Call lengths
@@ -99,20 +117,24 @@ fn main() {
             threads,
         } => genotype_repeats(bam, region, region_file, wobble, minlen, threads),
         Commands::Combine {} => {
-            println!("Not implemented!")
+            unimplemented!();
         }
         Commands::Scan {} => {
-            println!("Not implemented!")
+            unimplemented!();
         }
         Commands::Outlier {} => {
-            println!("Not implemented!")
+            unimplemented!();
         }
         Commands::Association {} => {
-            println!("Not implemented!")
+            unimplemented!();
         }
     }
 }
 
+/// This function genotypes STRs, either from a region string or from a bed file
+/// For a bed file the genotyping is done in parallel
+/// The minlen argument indicates the smallest CIGAR operation that is considered
+/// Wobble extents the interval to make sure INDEL operations at the borders aren't missed
 fn genotype_repeats(
     bamp: PathBuf,
     region: Option<String>,
@@ -141,7 +163,7 @@ fn genotype_repeats(
             let (chrom, start, end) = process_region(region, wobble).unwrap();
             let bamf = bamp.into_os_string().into_string().unwrap();
             match genotype_repeat(&bamf, chrom, start, end, minlen) {
-                Ok(output) => write_genotype(output),
+                Ok(output) => println!("{}", output),
                 Err(chrom) => error!("Contig {chrom} not found in bam file"),
             };
         }
@@ -150,12 +172,18 @@ fn genotype_repeats(
                 .num_threads(threads)
                 .build_global()
                 .unwrap();
+            // TODO: check if bed file is okay
             let mut reader =
                 bed::Reader::from_file(region_file.into_os_string().into_string().unwrap())
                     .unwrap();
             let bamf = bamp.into_os_string().into_string().unwrap();
+            // chrom_reported and genotypes are vectors that are used by multiple threads to add findings, therefore as a Mutex
+            // chrom_reported contains those chromosomes for which an error (absence in the bam) was already reported
+            // to avoid reporthing the same error multiple times
             let chrom_reported = Mutex::new(Vec::new());
+            // genotypes contains the output of the genotyping, a struct instance
             let genotypes = Mutex::new(Vec::new());
+            // par_bridge does not guarantee that results are returned in order
             reader.records().par_bridge().for_each(|record| {
                 let rec = record.expect("Error reading bed record.");
                 match genotype_repeat(
@@ -170,6 +198,8 @@ fn genotype_repeats(
                         geno.push(output);
                     }
                     Err(chrom) => {
+                        // For now the Err is only used for when a chromosome from the bed file does not appear in the bam file
+                        // this error is reported once per chromosome
                         let mut chroms_reported = chrom_reported.lock().unwrap();
                         if !chroms_reported.contains(&chrom) {
                             error!("Contig {chrom} not found in bam file");
@@ -178,19 +208,23 @@ fn genotype_repeats(
                     }
                 };
             });
-            let mut genotypes = genotypes.lock().unwrap();
-            genotypes.sort_unstable_by(|chrom, start, end, _, _| (k.0, k.1, k.2));
+            let mut genotypes_vec = genotypes.lock().unwrap();
+            // The final output is sorted by chrom, start and end
+            genotypes_vec.sort_unstable();
         }
     }
 }
 
+/// This function genotypes a particular repeat defined by chrom, start and end in the specified bam file
+/// All indel cigar operations longer than minlen are considered
+/// The bam file is expected to be phased using the HP tag
 fn genotype_repeat(
     bamf: &String,
     chrom: String,
     start: i64,
     end: i64,
     minlen: u32,
-) -> Result<(String, i64, i64, f64, f64), String> {
+) -> Result<Genotype, String> {
     let mut bam = match bam::IndexedReader::from_path(&bamf) {
         Ok(handle) => handle,
         Err(e) => {
@@ -199,20 +233,21 @@ fn genotype_repeat(
         }
     };
 
+    info!("Checks passed, genotyping repeat");
     if let Some(tid) = bam.header().tid(chrom.as_bytes()) {
         bam.fetch((tid, start, end)).unwrap();
-
+        // Per haplotype the difference with the reference genome is kept in a dictionary
         let mut calls: HashMap<u8, Vec<i64>> =
             HashMap::from([(1, Vec::new()), (2, Vec::new()), (0, Vec::new())]);
 
-        info!("Checks passed, genotyping repeat");
-
+        // CIGAR operations are assessed per read
         for r in bam.records() {
             let r = r.expect("Error reading BAM file in region {chrom}:{start}-{end}.");
+            // reads with either end inside the window are ignored or if mapping quality is low
             if start < r.reference_start() || r.reference_end() < end || r.mapq() <= 10 {
                 continue;
             }
-
+            // move the cursor for the reference position for all cigar operations that consume the reference
             let mut reference_position = r.reference_start() + 1;
             let phase = get_phase(&r);
             let mut call: i64 = 0;
@@ -248,15 +283,18 @@ fn genotype_repeat(
             calls[&1].len(),
             calls[&2].len()
         );
-        Ok((chrom, start, end, median(&calls[&1]), median(&calls[&2])))
+        // For now, the unphased calls are ignored
+        let output = Genotype {
+            chrom,
+            start,
+            end,
+            phase1: median_str_length(&calls[&1]),
+            phase2: median_str_length(&calls[&2]),
+        };
+        Ok(output)
     } else {
         Err(chrom)
     }
-}
-
-fn write_genotype(genotype: (String, i64, i64, f64, f64)) {
-    let (chrom, start, end, phase1, phase2) = genotype;
-    println!("{chrom}\t{start}\t{end}\t{phase1}\t{phase2}");
 }
 
 /// parse a region string and extend the start and begin by a wobble space
@@ -291,6 +329,9 @@ fn process_region(
     ))
 }
 
+/// Get the phase of a read by parsing the HP tag
+/// The outcome should always be a u8
+/// If the tag is absent '0' is returned, indicating unphased
 fn get_phase(record: &bam::Record) -> u8 {
     match record.aux(b"HP") {
         Ok(value) => {
@@ -304,7 +345,9 @@ fn get_phase(record: &bam::Record) -> u8 {
     }
 }
 
-fn median(array: &Vec<i64>) -> f64 {
+/// Take the median of the lengths of the STRs, relative to the reference genome
+/// If the vector is empty then return NAN
+fn median_str_length(array: &Vec<i64>) -> f64 {
     if array.is_empty() {
         return NAN;
     }
