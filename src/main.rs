@@ -1,4 +1,5 @@
 use bio::io::bed;
+use clap::AppSettings::DeriveDisplayOrder;
 use clap::{Parser, Subcommand};
 use log::{error, info};
 use rayon::prelude::*;
@@ -58,6 +59,7 @@ impl fmt::Display for Genotype {
 }
 // The arguments end up in the Cli struct
 #[derive(Parser, Debug)]
+#[structopt(global_settings=&[DeriveDisplayOrder])]
 #[clap(author, version, about="Tool to genotype STRs from long reads", long_about = None)]
 struct Cli {
     #[clap(subcommand)]
