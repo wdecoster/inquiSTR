@@ -16,8 +16,8 @@ use std::sync::Mutex;
 // This struct keeps the genotype information and allows to compare them and thus sort them on chromosomal location
 struct Genotype {
     chrom: String,
-    start: i64,
-    end: i64,
+    start: u32,
+    end: u32,
     phase1: f64,
     phase2: f64,
 }
@@ -223,8 +223,8 @@ fn genotype_repeats(
 fn genotype_repeat(
     bamf: &String,
     chrom: String,
-    start: i64,
-    end: i64,
+    start: u32,
+    end: u32,
     minlen: u32,
 ) -> Result<Genotype, String> {
     let mut bam = match bam::IndexedReader::from_path(&bamf) {
@@ -246,23 +246,26 @@ fn genotype_repeat(
         for r in bam.records() {
             let r = r.expect("Error reading BAM file in region {chrom}:{start}-{end}.");
             // reads with either end inside the window are ignored or if mapping quality is low
-            if start < r.reference_start() || r.reference_end() < end || r.mapq() <= 10 {
+            if start < (r.reference_start() as u32)
+                || (r.reference_end() as u32) < end
+                || r.mapq() <= 10
+            {
                 continue;
             }
             // move the cursor for the reference position for all cigar operations that consume the reference
-            let mut reference_position = r.reference_start() + 1;
+            let mut reference_position = (r.reference_start() + 1) as u32;
             let phase = get_phase(&r);
             let mut call: i64 = 0;
             for entry in r.cigar().iter() {
                 match entry {
                     Cigar::Match(len) | Cigar::Equal(len) | Cigar::Diff(len) => {
-                        reference_position += *len as i64;
+                        reference_position += *len;
                     }
                     Cigar::Del(len) => {
                         if *len > minlen && start < reference_position && reference_position < end {
                             call -= *len as i64;
                         }
-                        reference_position += *len as i64;
+                        reference_position += *len;
                     }
                     Cigar::SoftClip(len) => {
                         if *len > minlen && start < reference_position && reference_position < end {
@@ -274,7 +277,7 @@ fn genotype_repeat(
                             call += *len as i64;
                         }
                     }
-                    Cigar::RefSkip(len) => reference_position += *len as i64,
+                    Cigar::RefSkip(len) => reference_position += *len,
                     _ => (),
                 }
             }
@@ -304,7 +307,7 @@ fn genotype_repeat(
 fn process_region(
     reg: String,
     wobble: f64,
-) -> Result<(String, i64, i64), Box<dyn std::error::Error>> {
+) -> Result<(String, u32, u32), Box<dyn std::error::Error>> {
     assert!(
         wobble >= 0.0,
         "Wobble argument should be a positive float, received {}",
@@ -326,8 +329,8 @@ fn process_region(
     let wobble_length = ((end - start) * wobble) / 2.0;
     Ok((
         chrom.to_string(),
-        (start - wobble_length) as i64,
-        (end + wobble_length) as i64,
+        (start - wobble_length) as u32,
+        (end + wobble_length) as u32,
     ))
 }
 
