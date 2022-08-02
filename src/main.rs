@@ -213,6 +213,9 @@ fn genotype_repeats(
             let mut genotypes_vec = genotypes.lock().unwrap();
             // The final output is sorted by chrom, start and end
             genotypes_vec.sort_unstable();
+            for g in &mut *genotypes_vec {
+                println!("{}", g);
+            }
         }
     }
 }
