@@ -1,6 +1,7 @@
 use bio::io::bed;
 use clap::AppSettings::DeriveDisplayOrder;
 use clap::{Parser, Subcommand};
+use human_sort::compare as human_compare;
 use log::{error, info};
 use rayon::prelude::*;
 use rust_htslib::bam::ext::BamRecordExtensions;
@@ -24,11 +25,7 @@ struct Genotype {
 
 impl Ord for Genotype {
     fn cmp(&self, other: &Self) -> Ordering {
-        (self.chrom.clone(), &self.start, &self.end).cmp(&(
-            other.chrom.clone(),
-            &other.start,
-            &other.end,
-        ))
+        human_compare(&self.chrom, &other.chrom).then(self.start.cmp(&other.start))
     }
 }
 
@@ -40,8 +37,7 @@ impl PartialOrd for Genotype {
 
 impl PartialEq for Genotype {
     fn eq(&self, other: &Self) -> bool {
-        (self.chrom.clone(), &self.start, &self.end)
-            == (other.chrom.clone(), &other.start, &other.end)
+        (self.chrom.clone(), &self.start) == (other.chrom.clone(), &other.start)
     }
 }
 
