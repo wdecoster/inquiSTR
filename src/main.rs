@@ -212,6 +212,41 @@ fn genotype_repeats(
             for g in &mut *genotypes_vec {
                 println!("{}", g);
             }
+            } else {
+                // When running single threaded things become easier and the tool will require less memory
+                // Output is returned in the same order as the bed, and therefore not sorted before writing to stdout
+                // TODO: check if bed file is okay
+                let mut reader =
+                    bed::Reader::from_file(region_file.into_os_string().into_string().unwrap())
+                        .unwrap();
+                let bamf = bamp.into_os_string().into_string().unwrap();
+                // chrom_reported contains those chromosomes for which an error (absence in the bam) was already reported
+                // to avoid reporting the same error multiple times
+                let mut chrom_reported = Vec::new();
+                // genotypes contains the output of the genotyping, a struct instance
+                for record in reader.records() {
+                    let rec = record.expect("Error reading bed record.");
+                    match genotype_repeat(
+                        &bamf,
+                        rec.chrom().to_string(),
+                        rec.start().try_into().unwrap(),
+                        rec.end().try_into().unwrap(),
+                        minlen,
+                    ) {
+                        Ok(output) => {
+                            println!("{}", output);
+                        }
+                        Err(chrom) => {
+                            // For now the Err is only used for when a chromosome from the bed file does not appear in the bam file
+                            // this error is reported once per chromosome
+                            if !chrom_reported.contains(&chrom) {
+                                error!("Contig {chrom} not found in bam file");
+                                chrom_reported.push(chrom);
+                            }
+                        }
+                    };
+                }
+            }
         }
     }
 }
