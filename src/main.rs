@@ -83,10 +83,6 @@ enum Commands {
         #[clap(short, long, value_parser, default_value_t = 5)]
         minlen: u32,
 
-        /// fraction to extend the region intervals
-        #[clap(short, long, value_parser, default_value_t = 0.5)]
-        wobble: f64,
-
         /// Number of parallel threads to use
         #[clap(short, long, value_parser, default_value_t = 8)]
         threads: usize,
@@ -111,9 +107,8 @@ fn main() {
             region,
             region_file,
             minlen,
-            wobble,
             threads,
-        } => genotype_repeats(bam, region, region_file, wobble, minlen, threads),
+        } => genotype_repeats(bam, region, region_file, minlen, threads),
         Commands::Combine {} => {
             unimplemented!();
         }
@@ -137,7 +132,6 @@ fn genotype_repeats(
     bamp: PathBuf,
     region: Option<String>,
     region_file: Option<PathBuf>,
-    wobble: f64,
     minlen: u32,
     threads: usize,
 ) {
@@ -158,7 +152,7 @@ fn genotype_repeats(
             panic!();
         }
         (Some(region), None) => {
-            let (chrom, start, end) = process_region(region, wobble).unwrap();
+            let (chrom, start, end) = process_region(region).unwrap();
             let bamf = bamp.into_os_string().into_string().unwrap();
             match genotype_repeat(&bamf, chrom, start, end, minlen) {
                 Ok(output) => println!("{}", output),
@@ -166,52 +160,53 @@ fn genotype_repeats(
             };
         }
         (None, Some(region_file)) => {
-            rayon::ThreadPoolBuilder::new()
-                .num_threads(threads)
-                .build_global()
-                .unwrap();
-            // TODO: check if bed file is okay
-            let mut reader =
-                bed::Reader::from_file(region_file.into_os_string().into_string().unwrap())
+            if threads > 1 {
+                rayon::ThreadPoolBuilder::new()
+                    .num_threads(threads)
+                    .build_global()
                     .unwrap();
-            let bamf = bamp.into_os_string().into_string().unwrap();
-            // chrom_reported and genotypes are vectors that are used by multiple threads to add findings, therefore as a Mutex
-            // chrom_reported contains those chromosomes for which an error (absence in the bam) was already reported
-            // to avoid reporthing the same error multiple times
-            let chrom_reported = Mutex::new(Vec::new());
-            // genotypes contains the output of the genotyping, a struct instance
-            let genotypes = Mutex::new(Vec::new());
-            // par_bridge does not guarantee that results are returned in order
-            reader.records().par_bridge().for_each(|record| {
-                let rec = record.expect("Error reading bed record.");
-                match genotype_repeat(
-                    &bamf,
-                    rec.chrom().to_string(),
-                    rec.start().try_into().unwrap(),
-                    rec.end().try_into().unwrap(),
-                    minlen,
-                ) {
-                    Ok(output) => {
-                        let mut geno = genotypes.lock().unwrap();
-                        geno.push(output);
-                    }
-                    Err(chrom) => {
-                        // For now the Err is only used for when a chromosome from the bed file does not appear in the bam file
-                        // this error is reported once per chromosome
-                        let mut chroms_reported = chrom_reported.lock().unwrap();
-                        if !chroms_reported.contains(&chrom) {
-                            error!("Contig {chrom} not found in bam file");
-                            chroms_reported.push(chrom);
+                // TODO: check if bed file is okay
+                let mut reader =
+                    bed::Reader::from_file(region_file.into_os_string().into_string().unwrap())
+                        .unwrap();
+                let bamf = bamp.into_os_string().into_string().unwrap();
+                // chrom_reported and genotypes are vectors that are used by multiple threads to add findings, therefore as a Mutex
+                // chrom_reported contains those chromosomes for which an error (absence in the bam) was already reported
+                // to avoid reporting the same error multiple times
+                let chrom_reported = Mutex::new(Vec::new());
+                // genotypes contains the output of the genotyping, a struct instance
+                let genotypes = Mutex::new(Vec::new());
+                // par_bridge does not guarantee that results are returned in order
+                reader.records().par_bridge().for_each(|record| {
+                    let rec = record.expect("Error reading bed record.");
+                    match genotype_repeat(
+                        &bamf,
+                        rec.chrom().to_string(),
+                        rec.start().try_into().unwrap(),
+                        rec.end().try_into().unwrap(),
+                        minlen,
+                    ) {
+                        Ok(output) => {
+                            let mut geno = genotypes.lock().unwrap();
+                            geno.push(output);
                         }
-                    }
-                };
-            });
-            let mut genotypes_vec = genotypes.lock().unwrap();
-            // The final output is sorted by chrom, start and end
-            genotypes_vec.sort_unstable();
-            for g in &mut *genotypes_vec {
-                println!("{}", g);
-            }
+                        Err(chrom) => {
+                            // For now the Err is only used for when a chromosome from the bed file does not appear in the bam file
+                            // this error is reported once per chromosome
+                            let mut chroms_reported = chrom_reported.lock().unwrap();
+                            if !chroms_reported.contains(&chrom) {
+                                error!("Contig {chrom} not found in bam file");
+                                chroms_reported.push(chrom);
+                            }
+                        }
+                    };
+                });
+                let mut genotypes_vec = genotypes.lock().unwrap();
+                // The final output is sorted by chrom, start and end
+                genotypes_vec.sort_unstable();
+                for g in &mut *genotypes_vec {
+                    println!("{}", g);
+                }
             } else {
                 // When running single threaded things become easier and the tool will require less memory
                 // Output is returned in the same order as the bed, and therefore not sorted before writing to stdout
@@ -338,34 +333,20 @@ fn genotype_repeat(
 
 /// parse a region string and extend the start and begin by a wobble space
 /// defined by a wobble fraction relative to the interval length
-fn process_region(
-    reg: String,
-    wobble: f64,
-) -> Result<(String, u32, u32), Box<dyn std::error::Error>> {
-    assert!(
-        wobble >= 0.0,
-        "Wobble argument should be a positive float, received {}",
-        wobble
-    );
-
+fn process_region(reg: String) -> Result<(String, u32, u32), Box<dyn std::error::Error>> {
     let chrom = reg.split(':').collect::<Vec<&str>>()[0];
     let interval = reg.split(':').collect::<Vec<&str>>()[1];
-    let start: f64 = interval.split('-').collect::<Vec<&str>>()[0]
+    let start: u32 = interval.split('-').collect::<Vec<&str>>()[0]
         .parse()
         .unwrap();
-    let end: f64 = interval.split('-').collect::<Vec<&str>>()[1]
+    let end: u32 = interval.split('-').collect::<Vec<&str>>()[1]
         .parse()
         .unwrap();
     assert!(
-        end - start > 0.0,
+        end - start > 0,
         r#"Invalid region: begin has to be smaller than end."#
     );
-    let wobble_length = ((end - start) * wobble) / 2.0;
-    Ok((
-        chrom.to_string(),
-        (start - wobble_length) as u32,
-        (end + wobble_length) as u32,
-    ))
+    Ok((chrom.to_string(), start, end))
 }
 
 /// Get the phase of a read by parsing the HP tag
@@ -417,7 +398,6 @@ fn test_region() {
         PathBuf::from("/home/wdecoster/test-data/test.bam"),
         Some("chr7:154778571-154779363".to_string()),
         None,
-        0.5,
         5,
         4,
     );
@@ -429,7 +409,6 @@ fn test_region_bed() {
         PathBuf::from("/home/wdecoster/test-data/test.bam"),
         None,
         Some(PathBuf::from("/home/wdecoster/test-data/test.bed")),
-        0.5,
         5,
         4,
     );
@@ -442,7 +421,6 @@ fn test_no_region() {
         PathBuf::from("/home/wdecoster/test-data/test.bam"),
         None,
         None,
-        0.5,
         5,
         4,
     );
@@ -455,7 +433,6 @@ fn test_wrong_bam_path() {
         PathBuf::from("/home/wdecoster/wrong_path_to_test-data/test.bam"),
         Some("chr7:154778571-154779363".to_string()),
         None,
-        0.5,
         5,
         4,
     );
@@ -464,15 +441,7 @@ fn test_wrong_bam_path() {
 #[test]
 #[should_panic]
 fn test_wrong_interval() {
-    match process_region("chr7:154779363-154778571".to_string(), 0.5) {
-        Ok(it) => it,
-        Err(_) => ("yiek".to_string(), 12, 12),
-    };
-}
-#[test]
-#[should_panic]
-fn test_negative_wobble() {
-    match process_region("chr7:154778571-154779363".to_string(), -0.5) {
+    match process_region("chr7:154779363-154778571".to_string()) {
         Ok(it) => it,
         Err(_) => ("yiek".to_string(), 12, 12),
     };
@@ -484,7 +453,6 @@ fn test_region_wrong_chromosome() {
         PathBuf::from("/home/wdecoster/test-data/test.bam"),
         Some("7:154778571-154779363".to_string()),
         None,
-        0.5,
         5,
         4,
     );
