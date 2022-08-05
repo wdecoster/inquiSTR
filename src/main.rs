@@ -4,6 +4,7 @@ use log::info;
 use std::path::PathBuf;
 
 pub mod call;
+pub mod combine;
 
 // The arguments end up in the Cli struct
 #[derive(Parser, Debug)]
@@ -40,7 +41,11 @@ enum Commands {
         threads: usize,
     },
     /// Combine lengths from multiple bams to a TSV
-    Combine {},
+    Combine {
+        /// bam file to call STRs in
+        #[clap(parse(from_os_str), multiple_values = true)]
+        calls: Vec<PathBuf>,
+    },
     /// Search for regions potentially containing a polymorphic repeat
     Scan {},
     /// Find outliers from TSV
@@ -61,8 +66,8 @@ fn main() {
             minlen,
             threads,
         } => call::genotype_repeats(bam, region, region_file, minlen, threads),
-        Commands::Combine {} => {
-            unimplemented!();
+        Commands::Combine { calls } => {
+            combine::combine(calls);
         }
         Commands::Scan {} => {
             unimplemented!();
