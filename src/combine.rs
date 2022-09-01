@@ -7,7 +7,7 @@ use std::path::PathBuf;
 
 /// Read normal or compressed files seamlessly
 /// Uses the presence of a `.gz` extension to decide
-pub fn reader(filename: &str) -> Box<dyn BufRead> {
+fn reader(filename: &str) -> Box<dyn BufRead> {
     let path = Path::new(filename);
     let file = match File::open(&path) {
         Err(why) => panic!("couldn't open {}: {}", path.display(), why),
