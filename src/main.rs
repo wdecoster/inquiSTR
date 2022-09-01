@@ -5,6 +5,7 @@ use std::path::PathBuf;
 
 pub mod call;
 pub mod combine;
+pub mod outlier;
 
 // The arguments end up in the Cli struct
 #[derive(Parser, Debug)]
@@ -43,13 +44,17 @@ enum Commands {
     /// Combine lengths from multiple bams to a TSV
     Combine {
         /// bam file to call STRs in
-        #[clap(parse(from_os_str), multiple_values = true)]
+        #[clap(parse(from_os_str), multiple_values = true, required = true)]
         calls: Vec<PathBuf>,
     },
     /// Search for regions potentially containing a polymorphic repeat
     Scan {},
     /// Find outliers from TSV
-    Outlier {},
+    Outlier {
+        /// combined file of calls
+        #[clap(parse(from_os_str), required = true)]
+        combined: PathBuf,
+    },
     /// Test for association of repeat length by comparing two cohorts
     Association {},
 }
@@ -72,8 +77,8 @@ fn main() {
         Commands::Scan {} => {
             unimplemented!();
         }
-        Commands::Outlier {} => {
-            unimplemented!();
+        Commands::Outlier { combined } => {
+            outlier::outlier(combined);
         }
         Commands::Association {} => {
             unimplemented!();
