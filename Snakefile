@@ -7,7 +7,9 @@ outdir = "/home/AD/wdecoster/p200"
 rule all:
     input:
         expand(os.path.join(outdir, "inquistr-call/{id}.inq.gz"), id=IDS),
-        os.path.join(outdir, "inquistr-combined/combined.inq.gz")
+        os.path.join(outdir, "inquistr-combined/combined.inq.gz"),
+        os.path.join(outdir, "inquistr-combined/outlier.inq.gz"),
+        
 
 
 rule inquistr_call:
@@ -32,3 +34,13 @@ rule inquistr_combine:
         os.path.join(outdir, "logs/inquistr-combine.log")
     shell:
         "/home/AD/wdecoster/p200/inquiSTR combine {input} | gzip > {output} 2> {log}"
+
+rule inquistr_outlier:
+    input:
+        os.path.join(outdir, "inquistr-combined/combined.inq.gz")
+    output:
+        os.path.join(outdir, "inquistr-combined/outlier.inq.gz")
+    log:
+        os.path.join(outdir, "logs/inquistr-outlier.log")
+    shell:
+        "/home/AD/wdecoster/p200/inquiSTR outlier {input} | gzip > {output} 2> {log}"
