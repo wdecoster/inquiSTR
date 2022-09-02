@@ -32,12 +32,10 @@ fn std_deviation_and_mean(data: &Vec<f32>) -> (f32, f32) {
         .iter()
         .map(|value| {
             let diff = data_mean - (*value as f32);
-
             diff * diff
         })
         .sum::<f32>()
         / count;
-
     (data_mean, variance.sqrt())
 }
 
@@ -60,15 +58,16 @@ pub fn outlier(combined: PathBuf) {
             .collect();
         // calculate mean and std deviation of the STR lengths
         let (values_mean, values_std_dev) = std_deviation_and_mean(&values);
-        // calculate the zscore for each haplotype and store the index if larger than 3.0
-        let expanded: Vec<&str> = values
+        // calculate the zscore for each haplotype and get the haplotype identifier based on the index if larger zscore > 3.0
+        let expanded = values
             .iter()
             .enumerate()
             .filter(|(_, &value)| ((value - values_mean) / values_std_dev) > 3.0)
             .map(|(index, _)| samples[index])
-            .collect();
+            .collect::<Vec<&str>>();
         if !expanded.is_empty() {
-            println!("{}\t{}\t{}\t{}", chrom, begin, end, expanded.join(","))
+            let expanded = expanded.join(",");
+            println!("{chrom}\t{begin}\t{end}\t{expanded}")
         }
     }
 }
