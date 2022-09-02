@@ -40,12 +40,20 @@ enum Commands {
         /// Number of parallel threads to use
         #[clap(short, long, value_parser, default_value_t = 8)]
         threads: usize,
+
+        /// If unphased reads have to be considered
+        #[clap(short, long, value_parser)]
+        unphased: bool,
     },
     /// Combine lengths from multiple bams to a TSV
     Combine {
-        /// bam file to call STRs in
+        /// files from inquiSTR call
         #[clap(parse(from_os_str), multiple_values = true, required = true)]
         calls: Vec<PathBuf>,
+
+        /// If reads were unphased for inquiSTR call
+        #[clap(short, long, value_parser)]
+        unphased: bool,
     },
     /// Search for regions potentially containing a polymorphic repeat
     Scan {},
@@ -70,9 +78,10 @@ fn main() {
             region_file,
             minlen,
             threads,
-        } => call::genotype_repeats(bam, region, region_file, minlen, threads),
-        Commands::Combine { calls } => {
-            combine::combine(calls);
+            unphased,
+        } => call::genotype_repeats(bam, region, region_file, minlen, threads, unphased),
+        Commands::Combine { calls, unphased } => {
+            combine::combine(calls, unphased);
         }
         Commands::Scan {} => {
             unimplemented!();

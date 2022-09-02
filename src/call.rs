@@ -19,6 +19,7 @@ struct Genotype {
     end: u32,
     phase1: f64,
     phase2: f64,
+    unphased: f64,
 }
 
 impl Ord for Genotype {
@@ -42,13 +43,22 @@ impl PartialEq for Genotype {
 impl Eq for Genotype {}
 
 // How to print the struct, in bed-like format
+// self.unphased should be 0, except if explicitly opted in to use unphased calls
 impl fmt::Display for Genotype {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(
-            f,
-            "{}\t{}\t{}\t{}\t{}",
-            self.chrom, self.start, self.end, self.phase1, self.phase2
-        )
+        if self.unphased > 0.0 {
+            write!(
+                f,
+                "{}\t{}\t{}\t{}",
+                self.chrom, self.start, self.end, self.unphased
+            )
+        } else {
+            write!(
+                f,
+                "{}\t{}\t{}\t{}\t{}",
+                self.chrom, self.start, self.end, self.phase1, self.phase2
+            )
+        }
     }
 }
 
@@ -62,6 +72,7 @@ pub fn genotype_repeats(
     region_file: Option<PathBuf>,
     minlen: u32,
     threads: usize,
+    unphased: bool,
 ) {
     if !bamp.is_file() {
         error!(
@@ -82,7 +93,7 @@ pub fn genotype_repeats(
         (Some(region), None) => {
             let (chrom, start, end) = process_region(region).unwrap();
             let bamf = bamp.into_os_string().into_string().unwrap();
-            match genotype_repeat(&bamf, chrom, start, end, minlen) {
+            match genotype_repeat(&bamf, chrom, start, end, minlen, unphased) {
                 Ok(output) => println!("{}", output),
                 Err(chrom) => error!("Contig {chrom} not found in bam file"),
             };
@@ -91,7 +102,7 @@ pub fn genotype_repeats(
             if threads > 1 {
                 rayon::ThreadPoolBuilder::new()
                     .num_threads(threads)
-                    .build_global()
+                    .build()
                     .unwrap();
                 // TODO: check if bed file is okay
                 let mut reader =
@@ -113,6 +124,7 @@ pub fn genotype_repeats(
                         rec.start().try_into().unwrap(),
                         rec.end().try_into().unwrap(),
                         minlen,
+                        unphased,
                     ) {
                         Ok(output) => {
                             let mut geno = genotypes.lock().unwrap();
@@ -155,6 +167,7 @@ pub fn genotype_repeats(
                         rec.start().try_into().unwrap(),
                         rec.end().try_into().unwrap(),
                         minlen,
+                        unphased,
                     ) {
                         Ok(output) => {
                             println!("{}", output);
@@ -183,6 +196,7 @@ fn genotype_repeat(
     start: u32,
     end: u32,
     minlen: u32,
+    unphased: bool,
 ) -> Result<Genotype, String> {
     let mut bam = match bam::IndexedReader::from_path(&bamf) {
         Ok(handle) => handle,
@@ -209,49 +223,41 @@ fn genotype_repeat(
             {
                 continue;
             }
-            // move the cursor for the reference position for all cigar operations that consume the reference
-            let mut reference_position = (r.reference_start() + 1) as u32;
-            let phase = get_phase(&r);
-            let mut call: i64 = 0;
-            for entry in r.cigar().iter() {
-                match entry {
-                    Cigar::Match(len) | Cigar::Equal(len) | Cigar::Diff(len) => {
-                        reference_position += *len;
-                    }
-                    Cigar::Del(len) => {
-                        if *len > minlen && start < reference_position && reference_position < end {
-                            call -= *len as i64;
-                        }
-                        reference_position += *len;
-                    }
-                    Cigar::SoftClip(len) => {
-                        if *len > minlen && start < reference_position && reference_position < end {
-                            call += *len as i64;
-                        }
-                    }
-                    Cigar::Ins(len) => {
-                        if *len > minlen && start < reference_position && reference_position < end {
-                            call += *len as i64;
-                        }
-                    }
-                    Cigar::RefSkip(len) => reference_position += *len,
-                    _ => (),
-                }
+            let phase = match unphased {
+                true => 0,
+                false => get_phase(&r),
+            };
+            // if the bam is supposed to be phased, ignore all unphased reads
+            if !unphased && phase == 0 {
+                continue;
             }
+            let call = call_from_cigar(r, minlen, start, end);
             calls.get_mut(&phase).unwrap().push(call);
         }
         info!(
-            "Used {}+{} reads for genotyping",
+            "Found {}[H1]+{}[H2] reads for genotyping",
             calls[&1].len(),
             calls[&2].len()
         );
-        // For now, the unphased calls are ignored
-        let output = Genotype {
-            chrom,
-            start,
-            end,
-            phase1: median_str_length(&calls[&1]),
-            phase2: median_str_length(&calls[&2]),
+        // unphased is set to 0 if those are to be ignored and vice versa
+        // just taking the median of unphased reads is not optimal
+        let output = match unphased {
+            true => Genotype {
+                chrom,
+                start,
+                end,
+                phase1: 0.0,
+                phase2: 0.0,
+                unphased: median_str_length(&calls[&0]),
+            },
+            false => Genotype {
+                chrom,
+                start,
+                end,
+                phase1: median_str_length(&calls[&1]),
+                phase2: median_str_length(&calls[&2]),
+                unphased: 0.0,
+            },
         };
         Ok(output)
     } else {
@@ -259,8 +265,39 @@ fn genotype_repeat(
     }
 }
 
-/// parse a region string and extend the start and begin by a wobble space
-/// defined by a wobble fraction relative to the interval length
+fn call_from_cigar(r: bam::Record, minlen: u32, start: u32, end: u32) -> i64 {
+    let mut call: i64 = 0;
+    // move the cursor for the reference position for all cigar operations that consume the reference
+    let mut reference_position = (r.reference_start() + 1) as u32;
+    for entry in r.cigar().iter() {
+        match entry {
+            Cigar::Match(len) | Cigar::Equal(len) | Cigar::Diff(len) => {
+                reference_position += *len;
+            }
+            Cigar::Del(len) => {
+                if *len > minlen && start < reference_position && reference_position < end {
+                    call -= *len as i64;
+                }
+                reference_position += *len;
+            }
+            Cigar::SoftClip(len) => {
+                if *len > minlen && start < reference_position && reference_position < end {
+                    call += *len as i64;
+                }
+            }
+            Cigar::Ins(len) => {
+                if *len > minlen && start < reference_position && reference_position < end {
+                    call += *len as i64;
+                }
+            }
+            Cigar::RefSkip(len) => reference_position += *len,
+            _ => (),
+        }
+    }
+    call
+}
+
+/// parse a region string
 fn process_region(reg: String) -> Result<(String, u32, u32), Box<dyn std::error::Error>> {
     let chrom = reg.split(':').collect::<Vec<&str>>()[0];
     let interval = reg.split(':').collect::<Vec<&str>>()[1];
@@ -317,6 +354,7 @@ fn test_region() {
         None,
         5,
         4,
+        false,
     );
 }
 
@@ -328,6 +366,18 @@ fn test_region_bed() {
         Some(PathBuf::from("/home/wdecoster/test-data/test.bed")),
         5,
         4,
+        false,
+    );
+}
+#[test]
+fn test_unphased() {
+    genotype_repeats(
+        PathBuf::from("/home/wdecoster/test-data/test.bam"),
+        None,
+        Some(PathBuf::from("/home/wdecoster/test-data/test.bed")),
+        5,
+        4,
+        true,
     );
 }
 
@@ -340,6 +390,7 @@ fn test_no_region() {
         None,
         5,
         4,
+        false,
     );
 }
 
@@ -352,6 +403,7 @@ fn test_wrong_bam_path() {
         None,
         5,
         4,
+        false,
     );
 }
 
@@ -372,5 +424,6 @@ fn test_region_wrong_chromosome() {
         None,
         5,
         4,
+        false,
     );
 }
