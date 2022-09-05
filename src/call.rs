@@ -248,14 +248,14 @@ fn genotype_repeat(
                 end,
                 phase1: 0.0,
                 phase2: 0.0,
-                unphased: median_str_length(&calls[&0]),
+                unphased: median_str_length(&mut calls[&0].clone()),
             },
             false => Genotype {
                 chrom,
                 start,
                 end,
-                phase1: median_str_length(&calls[&1]),
-                phase2: median_str_length(&calls[&2]),
+                phase1: median_str_length(&mut calls[&1].clone()),
+                phase2: median_str_length(&mut calls[&2].clone()),
                 unphased: 0.0,
             },
         };
@@ -332,10 +332,11 @@ fn get_phase(record: &bam::Record) -> u8 {
 
 /// Take the median of the lengths of the STRs, relative to the reference genome
 /// If the vector is empty then return NAN
-fn median_str_length(array: &Vec<i64>) -> f64 {
+fn median_str_length(array: &mut Vec<i64>) -> f64 {
     if array.is_empty() {
         return NAN;
     }
+    array.sort_unstable();
     if (array.len() % 2) == 0 {
         let ind_left = array.len() / 2 - 1;
         let ind_right = array.len() / 2;
