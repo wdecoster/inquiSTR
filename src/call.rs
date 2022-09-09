@@ -198,7 +198,7 @@ fn genotype_repeat(
     minlen: u32,
     unphased: bool,
 ) -> Result<Genotype, String> {
-    let mut bam = match bam::IndexedReader::from_path(&bamf) {
+    let bam = match bam::IndexedReader::from_path(&bamf) {
         Ok(handle) => handle,
         Err(e) => {
             error!("Error opening BAM {}.\n{}", bamf, e);
@@ -207,11 +207,24 @@ fn genotype_repeat(
     };
 
     info!("Checks passed, genotyping repeat");
+    if unphased {
+        genotype_repeat_unphased(bam, chrom, start, end, minlen)
+    } else {
+        genotype_repeat_phased(bam, chrom, start, end, minlen)
+    }
+}
+
+fn genotype_repeat_unphased(
+    mut bam: bam::IndexedReader,
+    chrom: String,
+    start: u32,
+    end: u32,
+    minlen: u32,
+) -> Result<Genotype, String> {
     if let Some(tid) = bam.header().tid(chrom.as_bytes()) {
         bam.fetch((tid, start, end)).unwrap();
         // Per haplotype the difference with the reference genome is kept in a dictionary
-        let mut calls: HashMap<u8, Vec<i64>> =
-            HashMap::from([(1, Vec::new()), (2, Vec::new()), (0, Vec::new())]);
+        let mut calls = vec![];
 
         // CIGAR operations are assessed per read
         for r in bam.records() {
@@ -223,14 +236,53 @@ fn genotype_repeat(
             {
                 continue;
             }
-            let phase = match unphased {
-                true => 0,
-                false => get_phase(&r),
-            };
+            let call = call_from_cigar(r, minlen, start, end);
+            calls.push(call);
+        }
+        info!("Found {} reads for genotyping", calls.len(),);
+        // unphased is set to 0 if those are to be ignored and vice versa
+        // just taking the median of unphased reads is not optimal
+        let output = Genotype {
+            chrom,
+            start,
+            end,
+            phase1: 0.0,
+            phase2: 0.0,
+            unphased: median_str_length(&mut calls.clone()),
+        };
+        Ok(output)
+    } else {
+        Err(chrom)
+    }
+}
+
+fn genotype_repeat_phased(
+    mut bam: bam::IndexedReader,
+    chrom: String,
+    start: u32,
+    end: u32,
+    minlen: u32,
+) -> Result<Genotype, String> {
+    if let Some(tid) = bam.header().tid(chrom.as_bytes()) {
+        bam.fetch((tid, start, end)).unwrap();
+        // Per haplotype the difference with the reference genome is kept in a dictionary
+        let mut calls: HashMap<u8, Vec<i64>> =
+            HashMap::from([(1, Vec::new()), (2, Vec::new()), (0, Vec::new())]);
+
+        // CIGAR operations are assessed per read
+        for r in bam.records() {
+            let r = r.expect("Error reading BAM file in region {chrom}:{start}-{end}.");
+            // reads with either end inside the window are ignored or if mapping quality is low
             // if the bam is supposed to be phased, ignore all unphased reads
-            if !unphased && phase == 0 {
+            let phase = get_phase(&r);
+            if start < (r.reference_start() as u32)
+                || (r.reference_end() as u32) < end
+                || r.mapq() <= 10
+                || phase == 0
+            {
                 continue;
             }
+
             let call = call_from_cigar(r, minlen, start, end);
             calls.get_mut(&phase).unwrap().push(call);
         }
@@ -241,23 +293,13 @@ fn genotype_repeat(
         );
         // unphased is set to 0 if those are to be ignored and vice versa
         // just taking the median of unphased reads is not optimal
-        let output = match unphased {
-            true => Genotype {
-                chrom,
-                start,
-                end,
-                phase1: 0.0,
-                phase2: 0.0,
-                unphased: median_str_length(&mut calls[&0].clone()),
-            },
-            false => Genotype {
-                chrom,
-                start,
-                end,
-                phase1: median_str_length(&mut calls[&1].clone()),
-                phase2: median_str_length(&mut calls[&2].clone()),
-                unphased: 0.0,
-            },
+        let output = Genotype {
+            chrom,
+            start,
+            end,
+            phase1: median_str_length(&mut calls[&1].clone()),
+            phase2: median_str_length(&mut calls[&2].clone()),
+            unphased: 0.0,
         };
         Ok(output)
     } else {
