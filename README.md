@@ -2,10 +2,6 @@
 
 Genotyping of STRs with long reads
 
-This repository contains a snakefile and scripts to genotype specific STRs (in the data folder) from long read sequencing data, and has been optimized for ONT data. The tool requires snakemake, and installs all other dependencies from bioconda when first executed.
+This repository contains Rust code for inquiSTR and a snakefile to genotype STRs from long read sequencing data, and has been tested with ONT data.
 
 ## USAGE
-
-```bash
-snakemake -s /~path~/multi_repeat_typer.smk --cores 24 --use-conda
-```
