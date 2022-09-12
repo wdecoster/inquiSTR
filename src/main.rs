@@ -22,7 +22,7 @@ enum Commands {
     #[clap(arg_required_else_help = true)]
     Call {
         /// bam file to call STRs in
-        #[clap(parse(from_os_str))]
+        #[clap(parse(from_os_str), validator=is_file)]
         bam: PathBuf,
 
         /// region string to genotype expansion in
@@ -30,7 +30,7 @@ enum Commands {
         region: Option<String>,
 
         /// Bed file with region(s) to genotype expansion(s) in
-        #[clap(short = 'R', long, value_parser)]
+        #[clap(short = 'R', long, value_parser, validator=is_file)]
         region_file: Option<PathBuf>,
 
         /// minimal length of insertion/deletion operation
@@ -41,14 +41,15 @@ enum Commands {
         #[clap(short, long, value_parser, default_value_t = 8)]
         threads: usize,
 
-        /// If unphased reads have to be considered
+        /// If reads have to be considered unphased
         #[clap(short, long, value_parser)]
         unphased: bool,
     },
     /// Combine lengths from multiple bams to a TSV
     Combine {
         /// files from inquiSTR call
-        #[clap(parse(from_os_str), multiple_values = true, required = true)]
+        // this validator gets applied to each element from the Vec separately
+        #[clap(parse(from_os_str), multiple_values = true, required = true, validator=is_file)]
         calls: Vec<PathBuf>,
 
         /// If reads were unphased for inquiSTR call
@@ -60,11 +61,20 @@ enum Commands {
     /// Find outliers from TSV
     Outlier {
         /// combined file of calls
-        #[clap(parse(from_os_str), required = true)]
+        #[clap(parse(from_os_str), required = true, validator=is_file)]
         combined: PathBuf,
     },
     /// Test for association of repeat length by comparing two cohorts
     Association {},
+}
+
+fn is_file(pathname: &str) -> Result<(), String> {
+    let path = PathBuf::from(pathname);
+    if path.is_file() {
+        Ok(())
+    } else {
+        Err(format!("Input file {} is invalid", path.display()))
+    }
 }
 
 fn main() {

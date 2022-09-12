@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use std::f64::NAN;
 use std::fmt;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::Mutex;
 
 // This struct keeps the genotype information and allows to compare them and thus sort them on chromosomal location
@@ -227,7 +228,7 @@ fn genotype_repeat_unphased(
         let mut calls = vec![];
 
         // CIGAR operations are assessed per read
-        for r in bam.records() {
+        for r in bam.rc_records() {
             let r = r.expect("Error reading BAM file in region {chrom}:{start}-{end}.");
             // reads with either end inside the window are ignored or if mapping quality is low
             if start < (r.reference_start() as u32)
@@ -270,7 +271,7 @@ fn genotype_repeat_phased(
             HashMap::from([(1, Vec::new()), (2, Vec::new()), (0, Vec::new())]);
 
         // CIGAR operations are assessed per read
-        for r in bam.records() {
+        for r in bam.rc_records() {
             let r = r.expect("Error reading BAM file in region {chrom}:{start}-{end}.");
             // reads with either end inside the window are ignored or if mapping quality is low
             // if the bam is supposed to be phased, ignore all unphased reads
@@ -292,7 +293,6 @@ fn genotype_repeat_phased(
             calls[&2].len()
         );
         // unphased is set to 0 if those are to be ignored and vice versa
-        // just taking the median of unphased reads is not optimal
         let output = Genotype {
             chrom,
             start,
@@ -307,7 +307,7 @@ fn genotype_repeat_phased(
     }
 }
 
-fn call_from_cigar(r: bam::Record, minlen: u32, start: u32, end: u32) -> i64 {
+fn call_from_cigar(r: Rc<bam::Record>, minlen: u32, start: u32, end: u32) -> i64 {
     let mut call: i64 = 0;
     // move the cursor for the reference position for all cigar operations that consume the reference
     let mut reference_position = (r.reference_start() + 1) as u32;
