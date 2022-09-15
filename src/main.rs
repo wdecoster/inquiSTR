@@ -39,6 +39,10 @@ enum Commands {
         #[clap(short, long, value_parser, default_value_t = 5)]
         minlen: u32,
 
+        /// minimal number of supporting reads
+        #[clap(short, long, value_parser, default_value_t = 3)]
+        support: usize,
+
         /// Number of parallel threads to use
         #[clap(short, long, value_parser, default_value_t = 8)]
         threads: usize,
@@ -103,9 +107,10 @@ fn main() {
             region,
             region_file,
             minlen,
+            support,
             threads,
             unphased,
-        } => call::genotype_repeats(bam, region, region_file, minlen, threads, unphased),
+        } => call::genotype_repeats(bam, region, region_file, minlen, support, threads, unphased),
         Commands::Combine { calls, unphased } => {
             combine::combine(calls, unphased);
         }

@@ -72,6 +72,7 @@ pub fn genotype_repeats(
     region: Option<String>,
     region_file: Option<PathBuf>,
     minlen: u32,
+    support: usize,
     threads: usize,
     unphased: bool,
 ) {
@@ -94,7 +95,7 @@ pub fn genotype_repeats(
         (Some(region), None) => {
             let (chrom, start, end) = crate::utils::process_region(region).unwrap();
             let bamf = bamp.into_os_string().into_string().unwrap();
-            match genotype_repeat(&bamf, chrom, start, end, minlen, unphased) {
+            match genotype_repeat(&bamf, chrom, start, end, minlen, support, unphased) {
                 Ok(output) => println!("{}", output),
                 Err(chrom) => error!("Contig {chrom} not found in bam file"),
             };
@@ -125,6 +126,7 @@ pub fn genotype_repeats(
                         rec.start().try_into().unwrap(),
                         rec.end().try_into().unwrap(),
                         minlen,
+                        support,
                         unphased,
                     ) {
                         Ok(output) => {
@@ -168,6 +170,7 @@ pub fn genotype_repeats(
                         rec.start().try_into().unwrap(),
                         rec.end().try_into().unwrap(),
                         minlen,
+                        support,
                         unphased,
                     ) {
                         Ok(output) => {
@@ -197,6 +200,7 @@ fn genotype_repeat(
     start: u32,
     end: u32,
     minlen: u32,
+    support: usize,
     unphased: bool,
 ) -> Result<Genotype, String> {
     let bam = match bam::IndexedReader::from_path(&bamf) {
@@ -209,9 +213,9 @@ fn genotype_repeat(
 
     info!("Checks passed, genotyping repeat");
     if unphased {
-        genotype_repeat_unphased(bam, chrom, start, end, minlen)
+        genotype_repeat_unphased(bam, chrom, start, end, minlen, support)
     } else {
-        genotype_repeat_phased(bam, chrom, start, end, minlen)
+        genotype_repeat_phased(bam, chrom, start, end, minlen, support)
     }
 }
 
@@ -221,6 +225,7 @@ fn genotype_repeat_unphased(
     start: u32,
     end: u32,
     minlen: u32,
+    support: usize,
 ) -> Result<Genotype, String> {
     if let Some(tid) = bam.header().tid(chrom.as_bytes()) {
         bam.fetch((tid, start, end)).unwrap();
@@ -249,7 +254,7 @@ fn genotype_repeat_unphased(
             end,
             phase1: 0.0,
             phase2: 0.0,
-            unphased: median_str_length(&mut calls.clone()),
+            unphased: median_str_length(&mut calls.clone(), support),
         };
         Ok(output)
     } else {
@@ -263,6 +268,7 @@ fn genotype_repeat_phased(
     start: u32,
     end: u32,
     minlen: u32,
+    support: usize,
 ) -> Result<Genotype, String> {
     if let Some(tid) = bam.header().tid(chrom.as_bytes()) {
         bam.fetch((tid, start, end)).unwrap();
@@ -297,8 +303,8 @@ fn genotype_repeat_phased(
             chrom,
             start,
             end,
-            phase1: median_str_length(&mut calls[&1].clone()),
-            phase2: median_str_length(&mut calls[&2].clone()),
+            phase1: median_str_length(&mut calls[&1].clone(), support),
+            phase2: median_str_length(&mut calls[&2].clone(), support),
             unphased: 0.0,
         };
         Ok(output)
@@ -356,9 +362,9 @@ fn get_phase(record: &bam::Record) -> u8 {
 }
 
 /// Take the median of the lengths of the STRs, relative to the reference genome
-/// If the vector is empty then return NAN
-fn median_str_length(array: &mut Vec<i64>) -> f64 {
-    if array.is_empty() {
+/// If the vector has fewer than two calls then return NAN
+fn median_str_length(array: &mut Vec<i64>, support: usize) -> f64 {
+    if array.len() < support {
         return NAN;
     }
     array.sort_unstable();
@@ -379,6 +385,7 @@ fn test_region() {
         Some("chr7:154778571-154779363".to_string()),
         None,
         5,
+        3,
         4,
         false,
     );
@@ -391,6 +398,7 @@ fn test_region_bed() {
         None,
         Some(PathBuf::from("/home/wdecoster/test-data/test.bed")),
         5,
+        3,
         4,
         false,
     );
@@ -402,6 +410,7 @@ fn test_unphased() {
         None,
         Some(PathBuf::from("/home/wdecoster/test-data/test.bed")),
         5,
+        3,
         4,
         true,
     );
@@ -415,6 +424,7 @@ fn test_no_region() {
         None,
         None,
         5,
+        3,
         4,
         false,
     );
@@ -428,18 +438,10 @@ fn test_wrong_bam_path() {
         Some("chr7:154778571-154779363".to_string()),
         None,
         5,
+        3,
         4,
         false,
     );
-}
-
-#[test]
-#[should_panic]
-fn test_wrong_interval() {
-    match process_region("chr7:154779363-154778571".to_string()) {
-        Ok(it) => it,
-        Err(_) => ("yiek".to_string(), 12, 12),
-    };
 }
 
 #[test]
@@ -449,6 +451,7 @@ fn test_region_wrong_chromosome() {
         Some("7:154778571-154779363".to_string()),
         None,
         5,
+        3,
         4,
         false,
     );
