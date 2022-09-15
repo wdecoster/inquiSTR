@@ -6,6 +6,7 @@ use std::path::PathBuf;
 pub mod call;
 pub mod combine;
 pub mod outlier;
+pub mod utils;
 
 // The arguments end up in the Cli struct
 #[derive(Parser, Debug)]

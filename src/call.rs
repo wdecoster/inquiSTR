@@ -92,7 +92,7 @@ pub fn genotype_repeats(
             panic!();
         }
         (Some(region), None) => {
-            let (chrom, start, end) = process_region(region).unwrap();
+            let (chrom, start, end) = crate::utils::process_region(region).unwrap();
             let bamf = bamp.into_os_string().into_string().unwrap();
             match genotype_repeat(&bamf, chrom, start, end, minlen, unphased) {
                 Ok(output) => println!("{}", output),
@@ -337,23 +337,6 @@ fn call_from_cigar(r: Rc<bam::Record>, minlen: u32, start: u32, end: u32) -> i64
         }
     }
     call
-}
-
-/// parse a region string
-fn process_region(reg: String) -> Result<(String, u32, u32), Box<dyn std::error::Error>> {
-    let chrom = reg.split(':').collect::<Vec<&str>>()[0];
-    let interval = reg.split(':').collect::<Vec<&str>>()[1];
-    let start: u32 = interval.split('-').collect::<Vec<&str>>()[0]
-        .parse()
-        .unwrap();
-    let end: u32 = interval.split('-').collect::<Vec<&str>>()[1]
-        .parse()
-        .unwrap();
-    assert!(
-        end - start > 0,
-        r#"Invalid region: begin has to be smaller than end."#
-    );
-    Ok((chrom.to_string(), start, end))
 }
 
 /// Get the phase of a read by parsing the HP tag
