@@ -17,8 +17,8 @@ fn std_deviation_and_mean(data: &Vec<f32>) -> (f32, f32) {
     (data_mean, variance.sqrt())
 }
 
-pub fn outlier(combined: PathBuf) {
-    let file = reader(&combined.into_os_string().into_string().unwrap());
+pub fn outlier(combined: PathBuf, minsize: u32) {
+    let file = crate::utils::reader(&combined.into_os_string().into_string().unwrap());
     let mut lines = file.lines();
     let line = lines.next().unwrap().unwrap();
     println!("chrom\tbegin\tend\toutliers");
@@ -34,6 +34,14 @@ pub fn outlier(combined: PathBuf) {
             .skip(3)
             .map(|number| number.parse().unwrap())
             .collect();
+        if values
+            .iter()
+            .max_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Less))
+            .unwrap()
+            < &(minsize as f32)
+        {
+            continue;
+        }
         // calculate mean and std deviation of the STR lengths
         let (values_mean, values_std_dev) = std_deviation_and_mean(&values);
         // calculate the zscore for each haplotype and get the haplotype identifier based on the index if larger zscore > 3.0

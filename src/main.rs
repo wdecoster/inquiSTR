@@ -65,6 +65,11 @@ enum Commands {
         /// combined file of calls
         #[clap(parse(from_os_str), required = true, validator=is_file)]
         combined: PathBuf,
+
+        /// minimal length of expansion to be present in cohort
+        #[clap(short, long, value_parser, default_value_t = 10)]
+        minsize: u32,
+    },
     /// Lookup genotypes and display
     Query {
         /// combined file of calls
@@ -107,6 +112,8 @@ fn main() {
         Commands::Scan {} => {
             unimplemented!();
         }
+        Commands::Outlier { combined, minsize } => {
+            outlier::outlier(combined, minsize);
         }
         Commands::Query { combined, region } => {
             query::query(combined, region);
