@@ -6,6 +6,7 @@ use std::path::PathBuf;
 pub mod call;
 pub mod combine;
 pub mod outlier;
+pub mod query;
 pub mod utils;
 
 // The arguments end up in the Cli struct
@@ -64,6 +65,15 @@ enum Commands {
         /// combined file of calls
         #[clap(parse(from_os_str), required = true, validator=is_file)]
         combined: PathBuf,
+    /// Lookup genotypes and display
+    Query {
+        /// combined file of calls
+        #[clap(parse(from_os_str), required = true, validator=is_file)]
+        combined: PathBuf,
+
+        /// region to query
+        #[clap(required = true)]
+        region: String,
     },
     /// Test for association of repeat length by comparing two cohorts
     Association {},
@@ -97,8 +107,9 @@ fn main() {
         Commands::Scan {} => {
             unimplemented!();
         }
-        Commands::Outlier { combined } => {
-            outlier::outlier(combined);
+        }
+        Commands::Query { combined, region } => {
+            query::query(combined, region);
         }
         Commands::Association {} => {
             unimplemented!();
