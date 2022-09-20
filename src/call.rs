@@ -324,18 +324,18 @@ fn call_from_cigar(r: Rc<bam::Record>, minlen: u32, start: u32, end: u32) -> i64
             }
             Cigar::Del(len) => {
                 if *len > minlen && start < reference_position && reference_position < end {
-                    call -= *len as i64;
+                    call -= i64::from(*len);
                 }
                 reference_position += *len;
             }
             Cigar::SoftClip(len) => {
                 if *len > minlen && start < reference_position && reference_position < end {
-                    call += *len as i64;
+                    call += i64::from(*len);
                 }
             }
             Cigar::Ins(len) => {
                 if *len > minlen && start < reference_position && reference_position < end {
-                    call += *len as i64;
+                    call += i64::from(*len);
                 }
             }
             Cigar::RefSkip(len) => reference_position += *len,
