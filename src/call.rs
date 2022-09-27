@@ -209,7 +209,8 @@ fn genotype_repeat(
             panic!();
         }
     };
-
+    let start = start - 10;
+    let end = end + 10;
     info!("Checks passed, genotyping repeat");
     if unphased {
         genotype_repeat_unphased(bam, chrom, start, end, minlen, support)
