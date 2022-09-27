@@ -22,9 +22,17 @@ pub fn query(combined: PathBuf, region: String) {
                 let values = splitline
                     .iter()
                     .skip(3)
-                    .map(|number| number.parse::<f64>().expect("Failed parsing lengths") as i64);
+                    .map(|number| number.parse::<f64>().expect("Failed parsing lengths"));
                 let mut zipped = samples.zip(values).into_iter().collect::<Vec<_>>();
-                zipped.sort_by_key(|&(_, val)| -val);
+                zipped.sort_by_key(
+                    |&(_, val)| {
+                        if !val.is_nan() {
+                            -val as i64
+                        } else {
+                            i64::MAX
+                        }
+                    },
+                );
                 for (name, val) in zipped {
                     println!("{name}\t{val}");
                 }
