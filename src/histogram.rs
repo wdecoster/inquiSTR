@@ -23,7 +23,9 @@ pub fn histogram(combined: PathBuf, region: String) {
                     .skip(3)
                     .map(|number| number.parse::<f64>().expect("Failed parsing lengths"))
                 {
-                    histogram.add(value);
+                    if !value.is_nan() {
+                        histogram.add(value);
+                    }
                 }
                 println!("{}", histogram);
                 break;
