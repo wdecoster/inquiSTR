@@ -66,7 +66,6 @@ impl fmt::Display for Genotype {
 /// This function genotypes STRs, either from a region string or from a bed file
 /// For a bed file the genotyping is done in parallel
 /// The minlen argument indicates the smallest CIGAR operation that is considered
-/// Wobble extents the interval to make sure INDEL operations at the borders aren't missed
 pub fn genotype_repeats(
     bamp: PathBuf,
     region: Option<String>,
