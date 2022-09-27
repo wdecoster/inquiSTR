@@ -5,6 +5,7 @@ use std::path::PathBuf;
 
 pub mod call;
 pub mod combine;
+pub mod histogram;
 pub mod outlier;
 pub mod query;
 pub mod utils;
@@ -84,6 +85,15 @@ enum Commands {
         #[clap(required = true)]
         region: String,
     },
+    Histogram {
+        /// combined file of calls
+        #[clap(parse(from_os_str), required = true, validator=is_file)]
+        combined: PathBuf,
+
+        /// region to query
+        #[clap(required = true)]
+        region: String,
+    },
     /// Test for association of repeat length by comparing two cohorts
     Association {},
 }
@@ -122,6 +132,9 @@ fn main() {
         }
         Commands::Query { combined, region } => {
             query::query(combined, region);
+        }
+        Commands::Histogram { combined, region } => {
+            histogram::histogram(combined, region);
         }
         Commands::Association {} => {
             unimplemented!();
