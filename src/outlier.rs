@@ -17,7 +17,7 @@ fn std_deviation_and_mean(data: &Vec<f32>) -> (f32, f32) {
     (data_mean, variance.sqrt())
 }
 
-pub fn outlier(combined: PathBuf, minsize: u32) {
+pub fn outlier(combined: PathBuf, minsize: u32, zscore_cutoff: f32) {
     let file = crate::utils::reader(&combined.into_os_string().into_string().unwrap());
     let mut lines = file.lines();
     let line = lines.next().unwrap().unwrap();
@@ -48,7 +48,7 @@ pub fn outlier(combined: PathBuf, minsize: u32) {
         let expanded = values
             .iter()
             .enumerate()
-            .filter(|(_, &value)| ((value - values_mean) / values_std_dev) > 3.0)
+            .filter(|(_, &value)| ((value - values_mean) / values_std_dev) > zscore_cutoff)
             .map(|(index, _)| samples[index])
             .collect::<Vec<&str>>();
         if !expanded.is_empty() {

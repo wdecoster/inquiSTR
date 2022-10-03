@@ -74,6 +74,10 @@ enum Commands {
         /// minimal length of expansion to be present in cohort
         #[clap(short, long, value_parser, default_value_t = 10)]
         minsize: u32,
+
+        /// zscore cutoff to decide if a value is an outlier
+        #[clap(short, long, value_parser, default_value_t = 3.0)]
+        zscore: f32,
     },
     /// Lookup genotypes and display
     Query {
@@ -127,8 +131,12 @@ fn main() {
         Commands::Scan {} => {
             unimplemented!();
         }
-        Commands::Outlier { combined, minsize } => {
-            outlier::outlier(combined, minsize);
+        Commands::Outlier {
+            combined,
+            minsize,
+            zscore,
+        } => {
+            outlier::outlier(combined, minsize, zscore);
         }
         Commands::Query { combined, region } => {
             query::query(combined, region);
