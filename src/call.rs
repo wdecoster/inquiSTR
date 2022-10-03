@@ -1,10 +1,11 @@
 use bio::io::bed;
 use human_sort::compare as human_compare;
-use log::{error, info};
+use log::{error, info, warn};
 use rayon::prelude::*;
 use rust_htslib::bam::ext::BamRecordExtensions;
 use rust_htslib::bam::record::{Aux, Cigar};
 use rust_htslib::{bam, bam::Read};
+use std::cmp::max;
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::f64::NAN;
@@ -132,13 +133,13 @@ pub fn genotype_repeats(
                             let mut geno = genotypes.lock().unwrap();
                             geno.push(output);
                         }
-                        Err(chrom) => {
-                            // For now the Err is only used for when a chromosome from the bed file does not appear in the bam file
-                            // this error is reported once per chromosome
+                        Err(locus) => {
+                            // For now the Err is only used for when a chromosome or (extended) interval from the bed file does not appear in the bam file
+                            // this error is reported once per locus
                             let mut chroms_reported = chrom_reported.lock().unwrap();
-                            if !chroms_reported.contains(&chrom) {
-                                error!("Contig {chrom} not found in bam file");
-                                chroms_reported.push(chrom);
+                            if !chroms_reported.contains(&locus) {
+                                warn!("{locus} not found in bam file");
+                                chroms_reported.push(locus);
                             }
                         }
                     };
@@ -175,12 +176,12 @@ pub fn genotype_repeats(
                         Ok(output) => {
                             println!("{}", output);
                         }
-                        Err(chrom) => {
-                            // For now the Err is only used for when a chromosome from the bed file does not appear in the bam file
-                            // this error is reported once per chromosome
-                            if !chrom_reported.contains(&chrom) {
-                                error!("Contig {chrom} not found in bam file");
-                                chrom_reported.push(chrom);
+                        Err(locus) => {
+                            // For now the Err is only used for when a chromosome or (extended) interval from the bed file does not appear in the bam file
+                            // this error is reported once per locus
+                            if !chrom_reported.contains(&locus) {
+                                warn!("{locus} not found in bam file");
+                                chrom_reported.push(locus);
                             }
                         }
                     };
@@ -209,7 +210,7 @@ fn genotype_repeat(
             panic!();
         }
     };
-    let start = start - 10;
+    let start = max(start - 10, 0);
     let end = end + 10;
     info!("Checks passed, genotyping repeat");
     if unphased {
@@ -271,7 +272,11 @@ fn genotype_repeat_phased(
     support: usize,
 ) -> Result<Genotype, String> {
     if let Some(tid) = bam.header().tid(chrom.as_bytes()) {
-        bam.fetch((tid, start, end)).unwrap();
+        match bam.fetch((tid, start, end)) {
+            Ok(_b) => (),
+            Err(e) => return Err(e.to_string()),
+        };
+
         // Per haplotype the difference with the reference genome is kept in a dictionary
         let mut calls: HashMap<u8, Vec<i64>> =
             HashMap::from([(1, Vec::new()), (2, Vec::new()), (0, Vec::new())]);
