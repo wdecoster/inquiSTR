@@ -64,6 +64,12 @@ impl fmt::Display for Genotype {
     }
 }
 
+#[derive(Clone)]
+enum Call {
+    Span(i64),
+    Clip(i64),
+}
+
 /// This function genotypes STRs, either from a region string or from a bed file
 /// For a bed file the genotyping is done in parallel
 /// The minlen argument indicates the smallest CIGAR operation that is considered
@@ -255,7 +261,7 @@ fn genotype_repeat_unphased(
             end,
             phase1: 0.0,
             phase2: 0.0,
-            unphased: median_str_length(&mut calls.clone(), support),
+            unphased: median_str_length(&calls.clone(), support),
         };
         Ok(output)
     } else {
@@ -278,7 +284,7 @@ fn genotype_repeat_phased(
         };
 
         // Per haplotype the difference with the reference genome is kept in a dictionary
-        let mut calls: HashMap<u8, Vec<i64>> =
+        let mut calls: HashMap<u8, Vec<Call>> =
             HashMap::from([(1, Vec::new()), (2, Vec::new()), (0, Vec::new())]);
 
         // CIGAR operations are assessed per read
@@ -308,8 +314,8 @@ fn genotype_repeat_phased(
             chrom,
             start,
             end,
-            phase1: median_str_length(&mut calls[&1].clone(), support),
-            phase2: median_str_length(&mut calls[&2].clone(), support),
+            phase1: median_str_length(&calls[&1].clone(), support),
+            phase2: median_str_length(&calls[&2].clone(), support),
             unphased: 0.0,
         };
         Ok(output)
@@ -318,10 +324,11 @@ fn genotype_repeat_phased(
     }
 }
 
-fn call_from_cigar(r: Rc<bam::Record>, minlen: u32, start: u32, end: u32) -> i64 {
+fn call_from_cigar(r: Rc<bam::Record>, minlen: u32, start: u32, end: u32) -> Call {
     let mut call: i64 = 0;
     // move the cursor for the reference position for all cigar operations that consume the reference
     let mut reference_position = (r.reference_start() + 1) as u32;
+    let mut clipped = false;
     for entry in r.cigar().iter() {
         match entry {
             Cigar::Match(len) | Cigar::Equal(len) | Cigar::Diff(len) => {
@@ -336,6 +343,7 @@ fn call_from_cigar(r: Rc<bam::Record>, minlen: u32, start: u32, end: u32) -> i64
             Cigar::SoftClip(len) => {
                 if *len > minlen && start < reference_position && reference_position < end {
                     call += i64::from(*len);
+                    clipped = true
                 }
             }
             Cigar::Ins(len) => {
@@ -347,7 +355,11 @@ fn call_from_cigar(r: Rc<bam::Record>, minlen: u32, start: u32, end: u32) -> i64
             _ => (),
         }
     }
-    call
+    if clipped {
+        Call::Clip(call)
+    } else {
+        Call::Span(call)
+    }
 }
 
 /// Get the phase of a read by parsing the HP tag
@@ -367,18 +379,33 @@ fn get_phase(record: &bam::Record) -> u8 {
 }
 
 /// Take the median of the lengths of the STRs, relative to the reference genome
-/// If the vector has fewer than two calls then return NAN
-fn median_str_length(array: &mut Vec<i64>, support: usize) -> f64 {
-    if array.len() < support {
+/// If the vector has fewer than <support> calls then return NAN
+/// Spanning reads have the preference, so if more than <support> spanning reads are present the median is calculated for those
+/// Otherwise, the longest softclipped reads are added up to <support> reads
+fn median_str_length(array: &Vec<Call>, support: usize) -> f64 {
+    if array.len() <= support {
         return NAN;
     }
-    array.sort_unstable();
-    if (array.len() % 2) == 0 {
-        let ind_left = array.len() / 2 - 1;
-        let ind_right = array.len() / 2;
-        (array[ind_left] + array[ind_right]) as f64 / 2.0
+    let mut spanning = vec![];
+    let mut clipped = vec![];
+    for a in array {
+        match a {
+            Call::Span(v) => spanning.push(*v),
+            Call::Clip(v) => clipped.push(*v),
+        };
+    }
+    if spanning.len() <= support {
+        // Sort clipped from large to small to the largest clips
+        clipped.sort_unstable_by_key(|k| -k);
+        spanning.extend(&clipped[0..support - spanning.len()]);
+    }
+    spanning.sort_unstable();
+    if (spanning.len() % 2) == 0 {
+        let ind_left = spanning.len() / 2 - 1;
+        let ind_right = spanning.len() / 2;
+        (spanning[ind_left] + spanning[ind_right]) as f64 / 2.0
     } else {
-        array[(array.len() / 2)] as f64
+        spanning[(spanning.len() / 2)] as f64
     }
 }
 
