@@ -1,5 +1,8 @@
 use bio::io::bed;
 use human_sort::compare as human_compare;
+use indicatif::ParallelProgressIterator;
+use indicatif::ProgressIterator;
+use linecount::count_lines;
 use log::{error, info, warn};
 use rayon::prelude::*;
 use rust_htslib::bam::ext::BamRecordExtensions;
@@ -113,9 +116,7 @@ pub fn genotype_repeats(
                     .build()
                     .unwrap();
                 // TODO: check if bed file is okay
-                let mut reader =
-                    bed::Reader::from_file(region_file.into_os_string().into_string().unwrap())
-                        .unwrap();
+                let mut reader = bed::Reader::from_file(region_file.clone()).unwrap();
                 let bamf = bamp.into_os_string().into_string().unwrap();
                 // chrom_reported and genotypes are vectors that are used by multiple threads to add findings, therefore as a Mutex
                 // chrom_reported contains those chromosomes for which an error (absence in the bam) was already reported
@@ -124,32 +125,37 @@ pub fn genotype_repeats(
                 // genotypes contains the output of the genotyping, a struct instance
                 let genotypes = Mutex::new(Vec::new());
                 // par_bridge does not guarantee that results are returned in order
-                reader.records().par_bridge().for_each(|record| {
-                    let rec = record.expect("Error reading bed record.");
-                    match genotype_repeat(
-                        &bamf,
-                        rec.chrom().to_string(),
-                        rec.start().try_into().unwrap(),
-                        rec.end().try_into().unwrap(),
-                        minlen,
-                        support,
-                        unphased,
-                    ) {
-                        Ok(output) => {
-                            let mut geno = genotypes.lock().unwrap();
-                            geno.push(output);
-                        }
-                        Err(locus) => {
-                            // For now the Err is only used for when a chromosome or (extended) interval from the bed file does not appear in the bam file
-                            // this error is reported once per locus
-                            let mut chroms_reported = chrom_reported.lock().unwrap();
-                            if !chroms_reported.contains(&locus) {
-                                warn!("{locus} not found in bam file");
-                                chroms_reported.push(locus);
+                let lines: usize = count_lines(std::fs::File::open(region_file).unwrap()).unwrap();
+                reader
+                    .records()
+                    .par_bridge()
+                    .progress_count(lines as u64)
+                    .for_each(|record| {
+                        let rec = record.expect("Error reading bed record.");
+                        match genotype_repeat(
+                            &bamf,
+                            rec.chrom().to_string(),
+                            rec.start().try_into().unwrap(),
+                            rec.end().try_into().unwrap(),
+                            minlen,
+                            support,
+                            unphased,
+                        ) {
+                            Ok(output) => {
+                                let mut geno = genotypes.lock().unwrap();
+                                geno.push(output);
                             }
-                        }
-                    };
-                });
+                            Err(locus) => {
+                                // For now the Err is only used for when a chromosome or (extended) interval from the bed file does not appear in the bam file
+                                // this error is reported once per locus
+                                let mut chroms_reported = chrom_reported.lock().unwrap();
+                                if !chroms_reported.contains(&locus) {
+                                    warn!("{locus} not found in bam file");
+                                    chroms_reported.push(locus);
+                                }
+                            }
+                        };
+                    });
                 let mut genotypes_vec = genotypes.lock().unwrap();
                 // The final output is sorted by chrom, start and end
                 genotypes_vec.sort_unstable();
@@ -160,15 +166,14 @@ pub fn genotype_repeats(
                 // When running single threaded things become easier and the tool will require less memory
                 // Output is returned in the same order as the bed, and therefore not sorted before writing to stdout
                 // TODO: check if bed file is okay
-                let mut reader =
-                    bed::Reader::from_file(region_file.into_os_string().into_string().unwrap())
-                        .unwrap();
+                let mut reader = bed::Reader::from_file(region_file.clone()).unwrap();
                 let bamf = bamp.into_os_string().into_string().unwrap();
                 // chrom_reported contains those chromosomes for which an error (absence in the bam) was already reported
                 // to avoid reporting the same error multiple times
                 let mut chrom_reported = Vec::new();
                 // genotypes contains the output of the genotyping, a struct instance
-                for record in reader.records() {
+                let lines: usize = count_lines(std::fs::File::open(region_file).unwrap()).unwrap();
+                for record in reader.records().progress_count(lines as u64) {
                     let rec = record.expect("Error reading bed record.");
                     match genotype_repeat(
                         &bamf,
