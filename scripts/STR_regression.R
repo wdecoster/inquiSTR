@@ -26,9 +26,7 @@ print(Version)
 
 calls_file <- fread(arg$input, header = TRUE)
 
-chr_to_analyze <- arg$chr
-
-calls_file <- subset(calls_file, chrom == chr_to_analyze)
+calls_file <- subset(calls_file, chrom == arg$chr)
 
 first_3col <- calls_file[, c(1:3)]
 
@@ -60,842 +58,159 @@ sample_list_wPheno <- left_join(sample_list, phenocovar, by = "sample_id")
 
 outputname <- arg$out
 
+prepare_calls <- function(inqH1, inqH2, strnames, sample_list_wPheno, mode) {
+    if (mode == "SUMinqH1H2") {
+        calls <- inqH1 + inqH2
+    } else if (mode == "MAXinqH1H2") {
+        calls <- pmax(inqH1, inqH2)
+    } else if (mode == "MINinqH1H2") {
+        calls <- pmin(inqH1, inqH2)
+    }
+    calls_file <- transpose(calls)
+    colnames(calls_file) <- strnames
+    calls_file <- cbind(sample_list_wPheno, calls_file)
+    calls_file <- calls_file[, which(unlist(lapply(calls_file, function(x) !all(is.na(x))))), with = F]
+    calls_file <- data.table(data.frame(calls_file)[, which(colMeans(!is.na(data.frame(calls_file))) >= arg$missing_cutoff)])
+    calls_file <- calls_file %>% select(where(~ n_distinct(., na.rm = TRUE) > 1))
+    return(calls_file)
+}
+
+calls_file <- prepare_calls(inqH1, inqH2, first_3col$STR_chr_begin_end, sample_list_wPheno, arg$mode)
+
 if (!is.na(arg$covnames)) {
     covlist <- gsub(",", " ", arg$covnames)
-
     covlist_prepared <- unlist(strsplit(covlist, split = " "))
-
-    if (arg$mode == "SUMinqH1H2") {
-        SUMinqH1H2 <- inqH1 + inqH2
-
-        SUMinqH1H2_calls_file <- transpose(SUMinqH1H2)
-
-        colnames(SUMinqH1H2_calls_file) <- first_3col$STR_chr_begin_end
-
-        SUMinqH1H2_calls_file <- cbind(sample_list_wPheno, SUMinqH1H2_calls_file)
-
-        SUMinqH1H2_calls_file <- SUMinqH1H2_calls_file[, which(unlist(lapply(SUMinqH1H2_calls_file, function(x) !all(is.na(x))))), with = F]
-
-        SUMinqH1H2_calls_file <- data.table(data.frame(SUMinqH1H2_calls_file)[, which(colMeans(!is.na(data.frame(SUMinqH1H2_calls_file))) >= arg$missing_cutoff)])
-
-        SUMinqH1H2_calls_file <- SUMinqH1H2_calls_file %>% select(where(~ n_distinct(., na.rm = TRUE) > 1))
-
-        if (arg$outcometype == "binary") {
-            binaryOrder <- gsub(",", " ", arg$binaryOrder)
-
-            binaryOrder_prepared <- unlist(strsplit(binaryOrder, split = " "))
-
-            SUMinqH1H2_calls_file[[phenotype]] <- factor(SUMinqH1H2_calls_file[[phenotype]], c(binaryOrder_prepared))
-
-            results_SUMinqH1H2_calls_file <- as.data.frame(matrix(0, 1, 11))
-
-            colnames(results_SUMinqH1H2_calls_file) <- c("VariantID", "OR", "OR_L95", "OR_U95", "OR_stdErr", "Pvalue", "N", "AvgSize", "Group1_AvgSize", "Group2_AvgSize", "model")
-
-            for (i in seq(no_cols, ncol(SUMinqH1H2_calls_file), 1)) {
-                VariantToBeTested <- as.character(colnames(SUMinqH1H2_calls_file)[i])
-
-                selectedtable <- as.data.table(cbind(as.character(SUMinqH1H2_calls_file[[phenotype]]), as.numeric(SUMinqH1H2_calls_file[[VariantToBeTested]])))
-
-                colnames(selectedtable) <- c(phenotype, VariantToBeTested)
-
-                group2 <- subset(selectedtable, selectedtable[[phenotype]] == binaryOrder_prepared[2])
-
-                group1 <- subset(selectedtable, selectedtable[[phenotype]] == binaryOrder_prepared[1])
-
-                AvgSize <- round(mean(as.numeric(selectedtable[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
-
-                Group2_AvgSize <- round(mean(as.numeric(group2[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
-
-                Group1_AvgSize <- round(mean(as.numeric(group1[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
-
-                formulax <- paste(phenotype, paste(c(VariantToBeTested, covlist_prepared), collapse = "+"), sep = "~")
-
-                glm_result <- glm(formula = formulax, data = SUMinqH1H2_calls_file, family = binomial(link = "logit"))
-
-                Predictors <- names(glm_result$coefficients)
-
-                VariantID <- names(glm_result$coefficients)[2]
-
-                OR <- round(as.numeric(exp(glm_result$coefficients)), digits = 3)
-
-                OR_L95 <- round(as.numeric(exp(confint.default(glm_result, level = 0.95)[, 1])), digits = 3)
-
-                OR_U95 <- round(as.numeric(exp(confint.default(glm_result, level = 0.95)[, 2])), digits = 3)
-
-                OR_stdErr <- round(as.numeric(coef(summary(glm_result))[, "Std. Error"]), digits = 3)
-
-                Pvalue <- as.numeric(coef(summary(glm_result))[, "Pr(>|z|)"])
-
-                N <- nobs(glm_result)
-
-                model <- as.character(glm_result$formula)[1]
-
-                tabular_result <- as.data.frame(cbind(Predictors, OR, OR_L95, OR_U95, OR_stdErr, Pvalue, N, AvgSize, Group1_AvgSize, Group2_AvgSize, model))
-
-                tabular_result <- subset(tabular_result, Predictors == VariantID)
-
-                colnames(tabular_result)[1] <- "VariantID"
-
-                results_SUMinqH1H2_calls_file <- rbind.data.frame(results_SUMinqH1H2_calls_file, tabular_result)
-            }
-
-            results_SUMinqH1H2_calls_file <- results_SUMinqH1H2_calls_file[-1, ]
-
-            sorted_results_SUMinqH1H2_calls_file <- results_SUMinqH1H2_calls_file[order(results_SUMinqH1H2_calls_file$Pvalue), ]
-
-            write.table(sorted_results_SUMinqH1H2_calls_file, outputname, sep = "\t", col.names = TRUE, quote = F, row.names = F)
-        } else if (arg$outcometype == "continuous") {
-            results_SUMinqH1H2_calls_file <- as.data.frame(matrix(0, 1, 11))
-
-            colnames(results_SUMinqH1H2_calls_file) <- c("VariantID", "Beta", "Beta_L95", "Beta_U95", "Beta_stdErr", "Pvalue", "N", "AvgSize", "MinSize", "MaxSize", "model")
-
-            for (i in seq(no_cols, ncol(SUMinqH1H2_calls_file), 1)) {
-                VariantToBeTested <- as.character(colnames(SUMinqH1H2_calls_file)[i])
-
-                selectedtable <- as.data.table(cbind(as.character(SUMinqH1H2_calls_file[[phenotype]]), as.numeric(SUMinqH1H2_calls_file[[VariantToBeTested]])))
-
-                colnames(selectedtable) <- c(phenotype, VariantToBeTested)
-
-                group2 <- subset(selectedtable, selectedtable[[phenotype]] == binaryOrder_prepared[2])
-
-                group1 <- subset(selectedtable, selectedtable[[phenotype]] == binaryOrder_prepared[1])
-
-                AvgSize <- round(mean(as.numeric(selectedtable[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
-
-                MaxSize <- round(max(as.numeric(group2[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
-
-                MinSize <- round(min(as.numeric(group1[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
-
-                formulax <- paste(phenotype, paste(c(VariantToBeTested, covlist_prepared), collapse = "+"), sep = "~")
-
-                glm_result <- glm(formula = formulax, data = SUMinqH1H2_calls_file, family = gaussian(link = "identity"))
-
-                Predictors <- names(glm_result$coefficients)
-
-                VariantID <- names(glm_result$coefficients)[2]
-
-                Beta <- round(as.numeric(exp(glm_result$coefficients)), digits = 3)
-
-                Beta_L95 <- round(as.numeric(exp(confint.default(glm_result, level = 0.95)[, 1])), digits = 3)
-
-                Beta_U95 <- round(as.numeric(exp(confint.default(glm_result, level = 0.95)[, 2])), digits = 3)
-
-                Beta_stdErr <- round(as.numeric(coef(summary(glm_result))[, "Std. Error"]), digits = 3)
-
-                Pvalue <- as.numeric(coef(summary(glm_result))[, "Pr(>|t|)"])
-
-                N <- nobs(glm_result)
-
-                model <- as.character(glm_result$formula)[1]
-
-                tabular_result <- as.data.frame(cbind(Predictors, Beta, Beta_L95, Beta_U95, Beta_stdErr, Pvalue, N, AvgSize, MinSize, MaxSize, model))
-
-                tabular_result <- subset(tabular_result, Predictors == VariantID)
-
-                colnames(tabular_result)[1] <- "VariantID"
-
-                results_SUMinqH1H2_calls_file <- rbind.data.frame(results_SUMinqH1H2_calls_file, tabular_result)
-            }
-
-            results_SUMinqH1H2_calls_file <- results_SUMinqH1H2_calls_file[-1, ]
-
-            sorted_results_SUMinqH1H2_calls_file <- results_SUMinqH1H2_calls_file[order(results_SUMinqH1H2_calls_file$Pvalue), ]
-
-            write.table(sorted_results_SUMinqH1H2_calls_file, outputname, sep = "\t", col.names = TRUE, quote = F, row.names = F)
+    if (arg$outcometype == "binary") {
+        binaryOrder <- gsub(",", " ", arg$binaryOrder)
+        binaryOrder_prepared <- unlist(strsplit(binaryOrder, split = " "))
+        calls_file[[phenotype]] <- factor(calls_file[[phenotype]], c(binaryOrder_prepared))
+        results_calls_file <- as.data.frame(matrix(0, 1, 11))
+        colnames(results_calls_file) <- c("VariantID", "OR", "OR_L95", "OR_U95", "OR_stdErr", "Pvalue", "N", "AvgSize", "Group1_AvgSize", "Group2_AvgSize", "model")
+        for (i in seq(no_cols, ncol(calls_file), 1)) {
+            VariantToBeTested <- as.character(colnames(calls_file)[i])
+            selectedtable <- as.data.table(cbind(as.character(calls_file[[phenotype]]), as.numeric(calls_file[[VariantToBeTested]])))
+            colnames(selectedtable) <- c(phenotype, VariantToBeTested)
+            group2 <- subset(selectedtable, selectedtable[[phenotype]] == binaryOrder_prepared[2])
+            group1 <- subset(selectedtable, selectedtable[[phenotype]] == binaryOrder_prepared[1])
+            AvgSize <- round(mean(as.numeric(selectedtable[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
+            Group2_AvgSize <- round(mean(as.numeric(group2[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
+            Group1_AvgSize <- round(mean(as.numeric(group1[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
+            formulax <- paste(phenotype, paste(c(VariantToBeTested, covlist_prepared), collapse = "+"), sep = "~")
+            glm_result <- glm(formula = formulax, data = SUMinqH1H2_calls_file, family = binomial(link = "logit"))
+            Predictors <- names(glm_result$coefficients)
+            VariantID <- names(glm_result$coefficients)[2]
+            OR <- round(as.numeric(exp(glm_result$coefficients)), digits = 3)
+            OR_L95 <- round(as.numeric(exp(confint.default(glm_result, level = 0.95)[, 1])), digits = 3)
+            OR_U95 <- round(as.numeric(exp(confint.default(glm_result, level = 0.95)[, 2])), digits = 3)
+            OR_stdErr <- round(as.numeric(coef(summary(glm_result))[, "Std. Error"]), digits = 3)
+            Pvalue <- as.numeric(coef(summary(glm_result))[, "Pr(>|z|)"])
+            N <- nobs(glm_result)
+            model <- as.character(glm_result$formula)[1]
+            tabular_result <- as.data.frame(cbind(Predictors, OR, OR_L95, OR_U95, OR_stdErr, Pvalue, N, AvgSize, Group1_AvgSize, Group2_AvgSize, model))
+            tabular_result <- subset(tabular_result, Predictors == VariantID)
+            colnames(tabular_result)[1] <- "VariantID"
+            results_calls_file <- rbind.data.frame(results_calls_file, tabular_result)
         }
-    } else if (arg$mode == "MAXinqH1H2") {
-        MAXinqH1H2 <- pmax(inqH1, inqH2)
-
-        MAXinqH1H2_calls_file <- transpose(MAXinqH1H2)
-
-        colnames(MAXinqH1H2_calls_file) <- first_3col$STR_chr_begin_end
-
-        MAXinqH1H2_calls_file <- cbind(sample_list_wPheno, MAXinqH1H2_calls_file)
-
-        MAXinqH1H2_calls_file <- MAXinqH1H2_calls_file[, which(unlist(lapply(MAXinqH1H2_calls_file, function(x) !all(is.na(x))))), with = F]
-
-        MAXinqH1H2_calls_file <- data.table(data.frame(MAXinqH1H2_calls_file)[, which(colMeans(!is.na(data.frame(MAXinqH1H2_calls_file))) >= arg$missing_cutoff)])
-
-        MAXinqH1H2_calls_file <- MAXinqH1H2_calls_file %>% select(where(~ n_distinct(., na.rm = TRUE) > 1))
-
-        if (arg$outcometype == "binary") {
-            binaryOrder <- gsub(",", " ", arg$binaryOrder)
-
-            binaryOrder_prepared <- unlist(strsplit(binaryOrder, split = " "))
-
-            MAXinqH1H2_calls_file[[phenotype]] <- factor(MAXinqH1H2_calls_file[[phenotype]], c(binaryOrder_prepared))
-
-            results_MAXinqH1H2_calls_file <- as.data.frame(matrix(0, 1, 11))
-
-            colnames(results_MAXinqH1H2_calls_file) <- c("VariantID", "OR", "OR_L95", "OR_U95", "OR_stdErr", "Pvalue", "N", "AvgSize", "Group1_AvgSize", "Group2_AvgSize", "model")
-
-            for (i in seq(no_cols, ncol(MAXinqH1H2_calls_file), 1)) {
-                VariantToBeTested <- as.character(colnames(MAXinqH1H2_calls_file)[i])
-
-                selectedtable <- as.data.table(cbind(as.character(MAXinqH1H2_calls_file[[phenotype]]), as.numeric(MAXinqH1H2_calls_file[[VariantToBeTested]])))
-
-                colnames(selectedtable) <- c(phenotype, VariantToBeTested)
-
-                group2 <- subset(selectedtable, selectedtable[[phenotype]] == binaryOrder_prepared[2])
-
-                group1 <- subset(selectedtable, selectedtable[[phenotype]] == binaryOrder_prepared[1])
-
-                AvgSize <- round(mean(as.numeric(selectedtable[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
-
-                Group2_AvgSize <- round(mean(as.numeric(group2[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
-
-                Group1_AvgSize <- round(mean(as.numeric(group1[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
-
-                formulax <- paste(phenotype, paste(c(VariantToBeTested, covlist_prepared), collapse = "+"), sep = "~")
-
-                glm_result <- glm(formula = formulax, data = MAXinqH1H2_calls_file, family = binomial(link = "logit"))
-
-                Predictors <- names(glm_result$coefficients)
-
-                VariantID <- names(glm_result$coefficients)[2]
-
-                OR <- round(as.numeric(exp(glm_result$coefficients)), digits = 3)
-
-                OR_L95 <- round(as.numeric(exp(confint.default(glm_result, level = 0.95)[, 1])), digits = 3)
-
-                OR_U95 <- round(as.numeric(exp(confint.default(glm_result, level = 0.95)[, 2])), digits = 3)
-
-                OR_stdErr <- round(as.numeric(coef(summary(glm_result))[, "Std. Error"]), digits = 3)
-
-                Pvalue <- as.numeric(coef(summary(glm_result))[, "Pr(>|z|)"])
-
-                N <- nobs(glm_result)
-
-                model <- as.character(glm_result$formula)[1]
-
-                tabular_result <- as.data.frame(cbind(Predictors, OR, OR_L95, OR_U95, OR_stdErr, Pvalue, N, AvgSize, Group1_AvgSize, Group2_AvgSize, model))
-
-                tabular_result <- subset(tabular_result, Predictors == VariantID)
-
-                colnames(tabular_result)[1] <- "VariantID"
-
-                results_MAXinqH1H2_calls_file <- rbind.data.frame(results_MAXinqH1H2_calls_file, tabular_result)
-            }
-
-            results_MAXinqH1H2_calls_file <- results_MAXinqH1H2_calls_file[-1, ]
-
-            sorted_results_MAXinqH1H2_calls_file <- results_MAXinqH1H2_calls_file[order(results_MAXinqH1H2_calls_file$Pvalue), ]
-
-            write.table(sorted_results_MAXinqH1H2_calls_file, outputname, sep = "\t", col.names = TRUE, quote = F, row.names = F)
-        } else if (arg$outcometype == "continuous") {
-            results_MAXinqH1H2_calls_file <- as.data.frame(matrix(0, 1, 11))
-
-            colnames(results_MAXinqH1H2_calls_file) <- c("VariantID", "Beta", "Beta_L95", "Beta_U95", "Beta_stdErr", "Pvalue", "N", "AvgSize", "MinSize", "MaxSize", "model")
-
-            binaryOrder_prepared <- unlist(strsplit(binaryOrder, split = " "))
-
-            for (i in seq(no_cols, ncol(MAXinqH1H2_calls_file), 1)) {
-                VariantToBeTested <- as.character(colnames(MAXinqH1H2_calls_file)[i])
-
-                selectedtable <- as.data.table(cbind(as.character(MAXinqH1H2_calls_file[[phenotype]]), as.numeric(MAXinqH1H2_calls_file[[VariantToBeTested]])))
-
-                colnames(selectedtable) <- c(phenotype, VariantToBeTested)
-
-                group2 <- subset(selectedtable, selectedtable[[phenotype]] == binaryOrder_prepared[2])
-
-                group1 <- subset(selectedtable, selectedtable[[phenotype]] == binaryOrder_prepared[1])
-
-                AvgSize <- round(mean(as.numeric(selectedtable[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
-
-                MaxSize <- round(max(as.numeric(group2[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
-
-                MinSize <- round(min(as.numeric(group1[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
-
-                formulax <- paste(phenotype, paste(c(VariantToBeTested, covlist_prepared), collapse = "+"), sep = "~")
-
-                glm_result <- glm(formula = formulax, data = MAXinqH1H2_calls_file, family = gaussian(link = "identity"))
-
-                Predictors <- names(glm_result$coefficients)
-
-                VariantID <- names(glm_result$coefficients)[2]
-
-                Beta <- round(as.numeric(exp(glm_result$coefficients)), digits = 3)
-
-                Beta_L95 <- round(as.numeric(exp(confint.default(glm_result, level = 0.95)[, 1])), digits = 3)
-
-                Beta_U95 <- round(as.numeric(exp(confint.default(glm_result, level = 0.95)[, 2])), digits = 3)
-
-                Beta_stdErr <- round(as.numeric(coef(summary(glm_result))[, "Std. Error"]), digits = 3)
-
-                Pvalue <- as.numeric(coef(summary(glm_result))[, "Pr(>|t|)"])
-
-                N <- nobs(glm_result)
-
-                model <- as.character(glm_result$formula)[1]
-
-                tabular_result <- as.data.frame(cbind(Predictors, Beta, Beta_L95, Beta_U95, Beta_stdErr, Pvalue, N, AvgSize, MinSize, MaxSize, model))
-
-                tabular_result <- subset(tabular_result, Predictors == VariantID)
-
-                colnames(tabular_result)[1] <- "VariantID"
-
-                results_MAXinqH1H2_calls_file <- rbind.data.frame(results_MAXinqH1H2_calls_file, tabular_result)
-            }
-
-            results_MAXinqH1H2_calls_file <- results_MAXinqH1H2_calls_file[-1, ]
-
-            sorted_results_MAXinqH1H2_calls_file <- results_MAXinqH1H2_calls_file[order(results_MAXinqH1H2_calls_file$Pvalue), ]
-
-            write.table(sorted_results_MAXinqH1H2_calls_file, outputname, sep = "\t", col.names = TRUE, quote = F, row.names = F)
+        results_calls_file <- results_calls_file[-1, ]
+        sorted_results_calls_file <- results_calls_file[order(results_calls_file$Pvalue), ]
+        write.table(sorted_results_calls_file, outputname, sep = "\t", col.names = TRUE, quote = F, row.names = F)
+    } else if (arg$outcometype == "continuous") {
+        results_calls_file <- as.data.frame(matrix(0, 1, 11))
+        colnames(results_calls_file) <- c("VariantID", "Beta", "Beta_L95", "Beta_U95", "Beta_stdErr", "Pvalue", "N", "AvgSize", "MinSize", "MaxSize", "model")
+        for (i in seq(no_cols, ncol(calls_file), 1)) {
+            VariantToBeTested <- as.character(colnames(calls_file)[i])
+            selectedtable <- as.data.table(cbind(as.character(calls_file[[phenotype]]), as.numeric(calls_file[[VariantToBeTested]])))
+            colnames(selectedtable) <- c(phenotype, VariantToBeTested)
+            group2 <- subset(selectedtable, selectedtable[[phenotype]] == binaryOrder_prepared[2])
+            group1 <- subset(selectedtable, selectedtable[[phenotype]] == binaryOrder_prepared[1])
+            AvgSize <- round(mean(as.numeric(selectedtable[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
+            MaxSize <- round(max(as.numeric(group2[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
+            MinSize <- round(min(as.numeric(group1[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
+            formulax <- paste(phenotype, paste(c(VariantToBeTested, covlist_prepared), collapse = "+"), sep = "~")
+            glm_result <- glm(formula = formulax, data = SUMinqH1H2_calls_file, family = gaussian(link = "identity"))
+            Predictors <- names(glm_result$coefficients)
+            VariantID <- names(glm_result$coefficients)[2]
+            Beta <- round(as.numeric(exp(glm_result$coefficients)), digits = 3)
+            Beta_L95 <- round(as.numeric(exp(confint.default(glm_result, level = 0.95)[, 1])), digits = 3)
+            Beta_U95 <- round(as.numeric(exp(confint.default(glm_result, level = 0.95)[, 2])), digits = 3)
+            Beta_stdErr <- round(as.numeric(coef(summary(glm_result))[, "Std. Error"]), digits = 3)
+            Pvalue <- as.numeric(coef(summary(glm_result))[, "Pr(>|t|)"])
+            N <- nobs(glm_result)
+            model <- as.character(glm_result$formula)[1]
+            tabular_result <- as.data.frame(cbind(Predictors, Beta, Beta_L95, Beta_U95, Beta_stdErr, Pvalue, N, AvgSize, MinSize, MaxSize, model))
+            tabular_result <- subset(tabular_result, Predictors == VariantID)
+            colnames(tabular_result)[1] <- "VariantID"
+            results_calls_file <- rbind.data.frame(results_calls_file, tabular_result)
         }
-    } else if (arg$mode == "MINinqH1H2") {
-        MINinqH1H2 <- pmin(inqH1, inqH2)
-
-        MINinqH1H2_calls_file <- transpose(MINinqH1H2)
-
-        colnames(MINinqH1H2_calls_file) <- first_3col$STR_chr_begin_end
-
-        MINinqH1H2_calls_file <- cbind(sample_list_wPheno, MINinqH1H2_calls_file)
-
-        MINinqH1H2_calls_file <- MINinqH1H2_calls_file[, which(unlist(lapply(MINinqH1H2_calls_file, function(x) !all(is.na(x))))), with = F]
-
-        MINinqH1H2_calls_file <- data.table(data.frame(MINinqH1H2_calls_file)[, which(colMeans(!is.na(data.frame(MINinqH1H2_calls_file))) >= arg$missing_cutoff)])
-
-        MINinqH1H2_calls_file <- MINinqH1H2_calls_file %>% select(where(~ n_distinct(., na.rm = TRUE) > 1))
-
-        if (arg$outcometype == "binary") {
-            binaryOrder <- gsub(",", " ", arg$binaryOrder)
-
-            binaryOrder_prepared <- unlist(strsplit(binaryOrder, split = " "))
-
-            MINinqH1H2_calls_file[[phenotype]] <- factor(MINinqH1H2_calls_file[[phenotype]], c(binaryOrder_prepared))
-
-            results_MINinqH1H2_calls_file <- as.data.frame(matrix(0, 1, 11))
-
-            colnames(results_MINinqH1H2_calls_file) <- c("VariantID", "OR", "OR_L95", "OR_U95", "OR_stdErr", "Pvalue", "N", "AvgSize", "Group1_AvgSize", "Group2_AvgSize", "model")
-
-            for (i in seq(no_cols, ncol(MINinqH1H2_calls_file), 1)) {
-                VariantToBeTested <- as.character(colnames(MINinqH1H2_calls_file)[i])
-
-                selectedtable <- as.data.table(cbind(as.character(MINinqH1H2_calls_file[[phenotype]]), as.numeric(MINinqH1H2_calls_file[[VariantToBeTested]])))
-
-                colnames(selectedtable) <- c(phenotype, VariantToBeTested)
-
-                group2 <- subset(selectedtable, selectedtable[[phenotype]] == binaryOrder_prepared[2])
-
-                group1 <- subset(selectedtable, selectedtable[[phenotype]] == binaryOrder_prepared[1])
-
-                AvgSize <- round(mean(as.numeric(selectedtable[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
-
-                Group2_AvgSize <- round(mean(as.numeric(group2[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
-
-                Group1_AvgSize <- round(mean(as.numeric(group1[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
-
-                formulax <- paste(phenotype, paste(c(VariantToBeTested, covlist_prepared), collapse = "+"), sep = "~")
-
-                glm_result <- glm(formula = formulax, data = MINinqH1H2_calls_file, family = binomial(link = "logit"))
-
-                Predictors <- names(glm_result$coefficients)
-
-                VariantID <- names(glm_result$coefficients)[2]
-
-                OR <- round(as.numeric(exp(glm_result$coefficients)), digits = 3)
-
-                OR_L95 <- round(as.numeric(exp(confint.default(glm_result, level = 0.95)[, 1])), digits = 3)
-
-                OR_U95 <- round(as.numeric(exp(confint.default(glm_result, level = 0.95)[, 2])), digits = 3)
-
-                OR_stdErr <- round(as.numeric(coef(summary(glm_result))[, "Std. Error"]), digits = 3)
-
-                Pvalue <- as.numeric(coef(summary(glm_result))[, "Pr(>|z|)"])
-
-                N <- nobs(glm_result)
-
-                model <- as.character(glm_result$formula)[1]
-
-                tabular_result <- as.data.frame(cbind(Predictors, OR, OR_L95, OR_U95, OR_stdErr, Pvalue, N, AvgSize, Group1_AvgSize, Group2_AvgSize, model))
-
-                tabular_result <- subset(tabular_result, Predictors == VariantID)
-
-                colnames(tabular_result)[1] <- "VariantID"
-
-                results_MINinqH1H2_calls_file <- rbind.data.frame(results_MINinqH1H2_calls_file, tabular_result)
-            }
-
-            results_MINinqH1H2_calls_file <- results_MINinqH1H2_calls_file[-1, ]
-
-            sorted_results_MINinqH1H2_calls_file <- results_MINinqH1H2_calls_file[order(results_MINinqH1H2_calls_file$Pvalue), ]
-
-            write.table(sorted_results_MINinqH1H2_calls_file, outputname, sep = "\t", col.names = TRUE, quote = F, row.names = F)
-        } else if (arg$outcometype == "continuous") {
-            results_MINinqH1H2_calls_file <- as.data.frame(matrix(0, 1, 11))
-
-            colnames(results_MINinqH1H2_calls_file) <- c("VariantID", "Beta", "Beta_L95", "Beta_U95", "Beta_stdErr", "Pvalue", "N", "AvgSize", "MinSize", "MaxSize", "model")
-
-            for (i in seq(no_cols, ncol(MINinqH1H2_calls_file), 1)) {
-                VariantToBeTested <- as.character(colnames(MINinqH1H2_calls_file)[i])
-
-                selectedtable <- as.data.table(cbind(as.character(MINinqH1H2_calls_file[[phenotype]]), as.numeric(MINinqH1H2_calls_file[[VariantToBeTested]])))
-
-                colnames(selectedtable) <- c(phenotype, VariantToBeTested)
-
-                group2 <- subset(selectedtable, selectedtable[[phenotype]] == binaryOrder_prepared[2])
-
-                group1 <- subset(selectedtable, selectedtable[[phenotype]] == binaryOrder_prepared[1])
-
-                AvgSize <- round(mean(as.numeric(selectedtable[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
-
-                MaxSize <- round(max(as.numeric(group2[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
-
-                MinSize <- round(min(as.numeric(group1[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
-
-                formulax <- paste(phenotype, paste(c(VariantToBeTested, covlist_prepared), collapse = "+"), sep = "~")
-
-                glm_result <- glm(formula = formulax, data = MINinqH1H2_calls_file, family = gaussian(link = "identity"))
-
-                Predictors <- names(glm_result$coefficients)
-
-                VariantID <- names(glm_result$coefficients)[2]
-
-                Beta <- round(as.numeric(exp(glm_result$coefficients)), digits = 3)
-
-                Beta_L95 <- round(as.numeric(exp(confint.default(glm_result, level = 0.95)[, 1])), digits = 3)
-
-                Beta_U95 <- round(as.numeric(exp(confint.default(glm_result, level = 0.95)[, 2])), digits = 3)
-
-                Beta_stdErr <- round(as.numeric(coef(summary(glm_result))[, "Std. Error"]), digits = 3)
-
-                Pvalue <- as.numeric(coef(summary(glm_result))[, "Pr(>|t|)"])
-
-                N <- nobs(glm_result)
-
-                model <- as.character(glm_result$formula)[1]
-
-                tabular_result <- as.data.frame(cbind(Predictors, Beta, Beta_L95, Beta_U95, Beta_stdErr, Pvalue, N, AvgSize, MinSize, MaxSize, model))
-
-                tabular_result <- subset(tabular_result, Predictors == VariantID)
-
-                colnames(tabular_result)[1] <- "VariantID"
-
-                results_MINinqH1H2_calls_file <- rbind.data.frame(results_MINinqH1H2_calls_file, tabular_result)
-            }
-
-            results_MINinqH1H2_calls_file <- results_MINinqH1H2_calls_file[-1, ]
-
-            sorted_results_MINinqH1H2_calls_file <- results_MINinqH1H2_calls_file[order(results_MINinqH1H2_calls_file$Pvalue), ]
-
-            write.table(sorted_results_MINinqH1H2_calls_file, outputname, sep = "\t", col.names = TRUE, quote = F, row.names = F)
-        }
+        results_calls_file <- results_calls_file[-1, ]
+        sorted_results_calls_file <- results_calls_file[order(results_calls_file$Pvalue), ]
+        write.table(sorted_results_calls_file, outputname, sep = "\t", col.names = TRUE, quote = F, row.names = F)
     }
 } else if (is.na(arg$covnames)) {
-    if (arg$mode == "SUMinqH1H2") {
-        SUMinqH1H2 <- inqH1 + inqH2
-
-        SUMinqH1H2_calls_file <- transpose(SUMinqH1H2)
-
-        colnames(SUMinqH1H2_calls_file) <- first_3col$STR_chr_begin_end
-
-        SUMinqH1H2_calls_file <- cbind(sample_list_wPheno, SUMinqH1H2_calls_file)
-
-        SUMinqH1H2_calls_file <- SUMinqH1H2_calls_file[, which(unlist(lapply(SUMinqH1H2_calls_file, function(x) !all(is.na(x))))), with = F]
-
-        SUMinqH1H2_calls_file <- data.table(data.frame(SUMinqH1H2_calls_file)[, which(colMeans(!is.na(data.frame(SUMinqH1H2_calls_file))) >= arg$missing_cutoff)])
-
-        SUMinqH1H2_calls_file <- SUMinqH1H2_calls_file %>% select(where(~ n_distinct(., na.rm = TRUE) > 1))
-
-        if (arg$outcometype == "binary") {
-            binaryOrder <- gsub(",", " ", arg$binaryOrder)
-
-            binaryOrder_prepared <- unlist(strsplit(binaryOrder, split = " "))
-
-            SUMinqH1H2_calls_file[[phenotype]] <- factor(SUMinqH1H2_calls_file[[phenotype]], c(binaryOrder_prepared))
-
-            results_SUMinqH1H2_calls_file <- as.data.frame(matrix(0, 1, 11))
-
-            colnames(results_SUMinqH1H2_calls_file) <- c("VariantID", "OR", "OR_L95", "OR_U95", "OR_stdErr", "Pvalue", "N", "AvgSize", "Group1_AvgSize", "Group2_AvgSize", "model")
-
-            for (i in seq(no_cols, ncol(SUMinqH1H2_calls_file), 1)) {
-                VariantToBeTested <- as.character(colnames(SUMinqH1H2_calls_file)[i])
-
-                selectedtable <- as.data.table(cbind(as.character(SUMinqH1H2_calls_file[[phenotype]]), as.numeric(SUMinqH1H2_calls_file[[VariantToBeTested]])))
-
-                colnames(selectedtable) <- c(phenotype, VariantToBeTested)
-
-                group2 <- subset(selectedtable, selectedtable[[phenotype]] == binaryOrder_prepared[2])
-
-                group1 <- subset(selectedtable, selectedtable[[phenotype]] == binaryOrder_prepared[1])
-
-                AvgSize <- round(mean(as.numeric(selectedtable[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
-
-                Group2_AvgSize <- round(mean(as.numeric(group2[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
-
-                Group1_AvgSize <- round(mean(as.numeric(group1[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
-
-                formulax <- paste(phenotype, VariantToBeTested, sep = "~")
-
-                glm_result <- glm(formula = formulax, data = SUMinqH1H2_calls_file, family = binomial(link = "logit"))
-
-                Predictors <- names(glm_result$coefficients)
-
-                VariantID <- names(glm_result$coefficients)[2]
-
-                OR <- round(as.numeric(exp(glm_result$coefficients)), digits = 3)
-
-                OR_L95 <- round(as.numeric(exp(confint.default(glm_result, level = 0.95)[, 1])), digits = 3)
-
-                OR_U95 <- round(as.numeric(exp(confint.default(glm_result, level = 0.95)[, 2])), digits = 3)
-
-                OR_stdErr <- round(as.numeric(coef(summary(glm_result))[, "Std. Error"]), digits = 3)
-
-                Pvalue <- as.numeric(coef(summary(glm_result))[, "Pr(>|z|)"])
-
-                N <- nobs(glm_result)
-
-                model <- as.character(glm_result$formula)[1]
-
-                tabular_result <- as.data.frame(cbind(Predictors, OR, OR_L95, OR_U95, OR_stdErr, Pvalue, N, AvgSize, Group1_AvgSize, Group2_AvgSize, model))
-
-                tabular_result <- subset(tabular_result, Predictors == VariantID)
-
-                colnames(tabular_result)[1] <- "VariantID"
-
-                results_SUMinqH1H2_calls_file <- rbind.data.frame(results_SUMinqH1H2_calls_file, tabular_result)
-            }
-
-            results_SUMinqH1H2_calls_file <- results_SUMinqH1H2_calls_file[-1, ]
-
-            sorted_results_SUMinqH1H2_calls_file <- results_SUMinqH1H2_calls_file[order(results_SUMinqH1H2_calls_file$Pvalue), ]
-
-            write.table(sorted_results_SUMinqH1H2_calls_file, outputname, sep = "\t", col.names = TRUE, quote = F, row.names = F)
-        } else if (arg$outcometype == "continuous") {
-            results_SUMinqH1H2_calls_file <- as.data.frame(matrix(0, 1, 11))
-
-            colnames(results_SUMinqH1H2_calls_file) <- c("VariantID", "Beta", "Beta_L95", "Beta_U95", "Beta_stdErr", "Pvalue", "N", "AvgSize", "MinSize", "MaxSize", "model")
-
-            for (i in seq(no_cols, ncol(SUMinqH1H2_calls_file), 1)) {
-                VariantToBeTested <- as.character(colnames(SUMinqH1H2_calls_file)[i])
-
-                selectedtable <- as.data.table(cbind(as.character(SUMinqH1H2_calls_file[[phenotype]]), as.numeric(SUMinqH1H2_calls_file[[VariantToBeTested]])))
-
-                colnames(selectedtable) <- c(phenotype, VariantToBeTested)
-
-                group2 <- subset(selectedtable, selectedtable[[phenotype]] == binaryOrder_prepared[2])
-
-                group1 <- subset(selectedtable, selectedtable[[phenotype]] == binaryOrder_prepared[1])
-
-                AvgSize <- round(mean(as.numeric(selectedtable[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
-
-                MaxSize <- round(max(as.numeric(group2[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
-
-                MinSize <- round(min(as.numeric(group1[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
-
-                formulax <- paste(phenotype, VariantToBeTested, sep = "~")
-
-                glm_result <- glm(formula = formulax, data = SUMinqH1H2_calls_file, family = gaussian(link = "identity"))
-
-                Predictors <- names(glm_result$coefficients)
-
-                VariantID <- names(glm_result$coefficients)[2]
-
-                Beta <- round(as.numeric(exp(glm_result$coefficients)), digits = 3)
-
-                Beta_L95 <- round(as.numeric(exp(confint.default(glm_result, level = 0.95)[, 1])), digits = 3)
-
-                Beta_U95 <- round(as.numeric(exp(confint.default(glm_result, level = 0.95)[, 2])), digits = 3)
-
-                Beta_stdErr <- round(as.numeric(coef(summary(glm_result))[, "Std. Error"]), digits = 3)
-
-                Pvalue <- as.numeric(coef(summary(glm_result))[, "Pr(>|t|)"])
-
-                N <- nobs(glm_result)
-
-                model <- as.character(glm_result$formula)[1]
-
-                tabular_result <- as.data.frame(cbind(Predictors, Beta, Beta_L95, Beta_U95, Beta_stdErr, Pvalue, N, AvgSize, MinSize, MaxSize, model))
-
-                tabular_result <- subset(tabular_result, Predictors == VariantID)
-
-                colnames(tabular_result)[1] <- "VariantID"
-
-                results_SUMinqH1H2_calls_file <- rbind.data.frame(results_SUMinqH1H2_calls_file, tabular_result)
-            }
-
-            results_SUMinqH1H2_calls_file <- results_SUMinqH1H2_calls_file[-1, ]
-
-            sorted_results_SUMinqH1H2_calls_file <- results_SUMinqH1H2_calls_file[order(results_SUMinqH1H2_calls_file$Pvalue), ]
-
-            write.table(sorted_results_SUMinqH1H2_calls_file, outputname, sep = "\t", col.names = TRUE, quote = F, row.names = F)
+    if (arg$outcometype == "binary") {
+        binaryOrder <- gsub(",", " ", arg$binaryOrder)
+        binaryOrder_prepared <- unlist(strsplit(binaryOrder, split = " "))
+        calls_file[[phenotype]] <- factor(calls_file[[phenotype]], c(binaryOrder_prepared))
+        results_calls_file <- as.data.frame(matrix(0, 1, 11))
+        colnames(results_calls_file) <- c("VariantID", "OR", "OR_L95", "OR_U95", "OR_stdErr", "Pvalue", "N", "AvgSize", "Group1_AvgSize", "Group2_AvgSize", "model")
+        for (i in seq(no_cols, ncol(calls_file), 1)) {
+            VariantToBeTested <- as.character(colnames(calls_file)[i])
+            selectedtable <- as.data.table(cbind(as.character(calls_file[[phenotype]]), as.numeric(calls_file[[VariantToBeTested]])))
+            colnames(selectedtable) <- c(phenotype, VariantToBeTested)
+            group2 <- subset(selectedtable, selectedtable[[phenotype]] == binaryOrder_prepared[2])
+            group1 <- subset(selectedtable, selectedtable[[phenotype]] == binaryOrder_prepared[1])
+            AvgSize <- round(mean(as.numeric(selectedtable[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
+            Group2_AvgSize <- round(mean(as.numeric(group2[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
+            Group1_AvgSize <- round(mean(as.numeric(group1[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
+            formulax <- paste(phenotype, VariantToBeTested, sep = "~")
+            glm_result <- glm(formula = formulax, data = SUMinqH1H2_calls_file, family = binomial(link = "logit"))
+            Predictors <- names(glm_result$coefficients)
+            VariantID <- names(glm_result$coefficients)[2]
+            OR <- round(as.numeric(exp(glm_result$coefficients)), digits = 3)
+            OR_L95 <- round(as.numeric(exp(confint.default(glm_result, level = 0.95)[, 1])), digits = 3)
+            OR_U95 <- round(as.numeric(exp(confint.default(glm_result, level = 0.95)[, 2])), digits = 3)
+            OR_stdErr <- round(as.numeric(coef(summary(glm_result))[, "Std. Error"]), digits = 3)
+            Pvalue <- as.numeric(coef(summary(glm_result))[, "Pr(>|z|)"])
+            N <- nobs(glm_result)
+            model <- as.character(glm_result$formula)[1]
+            tabular_result <- as.data.frame(cbind(Predictors, OR, OR_L95, OR_U95, OR_stdErr, Pvalue, N, AvgSize, Group1_AvgSize, Group2_AvgSize, model))
+            tabular_result <- subset(tabular_result, Predictors == VariantID)
+            colnames(tabular_result)[1] <- "VariantID"
+            results_calls_file <- rbind.data.frame(results_calls_file, tabular_result)
         }
-    } else if (arg$mode == "MAXinqH1H2") {
-        MAXinqH1H2 <- pmax(inqH1, inqH2)
-
-        MAXinqH1H2_calls_file <- transpose(MAXinqH1H2)
-
-        colnames(MAXinqH1H2_calls_file) <- first_3col$STR_chr_begin_end
-
-        MAXinqH1H2_calls_file <- cbind(sample_list_wPheno, MAXinqH1H2_calls_file)
-
-        MAXinqH1H2_calls_file <- MAXinqH1H2_calls_file[, which(unlist(lapply(MAXinqH1H2_calls_file, function(x) !all(is.na(x))))), with = F]
-
-        MAXinqH1H2_calls_file <- data.table(data.frame(MAXinqH1H2_calls_file)[, which(colMeans(!is.na(data.frame(MAXinqH1H2_calls_file))) >= arg$missing_cutoff)])
-
-        MAXinqH1H2_calls_file <- MAXinqH1H2_calls_file %>% select(where(~ n_distinct(., na.rm = TRUE) > 1))
-
-        if (arg$outcometype == "binary") {
-            binaryOrder <- gsub(",", " ", arg$binaryOrder)
-
-            binaryOrder_prepared <- unlist(strsplit(binaryOrder, split = " "))
-
-            MAXinqH1H2_calls_file[[phenotype]] <- factor(MAXinqH1H2_calls_file[[phenotype]], c(binaryOrder_prepared))
-
-            results_MAXinqH1H2_calls_file <- as.data.frame(matrix(0, 1, 11))
-
-            colnames(results_MAXinqH1H2_calls_file) <- c("VariantID", "OR", "OR_L95", "OR_U95", "OR_stdErr", "Pvalue", "N", "AvgSize", "Group1_AvgSize", "Group2_AvgSize", "model")
-
-            for (i in seq(no_cols, ncol(MAXinqH1H2_calls_file), 1)) {
-                VariantToBeTested <- as.character(colnames(MAXinqH1H2_calls_file)[i])
-
-                selectedtable <- as.data.table(cbind(as.character(MAXinqH1H2_calls_file[[phenotype]]), as.numeric(MAXinqH1H2_calls_file[[VariantToBeTested]])))
-
-                colnames(selectedtable) <- c(phenotype, VariantToBeTested)
-
-                group2 <- subset(selectedtable, selectedtable[[phenotype]] == binaryOrder_prepared[2])
-
-                group1 <- subset(selectedtable, selectedtable[[phenotype]] == binaryOrder_prepared[1])
-
-                AvgSize <- round(mean(as.numeric(selectedtable[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
-
-                Group2_AvgSize <- round(mean(as.numeric(group2[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
-
-                Group1_AvgSize <- round(mean(as.numeric(group1[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
-
-                formulax <- paste(phenotype, VariantToBeTested, sep = "~")
-
-                glm_result <- glm(formula = formulax, data = MAXinqH1H2_calls_file, family = binomial(link = "logit"))
-
-                Predictors <- names(glm_result$coefficients)
-
-                VariantID <- names(glm_result$coefficients)[2]
-
-                OR <- round(as.numeric(exp(glm_result$coefficients)), digits = 3)
-
-                OR_L95 <- round(as.numeric(exp(confint.default(glm_result, level = 0.95)[, 1])), digits = 3)
-
-                OR_U95 <- round(as.numeric(exp(confint.default(glm_result, level = 0.95)[, 2])), digits = 3)
-
-                OR_stdErr <- round(as.numeric(coef(summary(glm_result))[, "Std. Error"]), digits = 3)
-
-                Pvalue <- as.numeric(coef(summary(glm_result))[, "Pr(>|z|)"])
-
-                N <- nobs(glm_result)
-
-                model <- as.character(glm_result$formula)[1]
-
-                tabular_result <- as.data.frame(cbind(Predictors, OR, OR_L95, OR_U95, OR_stdErr, Pvalue, N, AvgSize, Group1_AvgSize, Group2_AvgSize, model))
-
-                tabular_result <- subset(tabular_result, Predictors == VariantID)
-
-                colnames(tabular_result)[1] <- "VariantID"
-
-                results_MAXinqH1H2_calls_file <- rbind.data.frame(results_MAXinqH1H2_calls_file, tabular_result)
-            }
-
-            results_MAXinqH1H2_calls_file <- results_MAXinqH1H2_calls_file[-1, ]
-
-            sorted_results_MAXinqH1H2_calls_file <- results_MAXinqH1H2_calls_file[order(results_MAXinqH1H2_calls_file$Pvalue), ]
-
-            write.table(sorted_results_MAXinqH1H2_calls_file, outputname, sep = "\t", col.names = TRUE, quote = F, row.names = F)
-        } else if (arg$outcometype == "continuous") {
-            results_MAXinqH1H2_calls_file <- as.data.frame(matrix(0, 1, 11))
-
-            colnames(results_MAXinqH1H2_calls_file) <- c("VariantID", "Beta", "Beta_L95", "Beta_U95", "Beta_stdErr", "Pvalue", "N", "AvgSize", "MinSize", "MaxSize", "model")
-
-            for (i in seq(no_cols, ncol(MAXinqH1H2_calls_file), 1)) {
-                VariantToBeTested <- as.character(colnames(MAXinqH1H2_calls_file)[i])
-
-                selectedtable <- as.data.table(cbind(as.character(MAXinqH1H2_calls_file[[phenotype]]), as.numeric(MAXinqH1H2_calls_file[[VariantToBeTested]])))
-
-                colnames(selectedtable) <- c(phenotype, VariantToBeTested)
-
-                group2 <- subset(selectedtable, selectedtable[[phenotype]] == binaryOrder_prepared[2])
-
-                group1 <- subset(selectedtable, selectedtable[[phenotype]] == binaryOrder_prepared[1])
-
-                AvgSize <- round(mean(as.numeric(selectedtable[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
-
-                MaxSize <- round(max(as.numeric(group2[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
-
-                MinSize <- round(min(as.numeric(group1[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
-
-                formulax <- paste(phenotype, VariantToBeTested, sep = "~")
-
-                glm_result <- glm(formula = formulax, data = MAXinqH1H2_calls_file, family = gaussian(link = "identity"))
-
-                Predictors <- names(glm_result$coefficients)
-
-                VariantID <- names(glm_result$coefficients)[2]
-
-                Beta <- round(as.numeric(exp(glm_result$coefficients)), digits = 3)
-
-                Beta_L95 <- round(as.numeric(exp(confint.default(glm_result, level = 0.95)[, 1])), digits = 3)
-
-                Beta_U95 <- round(as.numeric(exp(confint.default(glm_result, level = 0.95)[, 2])), digits = 3)
-
-                Beta_stdErr <- round(as.numeric(coef(summary(glm_result))[, "Std. Error"]), digits = 3)
-
-                Pvalue <- as.numeric(coef(summary(glm_result))[, "Pr(>|t|)"])
-
-                N <- nobs(glm_result)
-
-                model <- as.character(glm_result$formula)[1]
-
-                tabular_result <- as.data.frame(cbind(Predictors, Beta, Beta_L95, Beta_U95, Beta_stdErr, Pvalue, N, AvgSize, MinSize, MaxSize, model))
-
-                tabular_result <- subset(tabular_result, Predictors == VariantID)
-
-                colnames(tabular_result)[1] <- "VariantID"
-
-                results_MAXinqH1H2_calls_file <- rbind.data.frame(results_MAXinqH1H2_calls_file, tabular_result)
-            }
-
-            results_MAXinqH1H2_calls_file <- results_MAXinqH1H2_calls_file[-1, ]
-
-            sorted_results_MAXinqH1H2_calls_file <- results_MAXinqH1H2_calls_file[order(results_MAXinqH1H2_calls_file$Pvalue), ]
-
-            write.table(sorted_results_MAXinqH1H2_calls_file, outputname, sep = "\t", col.names = TRUE, quote = F, row.names = F)
+        results_calls_file <- results_calls_file[-1, ]
+        sorted_results_calls_file <- results_calls_file[order(results_calls_file$Pvalue), ]
+        write.table(sorted_results_calls_file, outputname, sep = "\t", col.names = TRUE, quote = F, row.names = F)
+    } else if (arg$outcometype == "continuous") {
+        results_calls_file <- as.data.frame(matrix(0, 1, 11))
+        colnames(results_calls_file) <- c("VariantID", "Beta", "Beta_L95", "Beta_U95", "Beta_stdErr", "Pvalue", "N", "AvgSize", "MinSize", "MaxSize", "model")
+        for (i in seq(no_cols, ncol(calls_file), 1)) {
+            VariantToBeTested <- as.character(colnames(calls_file)[i])
+            selectedtable <- as.data.table(cbind(as.character(calls_file[[phenotype]]), as.numeric(calls_file[[VariantToBeTested]])))
+            colnames(selectedtable) <- c(phenotype, VariantToBeTested)
+            group2 <- subset(selectedtable, selectedtable[[phenotype]] == binaryOrder_prepared[2])
+            group1 <- subset(selectedtable, selectedtable[[phenotype]] == binaryOrder_prepared[1])
+            AvgSize <- round(mean(as.numeric(selectedtable[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
+            MaxSize <- round(max(as.numeric(group2[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
+            MinSize <- round(min(as.numeric(group1[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
+            formulax <- paste(phenotype, VariantToBeTested, sep = "~")
+            glm_result <- glm(formula = formulax, data = SUMinqH1H2_calls_file, family = gaussian(link = "identity"))
+            Predictors <- names(glm_result$coefficients)
+            VariantID <- names(glm_result$coefficients)[2]
+            Beta <- round(as.numeric(exp(glm_result$coefficients)), digits = 3)
+            Beta_L95 <- round(as.numeric(exp(confint.default(glm_result, level = 0.95)[, 1])), digits = 3)
+            Beta_U95 <- round(as.numeric(exp(confint.default(glm_result, level = 0.95)[, 2])), digits = 3)
+            Beta_stdErr <- round(as.numeric(coef(summary(glm_result))[, "Std. Error"]), digits = 3)
+            Pvalue <- as.numeric(coef(summary(glm_result))[, "Pr(>|t|)"])
+            N <- nobs(glm_result)
+            model <- as.character(glm_result$formula)[1]
+            tabular_result <- as.data.frame(cbind(Predictors, Beta, Beta_L95, Beta_U95, Beta_stdErr, Pvalue, N, AvgSize, MinSize, MaxSize, model))
+            tabular_result <- subset(tabular_result, Predictors == VariantID)
+            colnames(tabular_result)[1] <- "VariantID"
+            results_calls_file <- rbind.data.frame(results_calls_file, tabular_result)
         }
-    } else if (arg$mode == "MINinqH1H2") {
-        MINinqH1H2 <- pmin(inqH1, inqH2)
-
-        MINinqH1H2_calls_file <- transpose(MINinqH1H2)
-
-        colnames(MINinqH1H2_calls_file) <- first_3col$STR_chr_begin_end
-
-        MINinqH1H2_calls_file <- cbind(sample_list_wPheno, MINinqH1H2_calls_file)
-
-        MINinqH1H2_calls_file <- MINinqH1H2_calls_file[, which(unlist(lapply(MINinqH1H2_calls_file, function(x) !all(is.na(x))))), with = F]
-
-        MINinqH1H2_calls_file <- data.table(data.frame(MINinqH1H2_calls_file)[, which(colMeans(!is.na(data.frame(MINinqH1H2_calls_file))) >= arg$missing_cutoff)])
-
-        MINinqH1H2_calls_file <- MINinqH1H2_calls_file %>% select(where(~ n_distinct(., na.rm = TRUE) > 1))
-
-        if (arg$outcometype == "binary") {
-            binaryOrder <- gsub(",", " ", arg$binaryOrder)
-
-            binaryOrder_prepared <- unlist(strsplit(binaryOrder, split = " "))
-
-            MINinqH1H2_calls_file[[phenotype]] <- factor(MINinqH1H2_calls_file[[phenotype]], c(binaryOrder_prepared))
-
-            results_MINinqH1H2_calls_file <- as.data.frame(matrix(0, 1, 11))
-
-            colnames(results_MINinqH1H2_calls_file) <- c("VariantID", "OR", "OR_L95", "OR_U95", "OR_stdErr", "Pvalue", "N", "AvgSize", "Group1_AvgSize", "Group2_AvgSize", "model")
-
-            for (i in seq(no_cols, ncol(MINinqH1H2_calls_file), 1)) {
-                VariantToBeTested <- as.character(colnames(MINinqH1H2_calls_file)[i])
-
-                selectedtable <- as.data.table(cbind(as.character(MINinqH1H2_calls_file[[phenotype]]), as.numeric(MINinqH1H2_calls_file[[VariantToBeTested]])))
-
-                colnames(selectedtable) <- c(phenotype, VariantToBeTested)
-
-                group2 <- subset(selectedtable, selectedtable[[phenotype]] == binaryOrder_prepared[2])
-
-                group1 <- subset(selectedtable, selectedtable[[phenotype]] == binaryOrder_prepared[1])
-
-                AvgSize <- round(mean(as.numeric(selectedtable[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
-
-                Group2_AvgSize <- round(mean(as.numeric(group2[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
-
-                Group1_AvgSize <- round(mean(as.numeric(group1[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
-
-                formulax <- paste(phenotype, VariantToBeTested, sep = "~")
-
-                glm_result <- glm(formula = formulax, data = MINinqH1H2_calls_file, family = binomial(link = "logit"))
-
-                Predictors <- names(glm_result$coefficients)
-
-                VariantID <- names(glm_result$coefficients)[2]
-
-                OR <- round(as.numeric(exp(glm_result$coefficients)), digits = 3)
-
-                OR_L95 <- round(as.numeric(exp(confint.default(glm_result, level = 0.95)[, 1])), digits = 3)
-
-                OR_U95 <- round(as.numeric(exp(confint.default(glm_result, level = 0.95)[, 2])), digits = 3)
-
-                OR_stdErr <- round(as.numeric(coef(summary(glm_result))[, "Std. Error"]), digits = 3)
-
-                Pvalue <- as.numeric(coef(summary(glm_result))[, "Pr(>|z|)"])
-
-                N <- nobs(glm_result)
-
-                model <- as.character(glm_result$formula)[1]
-
-                tabular_result <- as.data.frame(cbind(Predictors, OR, OR_L95, OR_U95, OR_stdErr, Pvalue, N, AvgSize, Group1_AvgSize, Group2_AvgSize, model))
-
-                tabular_result <- subset(tabular_result, Predictors == VariantID)
-
-                colnames(tabular_result)[1] <- "VariantID"
-
-                results_MINinqH1H2_calls_file <- rbind.data.frame(results_MINinqH1H2_calls_file, tabular_result)
-            }
-
-            results_MINinqH1H2_calls_file <- results_MINinqH1H2_calls_file[-1, ]
-
-            sorted_results_MINinqH1H2_calls_file <- results_MINinqH1H2_calls_file[order(results_MINinqH1H2_calls_file$Pvalue), ]
-
-            write.table(sorted_results_MINinqH1H2_calls_file, outputname, sep = "\t", col.names = TRUE, quote = F, row.names = F)
-        } else if (arg$outcometype == "continuous") {
-            results_MINinqH1H2_calls_file <- as.data.frame(matrix(0, 1, 11))
-
-            colnames(results_MINinqH1H2_calls_file) <- c("VariantID", "Beta", "Beta_L95", "Beta_U95", "Beta_stdErr", "Pvalue", "N", "AvgSize", "MinSize", "MaxSize", "model")
-
-            for (i in seq(no_cols, ncol(MINinqH1H2_calls_file), 1)) {
-                VariantToBeTested <- as.character(colnames(MINinqH1H2_calls_file)[i])
-
-                selectedtable <- as.data.table(cbind(as.character(MINinqH1H2_calls_file[[phenotype]]), as.numeric(MINinqH1H2_calls_file[[VariantToBeTested]])))
-
-                colnames(selectedtable) <- c(phenotype, VariantToBeTested)
-
-                group2 <- subset(selectedtable, selectedtable[[phenotype]] == binaryOrder_prepared[2])
-
-                group1 <- subset(selectedtable, selectedtable[[phenotype]] == binaryOrder_prepared[1])
-
-                AvgSize <- round(mean(as.numeric(selectedtable[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
-
-                MaxSize <- round(max(as.numeric(group2[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
-
-                MinSize <- round(min(as.numeric(group1[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
-
-                formulax <- paste(phenotype, VariantToBeTested, sep = "~")
-
-                glm_result <- glm(formula = formulax, data = MINinqH1H2_calls_file, family = gaussian(link = "identity"))
-
-                Predictors <- names(glm_result$coefficients)
-
-                VariantID <- names(glm_result$coefficients)[2]
-
-                Beta <- round(as.numeric(exp(glm_result$coefficients)), digits = 3)
-
-                Beta_L95 <- round(as.numeric(exp(confint.default(glm_result, level = 0.95)[, 1])), digits = 3)
-
-                Beta_U95 <- round(as.numeric(exp(confint.default(glm_result, level = 0.95)[, 2])), digits = 3)
-
-                Beta_stdErr <- round(as.numeric(coef(summary(glm_result))[, "Std. Error"]), digits = 3)
-
-                Pvalue <- as.numeric(coef(summary(glm_result))[, "Pr(>|t|)"])
-
-                N <- nobs(glm_result)
-
-                model <- as.character(glm_result$formula)[1]
-
-                tabular_result <- as.data.frame(cbind(Predictors, Beta, Beta_L95, Beta_U95, Beta_stdErr, Pvalue, N, AvgSize, MinSize, MaxSize, model))
-
-                tabular_result <- subset(tabular_result, Predictors == VariantID)
-
-                colnames(tabular_result)[1] <- "VariantID"
-
-                results_MINinqH1H2_calls_file <- rbind.data.frame(results_MINinqH1H2_calls_file, tabular_result)
-            }
-
-            results_MINinqH1H2_calls_file <- results_MINinqH1H2_calls_file[-1, ]
-
-            sorted_results_MINinqH1H2_calls_file <- results_MINinqH1H2_calls_file[order(results_MINinqH1H2_calls_file$Pvalue), ]
-
-            write.table(sorted_results_MINinqH1H2_calls_file, outputname, sep = "\t", col.names = TRUE, quote = F, row.names = F)
-        }
+        results_calls_file <- results_calls_file[-1, ]
+        sorted_results_calls_file <- results_calls_file[order(results_calls_file$Pvalue), ]
+        write.table(sorted_results_calls_file, outputname, sep = "\t", col.names = TRUE, quote = F, row.names = F)
     }
 }
