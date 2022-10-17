@@ -118,10 +118,14 @@ read_calls <- function(input, chrom) {
     return(list("H1" = inqH1, "H2" = inqH2, "strnames" = strnames))
 }
 
-prepare_phenotype <- function(phenofile, sample_list) {
+prepare_phenotype <- function(phenofile, phenotype, sample_list) {
     phenocovar <- fread(phenofile, header = TRUE)
     colnames(sample_list) <- "sample_id"
-    return(left_join(sample_list, phenocovar, by = "sample_id"))
+    return(list(
+        "sample_list" = left_join(sample_list, phenocovar, by = "sample_id"),
+        "phenotype" = phenotype <- paste0(phenotype, ""),
+        "no_cols" = ncol(phenocovar) + 1
+    ))
 }
 
 parse_arguments <- function() {
@@ -147,33 +151,34 @@ arg <- parse_arguments()
 # calls is a list with H1, H2 and strnames attributes
 calls <- read_calls(input = arg$input, chrom = arg$chr)
 
-sample_list_wPheno <- prepare_phenotype(
+# pheno_info is a list with sample_list, phenotype and no_cols attributes
+pheno_info <- prepare_phenotype(
     phenofile = arg$phenocovar,
+    phenotype = arg$phenotype,
     sample_list = as.data.table(colnames(calls$H1))
 )
 
 calls_file <- prepare_calls(
     calls = calls,
-    sample_list_wPheno = sample_list_wPheno,
+    sample_list_wPheno = pheno_info$sample_list,
     mode = arg$mode
 )
 
-phenotype <- paste0(arg$phenotype, "")
 
 if (arg$outcometype == "binary") {
     assoc_binary(
         arg = arg,
         calls_file = calls_file,
-        phenotype = phenotype,
-        no_cols = ncol(phenocovar) + 1,
+        phenotype = pheno_info$phenotype,
+        no_cols = pheno_info$no_cols,
         covariates = arg$covnames
     )
 } else if (arg$outcometype == "continuous") {
     assoc_continuous(
         arg = arg,
         calls_file = calls_file,
-        phenotype = phenotype,
-        no_cols = ncol(phenocovar) + 1,
+        phenotype = pheno_info$phenotype,
+        no_cols = pheno_info$no_cols,
         covariates = arg$covnames
     )
 }
