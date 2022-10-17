@@ -24,7 +24,7 @@ prepare_calls <- function(calls, sample_list_wPheno, mode) {
     return(calls_file)
 }
 
-assoc_binary <- function(arg, calls_file, phenotype, no_cols, formulax) {
+assoc_binary <- function(arg, calls_file, phenotype, no_cols, covariates) {
     binaryOrder <- gsub(",", " ", arg$binaryOrder)
     binaryOrder_prepared <- unlist(strsplit(binaryOrder, split = " "))
     calls_file[[phenotype]] <- factor(calls_file[[phenotype]], c(binaryOrder_prepared))
@@ -39,6 +39,13 @@ assoc_binary <- function(arg, calls_file, phenotype, no_cols, formulax) {
         AvgSize <- round(mean(as.numeric(selectedtable[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
         Group2_AvgSize <- round(mean(as.numeric(group2[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
         Group1_AvgSize <- round(mean(as.numeric(group1[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
+        if (!is.na(covariates)) {
+            covlist <- gsub(",", " ", covariates)
+            covlist_prepared <- unlist(strsplit(covlist, split = " "))
+            formulax <- paste(phenotype, paste(c(VariantToBeTested, covlist_prepared), collapse = "+"), sep = "~")
+        } else {
+            formulax <- paste(phenotype, VariantToBeTested, sep = "~")
+        }
         glm_result <- glm(formula = formulax, data = calls_file, family = binomial(link = "logit"))
         Predictors <- names(glm_result$coefficients)
         VariantID <- names(glm_result$coefficients)[2]
@@ -59,7 +66,7 @@ assoc_binary <- function(arg, calls_file, phenotype, no_cols, formulax) {
     write.table(sorted_results_calls_file, arg$out, sep = "\t", col.names = TRUE, quote = F, row.names = F)
 }
 
-assoc_continuous <- function(arg, calls_file, phenotype, no_cols, formulax) {
+assoc_continuous <- function(arg, calls_file, phenotype, no_cols, covariates) {
     results_calls_file <- as.data.frame(matrix(0, 1, 11))
     colnames(results_calls_file) <- c("VariantID", "Beta", "Beta_L95", "Beta_U95", "Beta_stdErr", "Pvalue", "N", "AvgSize", "MinSize", "MaxSize", "model")
     for (i in seq(no_cols, ncol(calls_file), 1)) {
@@ -71,6 +78,13 @@ assoc_continuous <- function(arg, calls_file, phenotype, no_cols, formulax) {
         AvgSize <- round(mean(as.numeric(selectedtable[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
         MaxSize <- round(max(as.numeric(group2[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
         MinSize <- round(min(as.numeric(group1[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
+        if (!is.na(covariates)) {
+            covlist <- gsub(",", " ", covariates)
+            covlist_prepared <- unlist(strsplit(covlist, split = " "))
+            formulax <- paste(phenotype, paste(c(VariantToBeTested, covlist_prepared), collapse = "+"), sep = "~")
+        } else {
+            formulax <- paste(phenotype, VariantToBeTested, sep = "~")
+        }
         glm_result <- glm(formula = formulax, data = calls_file, family = gaussian(link = "identity"))
         Predictors <- names(glm_result$coefficients)
         VariantID <- names(glm_result$coefficients)[2]
@@ -144,27 +158,22 @@ calls_file <- prepare_calls(
     mode = arg$mode
 )
 
-if (!is.na(arg$covnames)) {
-    covlist <- gsub(",", " ", arg$covnames)
-    covlist_prepared <- unlist(strsplit(covlist, split = " "))
-    formulax <- paste(phenotype, paste(c(VariantToBeTested, covlist_prepared), collapse = "+"), sep = "~")
-} else {
-    formulax <- paste(phenotype, VariantToBeTested, sep = "~")
-}
+phenotype <- paste0(arg$phenotype, "")
+
 if (arg$outcometype == "binary") {
     assoc_binary(
         arg = arg,
         calls_file = calls_file,
-        phenotype = paste0(arg$phenotype, ""),
+        phenotype = phenotype,
         no_cols = ncol(phenocovar) + 1,
-        formulax
+        covariates = arg$covnames
     )
 } else if (arg$outcometype == "continuous") {
     assoc_continuous(
         arg = arg,
         calls_file = calls_file,
-        phenotype = paste0(arg$phenotype, ""),
+        phenotype = phenotype,
         no_cols = ncol(phenocovar) + 1,
-        formulax
+        covariates = arg$covnames
     )
 }
