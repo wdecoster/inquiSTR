@@ -3,6 +3,7 @@ use clap::{Parser, Subcommand};
 use log::info;
 use std::path::PathBuf;
 
+pub mod assoc;
 pub mod call;
 pub mod combine;
 pub mod histogram;
@@ -99,7 +100,32 @@ enum Commands {
         region: String,
     },
     /// Test for association of repeat length by comparing two cohorts
-    Association {},
+    Association {
+        /// combined file of calls
+        #[clap(parse(from_os_str), required = true, validator=is_file)]
+        combined: PathBuf,
+
+        /// file with sample_id, phenotype and covariates
+        #[clap(parse(from_os_str), required = true, validator=is_file)]
+        metadata: PathBuf,
+
+        /// missing genotypes cutoff
+        #[clap(long, value_parser, default_value_t = 0.8)]
+        missing_cutoff: f32,
+
+        /// association mode
+        #[clap(short, long, value_enum, value_parser, default_value_t = assoc::Mode::Max)]
+        mode: assoc::Mode,
+
+        /// test column and groups e.g. group:PAT,CON with <group> the name of the column containing <PAT> and <CON>
+        #[clap(short, long, value_parser)]
+        condition: String,
+
+        /// covariates, comma separated
+        #[clap(long, value_parser)]
+        covariates: Option<String>,
+        // p <- add_argument(p, "--outcometype", help = "Select a outcome variable type: binary or continuous", nargs = 1)
+    },
 }
 
 fn is_file(pathname: &str) -> Result<(), String> {
@@ -144,8 +170,22 @@ fn main() {
         Commands::Histogram { combined, region } => {
             histogram::histogram(combined, region);
         }
-        Commands::Association {} => {
-            unimplemented!();
+        Commands::Association {
+            combined,
+            metadata,
+            missing_cutoff,
+            mode,
+            condition,
+            covariates,
+        } => {
+            assoc::assocation(
+                combined,
+                metadata,
+                missing_cutoff,
+                mode,
+                condition,
+                covariates,
+            );
         }
     }
 }
