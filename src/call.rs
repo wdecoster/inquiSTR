@@ -418,7 +418,7 @@ fn median_str_length(array: &Vec<Call>, support: usize) -> f64 {
 #[test]
 fn test_region() {
     genotype_repeats(
-        PathBuf::from("/home/wdecoster/test-data/test.bam"),
+        PathBuf::from("test-data/small-test.bam"),
         Some("chr7:154778571-154779363".to_string()),
         None,
         5,
@@ -431,9 +431,9 @@ fn test_region() {
 #[test]
 fn test_region_bed() {
     genotype_repeats(
-        PathBuf::from("/home/wdecoster/test-data/test.bam"),
+        PathBuf::from("test-data/small-test.bam"),
         None,
-        Some(PathBuf::from("/home/wdecoster/test-data/test.bed")),
+        Some(PathBuf::from("test-data/test.bed")),
         5,
         3,
         4,
@@ -443,9 +443,9 @@ fn test_region_bed() {
 #[test]
 fn test_unphased() {
     genotype_repeats(
-        PathBuf::from("/home/wdecoster/test-data/test.bam"),
+        PathBuf::from("test-data/small-test.bam"),
         None,
-        Some(PathBuf::from("/home/wdecoster/test-data/test.bed")),
+        Some(PathBuf::from("test-data/test.bed")),
         5,
         3,
         4,
@@ -457,7 +457,7 @@ fn test_unphased() {
 #[should_panic]
 fn test_no_region() {
     genotype_repeats(
-        PathBuf::from("/home/wdecoster/test-data/test.bam"),
+        PathBuf::from("test-data/small-test.bam"),
         None,
         None,
         5,
@@ -471,7 +471,7 @@ fn test_no_region() {
 #[should_panic]
 fn test_wrong_bam_path() {
     genotype_repeats(
-        PathBuf::from("/home/wdecoster/wrong_path_to_test-data/test.bam"),
+        PathBuf::from("test-data/wrong-test.bam"),
         Some("chr7:154778571-154779363".to_string()),
         None,
         5,
@@ -484,7 +484,7 @@ fn test_wrong_bam_path() {
 #[test]
 fn test_region_wrong_chromosome() {
     genotype_repeats(
-        PathBuf::from("/home/wdecoster/test-data/test.bam"),
+        PathBuf::from("test-data/small-test.bam"),
         Some("7:154778571-154779363".to_string()),
         None,
         5,
