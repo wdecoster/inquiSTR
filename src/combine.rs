@@ -83,9 +83,9 @@ fn write_header(filenames: Vec<PathBuf>, unphased: bool) {
 fn test_combine() {
     combine(
         vec![
-            PathBuf::from("/home/wdecoster/test-data/file1.inq"),
-            PathBuf::from("/home/wdecoster/test-data/file2.inq"),
-            PathBuf::from("/home/wdecoster/test-data/file3.inq"),
+            PathBuf::from("test-data/file1.inq"),
+            PathBuf::from("test-data/file2.inq"),
+            PathBuf::from("test-data/file3.inq"),
         ],
         false,
     );
@@ -95,9 +95,9 @@ fn test_combine() {
 fn test_combine_gzipped() {
     combine(
         vec![
-            PathBuf::from("/home/wdecoster/test-data/file1.inq.gz"),
-            PathBuf::from("/home/wdecoster/test-data/file2.inq.gz"),
-            PathBuf::from("/home/wdecoster/test-data/file3.inq.gz"),
+            PathBuf::from("test-data/file1.inq.gz"),
+            PathBuf::from("test-data/file2.inq.gz"),
+            PathBuf::from("test-data/file3.inq.gz"),
         ],
         false,
     );
