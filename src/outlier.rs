@@ -33,7 +33,12 @@ pub fn outlier(combined: PathBuf, minsize: u32, zscore_cutoff: f32) {
             .iter()
             .skip(3)
             .map(|number| number.parse().unwrap())
+            .filter(|v: &f32| !v.is_nan())
             .collect();
+        // If all values are NaN the vector is empty
+        if values.is_empty() {
+            continue;
+        }
         if values
             .iter()
             .max_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Less))
