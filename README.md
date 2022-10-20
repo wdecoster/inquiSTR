@@ -6,3 +6,4 @@ This repository contains Rust code for inquiSTR, a tool to genotype STRs from lo
 
 ## USAGE
 hiiiii
+from the braaaaanch
