@@ -87,9 +87,9 @@ assoc_continuous <- function(arg, calls_file, phenotype, no_cols, covariates) {
     write.table(sorted_results_calls_file, arg$out, sep = "\t", col.names = TRUE, quote = F, row.names = F)
 }
 
-read_calls <- function(input, chrom) {
+read_calls <- function(input, chr) {
     calls_file <- fread(input, header = TRUE)
-    calls_file <- subset(calls_file, chrom == chrom)
+    calls_file <- subset(calls_file, chrom == chr)
     strnames <- paste(calls_file$chrom, calls_file$begin, calls_file$end, sep = "_")
     rest <- calls_file[, -c(1:3)]
     col_index <- seq(1:ncol(rest))
@@ -101,9 +101,9 @@ read_calls <- function(input, chrom) {
     rm(calls_file)
 }
 
-read_calls_chr_begin_end <- function(input, chrom, begin, end) {
+read_calls_chr_begin_end <- function(input, chr, chr_begin, chr_end) {
     calls_file <- fread(input, header = TRUE)
-    calls_file <- subset(calls_file, (chrom == chrom) & (begin >= begin) & (end <= end))
+    calls_file <- subset(calls_file, ((chrom == chr) & (begin >= chr_begin) & (end <= chr_end)))
     strnames <- paste(calls_file$chrom, calls_file$begin, calls_file$end, sep = "_")
     rest <- calls_file[, -c(1:3)]
     col_index <- seq(1:ncol(rest))
@@ -176,8 +176,8 @@ parse_arguments <- function() {
     p <- add_argument(p, "--outcometype", help = "Select a outcome variable type: binary or continuous", type = "character", nargs = 1)
     p <- add_argument(p, "--binaryOrder", help = "Give the binary phenotype order, comma separated, e.g. Control, Patient will code Control as 0/Group1 and Patient as 1/Group2. This will also be used to further filter your data to only two groups (if you had more than >2 groups for your categorical data)", type = "character", nargs = "*")
     p <- add_argument(p, "--chr", help = "Indicate chromosome number to be analyzed (with chr prefix). Optional if bed file is provided.", type = "character", nargs = "*")
-    p <- add_argument(p, "--begin", help = "Define a begin position (inclusive) for a region of interest (optional, and should be combined with --end)", type = "integer", nargs = "*")
-    p <- add_argument(p, "--end", help = "Define a end position (inclusive) for a region of interest (optional, and should be combined with --begin)", type = "integer", nargs = "*")
+    p <- add_argument(p, "--chr_begin", help = "Define a begin position (inclusive) for a region of interest (optional, and should be combined with --chr_end)", type = "integer", nargs = "*")
+    p <- add_argument(p, "--chr_end", help = "Define a end position (inclusive) for a region of interest (optional, and should be combined with --chr_begin)", type = "integer", nargs = "*")
     p <- add_argument(p, "--bed", help = "A bed file (without a header) with three columns: chromosome (with chr prefix), begin, and end positions for region(s) of interest (optional). valr Rpackage is required - can be installed with mamba install r-valr on conda environment", type = "character", nargs = "*")
     Version <- "Run association testing for STRs with different modes and options. Version 1.3, October 20, 2022"
     print(Version)
@@ -188,8 +188,8 @@ parse_arguments <- function() {
 arg <- parse_arguments()
 
 # calls is a list with H1, H2 and strnames attributes
-if (!is.na(arg$chr) & !is.na(arg$begin) & !is.na(arg$end)) {
-    calls <- read_calls_chr_begin_end(input = arg$input, chrom = arg$chr, begin = arg$begin, end = arg$end)
+if ((!is.na(arg$chr) && !is.na(arg$chr_begin) && !is.na(arg$chr_end))) {
+    calls <- read_calls_chr_begin_end(input = arg$input, chr = arg$chr, chr_begin = arg$chr_begin, chr_end = arg$chr_end)
   } else if (!is.na(arg$bed)) {
     suppressPackageStartupMessages(library(valr))
     calls <- read_calls_bed(input = arg$input, bed = arg$bed)
