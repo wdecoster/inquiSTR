@@ -3,6 +3,12 @@
 
 # For now in R, to be converted into Rust
 
+# TODOS TO PREVENT USER STUPIDITY
+# TODO: check if mode is only SUM MIN or MAX, if not throw early error
+# TODO: check that if users supply a begin they also supply an end argument
+# TODO: either support running the whole file, or check that users at least supply one of chr, chr-begin-end or bed
+# TODO: add a progress bar :-D
+
 suppressPackageStartupMessages(library(data.table))
 suppressPackageStartupMessages(library(dplyr))
 suppressPackageStartupMessages(library(argparser, quietly = TRUE))
@@ -10,7 +16,7 @@ suppressPackageStartupMessages(library(argparser, quietly = TRUE))
 assoc_binary <- function(arg, calls_file, phenotype, no_cols, covariates) {
     binaryOrder <- gsub(",", " ", arg$binaryOrder)
     binaryOrder_prepared <- unlist(strsplit(binaryOrder, split = " "))
-    calls_file_selected <- as.data.table(calls_file[calls_file[[phenotype]] == c(binaryOrder_prepared),])
+    calls_file_selected <- as.data.table(calls_file[calls_file[[phenotype]] == c(binaryOrder_prepared), ])
     calls_file_selected[[phenotype]] <- factor(calls_file_selected[[phenotype]], c(binaryOrder_prepared))
     results_calls_file_selected <- as.data.frame(matrix(0, 1, 11))
     colnames(results_calls_file_selected) <- c("VariantID", "OR", "OR_L95", "OR_U95", "OR_stdErr", "Pvalue", "N", "AvgSize", "Group1_AvgSize", "Group2_AvgSize", "model")
@@ -87,9 +93,9 @@ assoc_continuous <- function(arg, calls_file, phenotype, no_cols, covariates) {
     write.table(sorted_results_calls_file, arg$out, sep = "\t", col.names = TRUE, quote = F, row.names = F)
 }
 
-read_calls <- function(input, chr) {
+read_calls <- function(input, chrom) {
     calls_file <- fread(input, header = TRUE)
-    calls_file <- subset(calls_file, chrom == chr)
+    calls_file <- subset(calls_file, chrom == chrom)
     strnames <- paste(calls_file$chrom, calls_file$begin, calls_file$end, sep = "_")
     rest <- calls_file[, -c(1:3)]
     col_index <- seq(1:ncol(rest))
@@ -103,7 +109,7 @@ read_calls <- function(input, chr) {
 
 read_calls_chr_begin_end <- function(input, chr, chr_begin, chr_end) {
     calls_file <- fread(input, header = TRUE)
-    calls_file <- subset(calls_file, ((chrom == chr) & (begin >= chr_begin) & (end <= chr_end)))
+    calls_file <- subset(calls_file, ((chr == chr) & (chr_begin >= chr_begin) & (chr_end <= chr_end)))
     strnames <- paste(calls_file$chrom, calls_file$begin, calls_file$end, sep = "_")
     rest <- calls_file[, -c(1:3)]
     col_index <- seq(1:ncol(rest))
@@ -121,8 +127,8 @@ read_calls_bed <- function(input, bed) {
     colnames(bedfile) <- c("chrom", "start", "end")
     colnames(calls_file)[2] <- "start"
     intersecttable <- as.data.table(bed_intersect(calls_file, bedfile, suffix = c("", ".y")))
-    intersecttable <- intersecttable[,1:(length(intersecttable)-3)]
-    intersecttable <- subset(intersecttable, !is.na(chrom))
+    intersecttable <- intersecttable[, 1:(length(intersecttable) - 3)]
+    intersecttable <- subset(intersecttable, !is.na(chrom)) ## WDC here is something wrong - there is no chrom
     colnames(intersecttable)[2] <- "begin"
     intersect_strnames <- paste(intersecttable$chrom, intersecttable$begin, intersecttable$end, sep = "_")
     rest <- intersecttable[, -c(1:3)]
@@ -190,10 +196,10 @@ arg <- parse_arguments()
 # calls is a list with H1, H2 and strnames attributes
 if ((!is.na(arg$chr) && !is.na(arg$chr_begin) && !is.na(arg$chr_end))) {
     calls <- read_calls_chr_begin_end(input = arg$input, chr = arg$chr, chr_begin = arg$chr_begin, chr_end = arg$chr_end)
-  } else if (!is.na(arg$bed)) {
+} else if (!is.na(arg$bed)) {
     suppressPackageStartupMessages(library(valr))
     calls <- read_calls_bed(input = arg$input, bed = arg$bed)
-  } else if (!is.na(arg$chr)){
+} else if (!is.na(arg$chr)) {
     calls <- read_calls(input = arg$input, chrom = arg$chr)
 }
 
