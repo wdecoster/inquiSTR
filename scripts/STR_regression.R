@@ -7,6 +7,7 @@
 # TODO: check if mode is only SUM MIN or MAX, if not throw early error
 # TODO: check that if users supply a begin they also supply an end argument
 # TODO: either support running the whole file, or check that users at least supply one of chr, chr-begin-end or bed
+# TODO: add a progress bar :-D
 
 suppressPackageStartupMessages(library(data.table))
 suppressPackageStartupMessages(library(dplyr))
