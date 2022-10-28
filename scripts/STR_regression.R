@@ -28,31 +28,31 @@ assoc_binary <- function(arg, calls_file, phenotype, no_cols, covariates) {
     for (i in seq(no_cols, ncol(calls_file_selected), 1)) {
         VariantToBeTested <- as.character(colnames(calls_file_selected)[i])
         if (!is.na(covariates)) {
-        covlist <- gsub(",", " ", covariates)
-        covlist_prepared <- unlist(strsplit(covlist, split = " "))
-        formulax <- paste(phenotype, paste(c(VariantToBeTested, covlist_prepared), collapse = "+"), sep = "~")
-        selectedtable <- na.omit(as.data.table(cbind(as.character(calls_file_selected[[phenotype]]),as.numeric(calls_file_selected[[VariantToBeTested]]),  calls_file_selected[,..covlist_prepared])))
-        colnames(selectedtable)[1:2] <- c(phenotype, VariantToBeTested)
-        group2 <- subset(selectedtable, selectedtable[[phenotype]] == binaryOrder_prepared[2])
-        group1 <- subset(selectedtable, selectedtable[[phenotype]] == binaryOrder_prepared[1])
-        AvgSize <- round(mean(as.numeric(selectedtable[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
-        Group2_AvgSize <- round(mean(as.numeric(group2[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
-        Group1_AvgSize <- round(mean(as.numeric(group1[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
-        Group2_Group1_absAvgSizeDiff <- round(abs(Group2_AvgSize - Group1_AvgSize), digits = 3)
-        Group2_N <- nrow(subset(group2, group2[[VariantToBeTested]] != "NaN"))
-        Group1_N <- nrow(subset(group1, group1[[VariantToBeTested]] != "NaN"))
+            covlist <- gsub(",", " ", covariates)
+            covlist_prepared <- unlist(strsplit(covlist, split = " "))
+            formulax <- paste(phenotype, paste(c(VariantToBeTested, covlist_prepared), collapse = "+"), sep = "~")
+            selectedtable <- na.omit(as.data.table(cbind(as.character(calls_file_selected[[phenotype]]), as.numeric(calls_file_selected[[VariantToBeTested]]), calls_file_selected[, ..covlist_prepared])))
+            colnames(selectedtable)[1:2] <- c(phenotype, VariantToBeTested)
+            group2 <- subset(selectedtable, selectedtable[[phenotype]] == binaryOrder_prepared[2])
+            group1 <- subset(selectedtable, selectedtable[[phenotype]] == binaryOrder_prepared[1])
+            AvgSize <- round(mean(as.numeric(selectedtable[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
+            Group2_AvgSize <- round(mean(as.numeric(group2[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
+            Group1_AvgSize <- round(mean(as.numeric(group1[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
+            Group2_Group1_absAvgSizeDiff <- round(abs(Group2_AvgSize - Group1_AvgSize), digits = 3)
+            Group2_N <- nrow(subset(group2, group2[[VariantToBeTested]] != "NaN"))
+            Group1_N <- nrow(subset(group1, group1[[VariantToBeTested]] != "NaN"))
         } else {
-        formulax <- paste(phenotype, VariantToBeTested, sep = "~")
-        selectedtable <- as.data.table(cbind(as.character(calls_file_selected[[phenotype]]), as.numeric(calls_file_selected[[VariantToBeTested]])))
-        colnames(selectedtable) <- c(phenotype, VariantToBeTested)
-        group2 <- subset(selectedtable, selectedtable[[phenotype]] == binaryOrder_prepared[2])
-        group1 <- subset(selectedtable, selectedtable[[phenotype]] == binaryOrder_prepared[1])
-        AvgSize <- round(mean(as.numeric(selectedtable[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
-        Group2_AvgSize <- round(mean(as.numeric(group2[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
-        Group1_AvgSize <- round(mean(as.numeric(group1[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
-        Group2_Group1_absAvgSizeDiff <- round(abs(Group2_AvgSize - Group1_AvgSize), digits = 3)
-        Group2_N <- nrow(subset(group2, group2[[VariantToBeTested]] != "NaN"))
-        Group1_N <- nrow(subset(group1, group1[[VariantToBeTested]] != "NaN"))
+            formulax <- paste(phenotype, VariantToBeTested, sep = "~")
+            selectedtable <- as.data.table(cbind(as.character(calls_file_selected[[phenotype]]), as.numeric(calls_file_selected[[VariantToBeTested]])))
+            colnames(selectedtable) <- c(phenotype, VariantToBeTested)
+            group2 <- subset(selectedtable, selectedtable[[phenotype]] == binaryOrder_prepared[2])
+            group1 <- subset(selectedtable, selectedtable[[phenotype]] == binaryOrder_prepared[1])
+            AvgSize <- round(mean(as.numeric(selectedtable[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
+            Group2_AvgSize <- round(mean(as.numeric(group2[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
+            Group1_AvgSize <- round(mean(as.numeric(group1[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
+            Group2_Group1_absAvgSizeDiff <- round(abs(Group2_AvgSize - Group1_AvgSize), digits = 3)
+            Group2_N <- nrow(subset(group2, group2[[VariantToBeTested]] != "NaN"))
+            Group1_N <- nrow(subset(group1, group1[[VariantToBeTested]] != "NaN"))
         }
         glm_result <- glm(formula = formulax, data = calls_file_selected, family = binomial(link = "logit"))
         Predictors <- names(glm_result$coefficients)
@@ -63,7 +63,7 @@ assoc_binary <- function(arg, calls_file, phenotype, no_cols, covariates) {
         OR_stdErr <- round(as.numeric(coef(summary(glm_result))[, "Std. Error"]), digits = 3)
         Pvalue <- as.numeric(coef(summary(glm_result))[, "Pr(>|z|)"])
         N <- nobs(glm_result)
-        Group2_Group1_OR_for_absAvgSizeDiff <- round((exp(Group2_Group1_absAvgSizeDiff*log(OR))), digits=3)
+        Group2_Group1_OR_for_absAvgSizeDiff <- round((exp(Group2_Group1_absAvgSizeDiff * log(OR))), digits = 3)
         model <- as.character(glm_result$formula)[1]
         tabular_result <- as.data.frame(cbind(Predictors, OR, OR_L95, OR_U95, OR_stdErr, Pvalue, N, Group1_N, Group2_N, AvgSize, Group1_AvgSize, Group2_AvgSize, Group2_Group1_absAvgSizeDiff, Group2_Group1_OR_for_absAvgSizeDiff, model))
         tabular_result <- subset(tabular_result, Predictors == VariantID)
@@ -71,8 +71,9 @@ assoc_binary <- function(arg, calls_file, phenotype, no_cols, covariates) {
         results_calls_file_selected <- rbind.data.frame(results_calls_file_selected, tabular_result)
         progress(i, init = TRUE, progress.bar = FALSE, console = TRUE, gui = FALSE)
         if (i == ncol(calls_file_selected)) {
-        message("Done!")
-        }}
+            message("Done!")
+        }
+    }
     results_calls_file_selected <- as.data.table(results_calls_file_selected[-1, ])
     sorted_results_calls_file_selected <- results_calls_file_selected[order(as.numeric(results_calls_file_selected$Pvalue)), ]
     write.table(sorted_results_calls_file_selected, arg$out, sep = "\t", col.names = TRUE, quote = F, row.names = F)
@@ -85,23 +86,23 @@ assoc_continuous <- function(arg, calls_file, phenotype, no_cols, covariates) {
     for (i in seq(no_cols, ncol(calls_file), 1)) {
         VariantToBeTested <- as.character(colnames(calls_file)[i])
         if (!is.na(covariates)) {
-        covlist <- gsub(",", " ", covariates)
-        covlist_prepared <- unlist(strsplit(covlist, split = " "))
-        formulax <- paste(phenotype, paste(c(VariantToBeTested, covlist_prepared), collapse = "+"), sep = "~")
-        selectedtable <- na.omit(as.data.table(cbind(as.character(calls_file_selected[[phenotype]]),as.numeric(calls_file_selected[[VariantToBeTested]]),  calls_file_selected[,..covlist_prepared])))
-        colnames(selectedtable)[1:2] <- c(phenotype, VariantToBeTested)
-        AvgSize <- round(mean(as.numeric(selectedtable[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
-        MaxSize <- round(max(as.numeric(selectedtable[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
-        MinSize <- round(min(as.numeric(selectedtable[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
-        Max_Min_absSizeDiff <- round(abs(max(as.numeric(selectedtable[[VariantToBeTested]]), na.rm = TRUE) - min(as.numeric(selectedtable[[VariantToBeTested]]), na.rm = TRUE)), digits = 3)
+            covlist <- gsub(",", " ", covariates)
+            covlist_prepared <- unlist(strsplit(covlist, split = " "))
+            formulax <- paste(phenotype, paste(c(VariantToBeTested, covlist_prepared), collapse = "+"), sep = "~")
+            selectedtable <- na.omit(as.data.table(cbind(as.character(calls_file_selected[[phenotype]]), as.numeric(calls_file_selected[[VariantToBeTested]]), calls_file_selected[, ..covlist_prepared])))
+            colnames(selectedtable)[1:2] <- c(phenotype, VariantToBeTested)
+            AvgSize <- round(mean(as.numeric(selectedtable[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
+            MaxSize <- round(max(as.numeric(selectedtable[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
+            MinSize <- round(min(as.numeric(selectedtable[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
+            Max_Min_absSizeDiff <- round(abs(max(as.numeric(selectedtable[[VariantToBeTested]]), na.rm = TRUE) - min(as.numeric(selectedtable[[VariantToBeTested]]), na.rm = TRUE)), digits = 3)
         } else {
-        formulax <- paste(phenotype, VariantToBeTested, sep = "~")
-        selectedtable <- as.data.table(cbind(as.character(calls_file[[phenotype]]), as.numeric(calls_file[[VariantToBeTested]])))
-        colnames(selectedtable) <- c(phenotype, VariantToBeTested)
-        AvgSize <- round(mean(as.numeric(selectedtable[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
-        MaxSize <- round(max(as.numeric(selectedtable[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
-        MinSize <- round(min(as.numeric(selectedtable[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
-        Max_Min_absSizeDiff <- round(abs(max(as.numeric(selectedtable[[VariantToBeTested]]), na.rm = TRUE) - min(as.numeric(selectedtable[[VariantToBeTested]]), na.rm = TRUE)), digits = 3)
+            formulax <- paste(phenotype, VariantToBeTested, sep = "~")
+            selectedtable <- as.data.table(cbind(as.character(calls_file[[phenotype]]), as.numeric(calls_file[[VariantToBeTested]])))
+            colnames(selectedtable) <- c(phenotype, VariantToBeTested)
+            AvgSize <- round(mean(as.numeric(selectedtable[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
+            MaxSize <- round(max(as.numeric(selectedtable[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
+            MinSize <- round(min(as.numeric(selectedtable[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
+            Max_Min_absSizeDiff <- round(abs(max(as.numeric(selectedtable[[VariantToBeTested]]), na.rm = TRUE) - min(as.numeric(selectedtable[[VariantToBeTested]]), na.rm = TRUE)), digits = 3)
         }
         glm_result <- glm(formula = formulax, data = calls_file, family = gaussian(link = "identity"))
         Predictors <- names(glm_result$coefficients)
@@ -112,7 +113,7 @@ assoc_continuous <- function(arg, calls_file, phenotype, no_cols, covariates) {
         Beta_stdErr <- round(as.numeric(coef(summary(glm_result))[, "Std. Error"]), digits = 3)
         Pvalue <- as.numeric(coef(summary(glm_result))[, "Pr(>|t|)"])
         N <- nobs(glm_result)
-        Max_Min_Beta_for_absSizeDiff <- round((Max_Min_absSizeDiff*Beta), digits=3)
+        Max_Min_Beta_for_absSizeDiff <- round((Max_Min_absSizeDiff * Beta), digits = 3)
         model <- as.character(glm_result$formula)[1]
         tabular_result <- as.data.frame(cbind(Predictors, Beta, Beta_L95, Beta_U95, Beta_stdErr, Pvalue, N, AvgSize, MinSize, MaxSize, Max_Min_absSizeDiff, Max_Min_Beta_for_absSizeDiff, model))
         tabular_result <- subset(tabular_result, Predictors == VariantID)
@@ -120,8 +121,9 @@ assoc_continuous <- function(arg, calls_file, phenotype, no_cols, covariates) {
         results_calls_file <- rbind.data.frame(results_calls_file, tabular_result)
         progress(i, init = TRUE, progress.bar = FALSE, console = TRUE, gui = FALSE)
         if (i == ncol(calls_file)) {
-        message("Done!")
-        }}
+            message("Done!")
+        }
+    }
     results_calls_file <- results_calls_file[-1, ]
     sorted_results_calls_file <- results_calls_file[order(as.numeric(results_calls_file$Pvalue)), ]
     write.table(sorted_results_calls_file, arg$out, sep = "\t", col.names = TRUE, quote = F, row.names = F)
@@ -139,35 +141,35 @@ assoc_binary_expandedAllele <- function(arg, calls_file, phenotype, no_cols, cov
     for (i in seq(no_cols, ncol(calls_file_selected), 1)) {
         VariantToBeTested <- as.character(colnames(calls_file_selected)[i])
         if (!is.na(covariates)) {
-        covlist <- gsub(",", " ", covariates)
-        covlist_prepared <- unlist(strsplit(covlist, split = " "))
-        selectedtable <- na.omit(as.data.table(cbind(as.character(calls_file_selected[[phenotype]]),as.numeric(calls_file_selected[[VariantToBeTested]]),  calls_file_selected[,..covlist_prepared])))
-        colnames(selectedtable)[1:2] <- c(phenotype, VariantToBeTested)
-        group2 <- subset(selectedtable, selectedtable[[VariantToBeTested]] >= expandedAllele)
-        group1 <- subset(selectedtable, selectedtable[[VariantToBeTested]] < expandedAllele)
-        calls_file_selected$expanded_allele_group <- ifelse(calls_file_selected[[VariantToBeTested]] >= expandedAllele, "Expanded", "notExpanded")
-        calls_file_selected$expanded_allele_group <- factor(calls_file_selected$expanded_allele_group, c("notExpanded","Expanded"))
-        formulax <- paste(phenotype, paste(c("expanded_allele_group", covlist_prepared), collapse = "+"), sep = "~")
-        AvgSize <- round(mean(as.numeric(selectedtable[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
-        Group2_AvgSize <- round(mean(as.numeric(group2[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
-        Group1_AvgSize <- round(mean(as.numeric(group1[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
-        Group2_Group1_absAvgSizeDiff <- round(abs(Group2_AvgSize - Group1_AvgSize), digits = 3)
-        Group2_N <- nrow(subset(group2, group2[[VariantToBeTested]] != "NaN"))
-        Group1_N <- nrow(subset(group1, group1[[VariantToBeTested]] != "NaN"))
+            covlist <- gsub(",", " ", covariates)
+            covlist_prepared <- unlist(strsplit(covlist, split = " "))
+            selectedtable <- na.omit(as.data.table(cbind(as.character(calls_file_selected[[phenotype]]), as.numeric(calls_file_selected[[VariantToBeTested]]), calls_file_selected[, ..covlist_prepared])))
+            colnames(selectedtable)[1:2] <- c(phenotype, VariantToBeTested)
+            group2 <- subset(selectedtable, selectedtable[[VariantToBeTested]] >= expandedAllele)
+            group1 <- subset(selectedtable, selectedtable[[VariantToBeTested]] < expandedAllele)
+            calls_file_selected$expanded_allele_group <- ifelse(calls_file_selected[[VariantToBeTested]] >= expandedAllele, "Expanded", "notExpanded")
+            calls_file_selected$expanded_allele_group <- factor(calls_file_selected$expanded_allele_group, c("notExpanded", "Expanded"))
+            formulax <- paste(phenotype, paste(c("expanded_allele_group", covlist_prepared), collapse = "+"), sep = "~")
+            AvgSize <- round(mean(as.numeric(selectedtable[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
+            Group2_AvgSize <- round(mean(as.numeric(group2[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
+            Group1_AvgSize <- round(mean(as.numeric(group1[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
+            Group2_Group1_absAvgSizeDiff <- round(abs(Group2_AvgSize - Group1_AvgSize), digits = 3)
+            Group2_N <- nrow(subset(group2, group2[[VariantToBeTested]] != "NaN"))
+            Group1_N <- nrow(subset(group1, group1[[VariantToBeTested]] != "NaN"))
         } else {
-        selectedtable <- as.data.table(cbind(as.character(calls_file_selected[[phenotype]]), as.numeric(calls_file_selected[[VariantToBeTested]])))
-        colnames(selectedtable) <- c(phenotype, VariantToBeTested)
-        group2 <- subset(selectedtable, selectedtable[[VariantToBeTested]] >= expandedAllele)
-        group1 <- subset(selectedtable, selectedtable[[VariantToBeTested]] < expandedAllele)
-        calls_file_selected$expanded_allele_group <- ifelse(calls_file_selected[[VariantToBeTested]] >= expandedAllele, "Expanded", "notExpanded")
-        calls_file_selected$expanded_allele_group <- factor(calls_file_selected$expanded_allele_group, c("notExpanded","Expanded"))
-        formulax <- paste(phenotype, "expanded_allele_group", sep = "~")
-        AvgSize <- round(mean(as.numeric(selectedtable[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
-        Group2_AvgSize <- round(mean(as.numeric(group2[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
-        Group1_AvgSize <- round(mean(as.numeric(group1[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
-        Group2_Group1_absAvgSizeDiff <- round(abs(Group2_AvgSize - Group1_AvgSize), digits = 3)
-        Group2_N <- nrow(subset(group2, group2[[VariantToBeTested]] != "NaN"))
-        Group1_N <- nrow(subset(group1, group1[[VariantToBeTested]] != "NaN"))
+            selectedtable <- as.data.table(cbind(as.character(calls_file_selected[[phenotype]]), as.numeric(calls_file_selected[[VariantToBeTested]])))
+            colnames(selectedtable) <- c(phenotype, VariantToBeTested)
+            group2 <- subset(selectedtable, selectedtable[[VariantToBeTested]] >= expandedAllele)
+            group1 <- subset(selectedtable, selectedtable[[VariantToBeTested]] < expandedAllele)
+            calls_file_selected$expanded_allele_group <- ifelse(calls_file_selected[[VariantToBeTested]] >= expandedAllele, "Expanded", "notExpanded")
+            calls_file_selected$expanded_allele_group <- factor(calls_file_selected$expanded_allele_group, c("notExpanded", "Expanded"))
+            formulax <- paste(phenotype, "expanded_allele_group", sep = "~")
+            AvgSize <- round(mean(as.numeric(selectedtable[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
+            Group2_AvgSize <- round(mean(as.numeric(group2[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
+            Group1_AvgSize <- round(mean(as.numeric(group1[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
+            Group2_Group1_absAvgSizeDiff <- round(abs(Group2_AvgSize - Group1_AvgSize), digits = 3)
+            Group2_N <- nrow(subset(group2, group2[[VariantToBeTested]] != "NaN"))
+            Group1_N <- nrow(subset(group1, group1[[VariantToBeTested]] != "NaN"))
         }
         glm_result <- glm(formula = formulax, data = calls_file_selected, family = binomial(link = "logit"))
         Predictors <- names(glm_result$coefficients)
@@ -178,17 +180,18 @@ assoc_binary_expandedAllele <- function(arg, calls_file, phenotype, no_cols, cov
         OR_stdErr <- round(as.numeric(coef(summary(glm_result))[, "Std. Error"]), digits = 3)
         Pvalue <- as.numeric(coef(summary(glm_result))[, "Pr(>|z|)"])
         N <- nobs(glm_result)
-        Group2_Group1_OR_for_absAvgSizeDiff <- round((exp(Group2_Group1_absAvgSizeDiff*log(OR))), digits=3)
+        Group2_Group1_OR_for_absAvgSizeDiff <- round((exp(Group2_Group1_absAvgSizeDiff * log(OR))), digits = 3)
         model <- as.character(glm_result$formula)[1]
         tabular_result <- as.data.frame(cbind(Predictors, OR, OR_L95, OR_U95, OR_stdErr, Pvalue, N, Group1_N, Group2_N, AvgSize, Group1_AvgSize, Group2_AvgSize, Group2_Group1_absAvgSizeDiff, Group2_Group1_OR_for_absAvgSizeDiff, model))
         tabular_result <- subset(tabular_result, Predictors == VariantID)
         colnames(tabular_result)[1] <- "VariantID"
-        tabular_result$VariantID <- paste0(as.character(arg$single_variant),"_ExpandedAllele")
+        tabular_result$VariantID <- paste0(as.character(arg$single_variant), "_ExpandedAllele")
         results_calls_file_selected <- rbind.data.frame(results_calls_file_selected, tabular_result)
         progress(i, init = TRUE, progress.bar = FALSE, console = TRUE, gui = FALSE)
         if (i == ncol(calls_file_selected)) {
-        message("Done!")
-        }}
+            message("Done!")
+        }
+    }
     results_calls_file_selected <- as.data.table(results_calls_file_selected[-1, ])
     sorted_results_calls_file_selected <- results_calls_file_selected[order(as.numeric(results_calls_file_selected$Pvalue)), ]
     write.table(sorted_results_calls_file_selected, arg$out, sep = "\t", col.names = TRUE, quote = F, row.names = F)
@@ -197,42 +200,42 @@ assoc_binary_expandedAllele <- function(arg, calls_file, phenotype, no_cols, cov
 assoc_continuous_expandedAllele <- function(arg, calls_file, phenotype, no_cols, covariates, expandedAllele) {
     expandedAllele <- as.numeric(arg$expandedAllele)
     results_calls_file <- as.data.frame(matrix(0, 1, 19))
-    colnames(results_calls_file) <- c("VariantID", "Beta", "Beta_L95", "Beta_U95", "Beta_stdErr", "Pvalue", "N", "Group1_N", "Group2_N", "AvgSize", "Group1_AvgSize", "Group2_AvgSize", "Group2_Group1_absAvgSizeDiff", "Group2_Group1_Beta_for_absAvgSizeDiff", "MinSize", "MaxSize", "Max_Min_absSizeDiff","Max_Min_Beta_for_absSizeDiff", "model")
+    colnames(results_calls_file) <- c("VariantID", "Beta", "Beta_L95", "Beta_U95", "Beta_stdErr", "Pvalue", "N", "Group1_N", "Group2_N", "AvgSize", "Group1_AvgSize", "Group2_AvgSize", "Group2_Group1_absAvgSizeDiff", "Group2_Group1_Beta_for_absAvgSizeDiff", "MinSize", "MaxSize", "Max_Min_absSizeDiff", "Max_Min_Beta_for_absSizeDiff", "model")
     message(paste0("Running association testing for ", (ncol(calls_file) - no_cols) + 1, " qualifying variants..."))
     for (i in seq(no_cols, ncol(calls_file), 1)) {
         VariantToBeTested <- as.character(colnames(calls_file)[i])
         if (!is.na(covariates)) {
-        covlist <- gsub(",", " ", covariates)
-        covlist_prepared <- unlist(strsplit(covlist, split = " "))
-        selectedtable <- na.omit(as.data.table(cbind(as.character(calls_file_selected[[phenotype]]),as.numeric(calls_file_selected[[VariantToBeTested]]),  calls_file_selected[,..covlist_prepared])))
-        colnames(selectedtable)[1:2] <- c(phenotype, VariantToBeTested)
-        group2 <- subset(selectedtable, selectedtable[[VariantToBeTested]] >= expandedAllele)
-        group1 <- subset(selectedtable, selectedtable[[VariantToBeTested]] < expandedAllele)
-        calls_file_selected$expanded_allele_group <- ifelse(calls_file_selected[[VariantToBeTested]] >= expandedAllele, "Expanded", "notExpanded")
-        calls_file_selected$expanded_allele_group <- factor(calls_file_selected$expanded_allele_group, c("notExpanded","Expanded"))
-        formulax <- paste(phenotype, paste(c("expanded_allele_group", covlist_prepared), collapse = "+"), sep = "~")
-        AvgSize <- round(mean(as.numeric(selectedtable[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
-        Group2_AvgSize <- round(mean(as.numeric(group2[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
-        Group1_AvgSize <- round(mean(as.numeric(group1[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
-        Group2_Group1_absAvgSizeDiff <- round(abs(Group2_AvgSize - Group1_AvgSize), digits = 3)
-        MaxSize <- round(max(as.numeric(selectedtable[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
-        MinSize <- round(min(as.numeric(selectedtable[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
-        Max_Min_absSizeDiff <- round(abs(max(as.numeric(selectedtable[[VariantToBeTested]]), na.rm = TRUE) - min(as.numeric(selectedtable[[VariantToBeTested]]), na.rm = TRUE)), digits = 3)
+            covlist <- gsub(",", " ", covariates)
+            covlist_prepared <- unlist(strsplit(covlist, split = " "))
+            selectedtable <- na.omit(as.data.table(cbind(as.character(calls_file_selected[[phenotype]]), as.numeric(calls_file_selected[[VariantToBeTested]]), calls_file_selected[, ..covlist_prepared])))
+            colnames(selectedtable)[1:2] <- c(phenotype, VariantToBeTested)
+            group2 <- subset(selectedtable, selectedtable[[VariantToBeTested]] >= expandedAllele)
+            group1 <- subset(selectedtable, selectedtable[[VariantToBeTested]] < expandedAllele)
+            calls_file_selected$expanded_allele_group <- ifelse(calls_file_selected[[VariantToBeTested]] >= expandedAllele, "Expanded", "notExpanded")
+            calls_file_selected$expanded_allele_group <- factor(calls_file_selected$expanded_allele_group, c("notExpanded", "Expanded"))
+            formulax <- paste(phenotype, paste(c("expanded_allele_group", covlist_prepared), collapse = "+"), sep = "~")
+            AvgSize <- round(mean(as.numeric(selectedtable[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
+            Group2_AvgSize <- round(mean(as.numeric(group2[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
+            Group1_AvgSize <- round(mean(as.numeric(group1[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
+            Group2_Group1_absAvgSizeDiff <- round(abs(Group2_AvgSize - Group1_AvgSize), digits = 3)
+            MaxSize <- round(max(as.numeric(selectedtable[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
+            MinSize <- round(min(as.numeric(selectedtable[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
+            Max_Min_absSizeDiff <- round(abs(max(as.numeric(selectedtable[[VariantToBeTested]]), na.rm = TRUE) - min(as.numeric(selectedtable[[VariantToBeTested]]), na.rm = TRUE)), digits = 3)
         } else {
-        selectedtable <- as.data.table(cbind(as.character(calls_file_selected[[phenotype]]), as.numeric(calls_file_selected[[VariantToBeTested]])))
-        colnames(selectedtable) <- c(phenotype, VariantToBeTested)
-        group2 <- subset(selectedtable, selectedtable[[VariantToBeTested]] >= expandedAllele)
-        group1 <- subset(selectedtable, selectedtable[[VariantToBeTested]] < expandedAllele)
-        calls_file_selected$expanded_allele_group <- ifelse(calls_file_selected[[VariantToBeTested]] >= expandedAllele, "Expanded", "notExpanded")
-        calls_file_selected$expanded_allele_group <- factor(calls_file_selected$expanded_allele_group, c("notExpanded","Expanded"))
-        formulax <- paste(phenotype, "expanded_allele_group", sep = "~")
-        AvgSize <- round(mean(as.numeric(selectedtable[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
-        Group2_AvgSize <- round(mean(as.numeric(group2[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
-        Group1_AvgSize <- round(mean(as.numeric(group1[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
-        Group2_Group1_absAvgSizeDiff <- round(abs(Group2_AvgSize - Group1_AvgSize), digits = 3)
-        MaxSize <- round(max(as.numeric(selectedtable[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
-        MinSize <- round(min(as.numeric(selectedtable[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
-        Max_Min_absSizeDiff <- round(abs(max(as.numeric(selectedtable[[VariantToBeTested]]), na.rm = TRUE) - min(as.numeric(selectedtable[[VariantToBeTested]]), na.rm = TRUE)), digits = 3)
+            selectedtable <- as.data.table(cbind(as.character(calls_file_selected[[phenotype]]), as.numeric(calls_file_selected[[VariantToBeTested]])))
+            colnames(selectedtable) <- c(phenotype, VariantToBeTested)
+            group2 <- subset(selectedtable, selectedtable[[VariantToBeTested]] >= expandedAllele)
+            group1 <- subset(selectedtable, selectedtable[[VariantToBeTested]] < expandedAllele)
+            calls_file_selected$expanded_allele_group <- ifelse(calls_file_selected[[VariantToBeTested]] >= expandedAllele, "Expanded", "notExpanded")
+            calls_file_selected$expanded_allele_group <- factor(calls_file_selected$expanded_allele_group, c("notExpanded", "Expanded"))
+            formulax <- paste(phenotype, "expanded_allele_group", sep = "~")
+            AvgSize <- round(mean(as.numeric(selectedtable[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
+            Group2_AvgSize <- round(mean(as.numeric(group2[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
+            Group1_AvgSize <- round(mean(as.numeric(group1[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
+            Group2_Group1_absAvgSizeDiff <- round(abs(Group2_AvgSize - Group1_AvgSize), digits = 3)
+            MaxSize <- round(max(as.numeric(selectedtable[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
+            MinSize <- round(min(as.numeric(selectedtable[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
+            Max_Min_absSizeDiff <- round(abs(max(as.numeric(selectedtable[[VariantToBeTested]]), na.rm = TRUE) - min(as.numeric(selectedtable[[VariantToBeTested]]), na.rm = TRUE)), digits = 3)
         }
         glm_result <- glm(formula = formulax, data = calls_file, family = gaussian(link = "identity"))
         Predictors <- names(glm_result$coefficients)
@@ -245,18 +248,19 @@ assoc_continuous_expandedAllele <- function(arg, calls_file, phenotype, no_cols,
         N <- nobs(glm_result)
         Group2_N <- nrow(subset(group2, !is.na(group2[[VariantToBeTested]])))
         Group1_N <- nrow(subset(group1, !is.na(group1[[VariantToBeTested]])))
-        Group2_Group1_Beta_for_absAvgSizeDiff <- round((Group2_Group1_absAvgSizeDiff*Beta), digits=3)
-        Max_Min_Beta_for_absSizeDiff <- round((Max_Min_absSizeDiff*Beta), digits=3)
+        Group2_Group1_Beta_for_absAvgSizeDiff <- round((Group2_Group1_absAvgSizeDiff * Beta), digits = 3)
+        Max_Min_Beta_for_absSizeDiff <- round((Max_Min_absSizeDiff * Beta), digits = 3)
         model <- as.character(glm_result$formula)[1]
         tabular_result <- as.data.frame(cbind(Predictors, Beta, Beta_L95, Beta_U95, Beta_stdErr, Pvalue, N, Group1_N, Group2_N, AvgSize, Group1_AvgSize, Group2_AvgSize, Group2_Group1_absAvgSizeDiff, Group2_Group1_Beta_for_absAvgSizeDiff, MinSize, MaxSize, Max_Min_absSizeDiff, Max_Min_Beta_for_absSizeDiff, model))
         tabular_result <- subset(tabular_result, Predictors == VariantID)
         colnames(tabular_result)[1] <- "VariantID"
-        tabular_result$VariantID <- paste0(as.character(arg$single_variant),"_ExpandedAllele")
+        tabular_result$VariantID <- paste0(as.character(arg$single_variant), "_ExpandedAllele")
         results_calls_file <- rbind.data.frame(results_calls_file, tabular_result)
         progress(i, init = TRUE, progress.bar = FALSE, console = TRUE, gui = FALSE)
         if (i == ncol(calls_file)) {
-        message("Done!")
-        }}
+            message("Done!")
+        }
+    }
     results_calls_file <- results_calls_file[-1, ]
     sorted_results_calls_file <- results_calls_file[order(as.numeric(results_calls_file$Pvalue)), ]
     write.table(sorted_results_calls_file, arg$out, sep = "\t", col.names = TRUE, quote = F, row.names = F)
@@ -352,7 +356,7 @@ prepare_phenotype <- function(phenofile, phenotype, sample_list) {
 prepare_calls <- function(calls, sample_list_wPheno, STRmode, missing_cutoff) {
     message("Processing the input file based on the STRmode chosen...")
     if (STRmode == "MEAN") {
-        calls2 <- (pmax(calls$H1, calls$H2,na.rm=TRUE) + pmin(inqH1[,2],inqH2[,2],na.rm=TRUE)) / 2
+        calls2 <- (pmax(calls$H1, calls$H2, na.rm = TRUE) + pmin(inqH1[, 2], inqH2[, 2], na.rm = TRUE)) / 2
     } else if (STRmode == "MAX") {
         calls2 <- pmax(calls$H1, calls$H2, na.rm = TRUE)
     } else if (STRmode == "MIN") {
@@ -394,33 +398,33 @@ arg <- parse_arguments()
 
 # argument checks
 if (is.na(arg$input) || is.na(arg$phenocovar) || is.na(arg$phenotype) || is.na(arg$out) || is.na(arg$STRmode) || is.na(arg$outcometype) || is.na(arg$run)) {
-  message("Error: exiting because at least one of the following required arguments is missing: --input, --phenocovar, --phenotype, --out, --STRmode, --outcometype, --run")
-  q("no")
+    message("Error: exiting because at least one of the following required arguments is missing: --input, --phenocovar, --phenotype, --out, --STRmode, --outcometype, --run")
+    q("no")
 }
 
 if ((arg$outcometype == "binary") && is.na(arg$binaryOrder)) {
-  message("Error: exiting because --binaryOrder argument is missing, please provide it when you use --outcometype binary")
-  q("no")
+    message("Error: exiting because --binaryOrder argument is missing, please provide it when you use --outcometype binary")
+    q("no")
 }
 
 if ((arg$run == "chromosome") && is.na(arg$chr)) {
-  message("Error: exiting because --chr argument is missing, please provide it when you use --run chromosome")
-  q("no")
+    message("Error: exiting because --chr argument is missing, please provide it when you use --run chromosome")
+    q("no")
 }
 
 if ((arg$run == "chr_interval") && ((is.na(arg$chr)) || (is.na(arg$chr_begin)) || (is.na(arg$chr_end)))) {
-  message("Error: exiting because At least one of the --chr, --chr_begin, or --chr_end arguments is missing, please provide these when you use --run chr_interval")
-  q("no")
+    message("Error: exiting because At least one of the --chr, --chr_begin, or --chr_end arguments is missing, please provide these when you use --run chr_interval")
+    q("no")
 }
 
 if ((arg$run == "bed_interval") && is.na(arg$bed)) {
-  message("Error: exiting because --bed argument, therefore input bed file, is missing; please provide it when you use --run bed_interval")
-  q("no")
+    message("Error: exiting because --bed argument, therefore input bed file, is missing; please provide it when you use --run bed_interval")
+    q("no")
 }
 
 if ((arg$run == "single_variant") && is.na(arg$expandedAllele)) {
-  message("Error: exiting because At least one of the two following aruguments is missing: --single_variant --expandedAllele; please provide these when you use --run single_variant")
-  q("no")
+    message("Error: exiting because At least one of the two following aruguments is missing: --single_variant --expandedAllele; please provide these when you use --run single_variant")
+    q("no")
 }
 
 # calls is a list with H1, H2 and strnames attributes
