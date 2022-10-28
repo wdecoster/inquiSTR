@@ -4,7 +4,7 @@ Genotyping of STRs with long reads
 
 This repository contains Rust code for inquiSTR, a tool to genotype STRs from long read sequencing data, and has been tested with ONT data.
 
-## USAGE
+## Usage for Association Testing
 
 Below are some worked usage examples for "MAX" STRmode for binary phenotypes, without covariates.
 
@@ -61,3 +61,9 @@ Time:
 'Rscript STR_regression.R --input combined.inq.gz --phenocovar inquistr-samples.tsv --phenotype group --run single_variant --single_variant chr15_34419414_34419461 --expandedAllele 201 --out singleVariant_chr15_34419414_34419461_expandedAllele201_testResults.tsv --STRmode MAX --outcometype binary --binaryOrder CON,aFTLD-U'
 
 Time:
+
+| type | time       |
+|------|------------|
+| real | 0m37.876s  |
+| user | 11m44.990s |
+| sys  | 0m12.291s  |

@@ -171,7 +171,7 @@ assoc_binary_expandedAllele <- function(arg, calls_file, phenotype, no_cols, cov
         }
         glm_result <- glm(formula = formulax, data = calls_file_selected, family = binomial(link = "logit"))
         Predictors <- names(glm_result$coefficients)
-        VariantID <- as.character(arg$single_variant)
+        VariantID <- names(glm_result$coefficients)[2]
         OR <- round(as.numeric(exp(glm_result$coefficients)), digits = 3)
         OR_L95 <- round(as.numeric(exp(confint.default(glm_result, level = 0.95)[, 1])), digits = 3)
         OR_U95 <- round(as.numeric(exp(confint.default(glm_result, level = 0.95)[, 2])), digits = 3)
@@ -183,6 +183,7 @@ assoc_binary_expandedAllele <- function(arg, calls_file, phenotype, no_cols, cov
         tabular_result <- as.data.frame(cbind(Predictors, OR, OR_L95, OR_U95, OR_stdErr, Pvalue, N, Group1_N, Group2_N, AvgSize, Group1_AvgSize, Group2_AvgSize, Group2_Group1_absAvgSizeDiff, Group2_Group1_OR_for_absAvgSizeDiff, model))
         tabular_result <- subset(tabular_result, Predictors == VariantID)
         colnames(tabular_result)[1] <- "VariantID"
+        tabular_result$VariantID <- paste0(as.character(arg$single_variant),"_ExpandedAllele")
         results_calls_file_selected <- rbind.data.frame(results_calls_file_selected, tabular_result)
         progress(i, init = TRUE, progress.bar = FALSE, console = TRUE, gui = FALSE)
         if (i == ncol(calls_file_selected)) {
@@ -235,7 +236,7 @@ assoc_continuous_expandedAllele <- function(arg, calls_file, phenotype, no_cols,
         }
         glm_result <- glm(formula = formulax, data = calls_file, family = gaussian(link = "identity"))
         Predictors <- names(glm_result$coefficients)
-        VariantID <- as.character(arg$single_variant)
+        VariantID <- names(glm_result$coefficients)[2]
         Beta <- round(as.numeric(exp(glm_result$coefficients)), digits = 3)
         Beta_L95 <- round(as.numeric(exp(confint.default(glm_result, level = 0.95)[, 1])), digits = 3)
         Beta_U95 <- round(as.numeric(exp(confint.default(glm_result, level = 0.95)[, 2])), digits = 3)
@@ -250,6 +251,7 @@ assoc_continuous_expandedAllele <- function(arg, calls_file, phenotype, no_cols,
         tabular_result <- as.data.frame(cbind(Predictors, Beta, Beta_L95, Beta_U95, Beta_stdErr, Pvalue, N, Group1_N, Group2_N, AvgSize, Group1_AvgSize, Group2_AvgSize, Group2_Group1_absAvgSizeDiff, Group2_Group1_Beta_for_absAvgSizeDiff, MinSize, MaxSize, Max_Min_absSizeDiff, Max_Min_Beta_for_absSizeDiff, model))
         tabular_result <- subset(tabular_result, Predictors == VariantID)
         colnames(tabular_result)[1] <- "VariantID"
+        tabular_result$VariantID <- paste0(as.character(arg$single_variant),"_ExpandedAllele")
         results_calls_file <- rbind.data.frame(results_calls_file, tabular_result)
         progress(i, init = TRUE, progress.bar = FALSE, console = TRUE, gui = FALSE)
         if (i == ncol(calls_file)) {
