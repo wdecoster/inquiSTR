@@ -12,17 +12,23 @@ In the input test file, number of samples were 268, total number of variants wer
 
 ### Full (genome-wide) run  
 
-'Rscript STR_regression.R --input combined.inq.gz --phenocovar inquistr-samples.tsv --phenotype group --run full --out full_genome_wide_testResults.tsv --STRmode MAX --outcometype binary --binaryOrder CON,aFTLD-U'
+```bash
+Rscript STR_regression.R --input combined.inq.gz --phenocovar inquistr-samples.tsv --phenotype group --run full --out full_genome_wide_testResults.tsv --STRmode MAX --outcometype binary --binaryOrder CON,aFTLD-U
+```
 
 Though, this may take days, on our testing about 20% of variants were tested in a day. It would be more optimal to take advantage of processes like GNU parallel in combination with --run chromosome mode, for instance:
 
-''seq 1 1 22 | parallel --tmpdir ~/tmp/ --noswap --progress --eta -j 7 'Rscript STR_regression.R --input combined.inq.gz --phenocovar inquistr-samples.tsv --phenotype group --run chromosome --chr chr{} --out chr{}.genome_wide_testResults.tsv --STRmode MAX --outcometype binary --binaryOrder CON,aFTLD-U''
+```bash
+seq 1 1 22 | parallel --tmpdir ~/tmp/ --noswap --progress --eta -j 7 'Rscript STR_regression.R --input combined.inq.gz --phenocovar inquistr-samples.tsv --phenotype group --run chromosome --chr chr{} --out chr{}.genome_wide_testResults.tsv --STRmode MAX --outcometype binary --binaryOrder CON,aFTLD-U'
+```
 
 This time it took about 20-25 minutes to run all 22 chromosomes.
 
 ### Chromosome-wide run  
 
-'Rscript STR_regression.R --input combined.inq.gz --phenocovar inquistr-samples.tsv --phenotype group --run chromosome --chr chr15 --out chr15_testResults.tsv --STRmode MAX --outcometype binary --binaryOrder CON,aFTLD-U'
+```bash
+Rscript STR_regression.R --input combined.inq.gz --phenocovar inquistr-samples.tsv --phenotype group --run chromosome --chr chr15 --out chr15_testResults.tsv --STRmode MAX --outcometype binary --binaryOrder CON,aFTLD-U'
+```
 
 Time:
 
@@ -34,7 +40,9 @@ Time:
 
 ### Chromosome interval run
 
-'Rscript STR_regression.R --input combined.inq.gz --phenocovar inquistr-samples.tsv --phenotype group --run chr_interval --chr chr15 --chr_begin 34419410 --chr_end 34419465 --out chr15_34419410_34419465_testResults.tsv --STRmode MAX --outcometype binary --binaryOrder CON,aFTLD-U'
+```bash
+Rscript STR_regression.R --input combined.inq.gz --phenocovar inquistr-samples.tsv --phenotype group --run chr_interval --chr chr15 --chr_begin 34419410 --chr_end 34419465 --out chr15_34419410_34419465_testResults.tsv --STRmode MAX --outcometype binary --binaryOrder CON,aFTLD-U
+```
 
 Time:
 
@@ -46,7 +54,9 @@ Time:
 
 ### Bed interval run
 
-'Rscript STR_regression.R --input combined.inq.gz --phenocovar inquistr-samples.tsv --phenotype group --run bed_interval --bed chr15_roi.bed --out bed_chr15_roi_testResults.tsv --STRmode MAX --outcometype binary --binaryOrder CON,aFTLD-U'
+```bash
+Rscript STR_regression.R --input combined.inq.gz --phenocovar inquistr-samples.tsv --phenotype group --run bed_interval --bed chr15_roi.bed --out bed_chr15_roi_testResults.tsv --STRmode MAX --outcometype binary --binaryOrder CON,aFTLD-U
+```
 
 Time:
 
@@ -58,7 +68,9 @@ Time:
 
 ### Single variant (Expanded Allele) run
 
-'Rscript STR_regression.R --input combined.inq.gz --phenocovar inquistr-samples.tsv --phenotype group --run single_variant --single_variant chr15_34419414_34419461 --expandedAllele 201 --out singleVariant_chr15_34419414_34419461_expandedAllele201_testResults.tsv --STRmode MAX --outcometype binary --binaryOrder CON,aFTLD-U'
+```bash
+Rscript STR_regression.R --input combined.inq.gz --phenocovar inquistr-samples.tsv --phenotype group --run single_variant --single_variant chr15_34419414_34419461 --expandedAllele 201 --out singleVariant_chr15_34419414_34419461_expandedAllele201_testResults.tsv --STRmode MAX --outcometype binary --binaryOrder CON,aFTLD-U
+```
 
 Time:
 
