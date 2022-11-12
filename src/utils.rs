@@ -25,6 +25,7 @@ pub fn reader(filename: &str) -> Box<dyn BufRead> {
 
 /// parse a region string
 pub fn process_region(reg: String) -> Result<(String, u32, u32), Box<dyn std::error::Error>> {
+    let reg = reg.replace(',', "");
     let chrom = reg.split(':').collect::<Vec<&str>>()[0];
     let interval = reg.split(':').collect::<Vec<&str>>()[1];
     let start: u32 = interval.split('-').collect::<Vec<&str>>()[0]
