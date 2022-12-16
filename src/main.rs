@@ -7,7 +7,9 @@ pub mod assoc;
 pub mod call;
 pub mod combine;
 pub mod histogram;
+pub mod metadata;
 pub mod outlier;
+pub mod plot;
 pub mod query;
 pub mod utils;
 
@@ -117,7 +119,7 @@ enum Commands {
         #[clap(short, long, value_enum, value_parser, default_value_t = assoc::Mode::Max)]
         mode: assoc::Mode,
 
-        /// test column and groups e.g. group:PAT,CON with <group> the name of the column containing <PAT> and <CON>
+        /// test column and 2 groups to test e.g. group:PAT,CON with <group> the name of the column containing <PAT> and <CON>
         #[clap(short, long, value_parser)]
         condition: String,
 
@@ -125,6 +127,28 @@ enum Commands {
         #[clap(long, value_parser)]
         covariates: Option<String>,
         // p <- add_argument(p, "--outcometype", help = "Select a outcome variable type: binary or continuous", nargs = 1)
+    },
+    /// Show a histogram with multiple groups for a specific repeat
+    Plot {
+        /// combined file of calls
+        #[clap(parse(from_os_str), required = true, validator=is_file)]
+        combined: PathBuf,
+
+        /// file with sample_id, phenotype and covariates
+        #[clap(parse(from_os_str), required = true, validator=is_file)]
+        metadata: PathBuf,
+
+        /// test column and groups to plot e.g. group:PAT,CON with <group> the name of the column containing <PAT> and <CON>
+        #[clap(short, long, value_parser)]
+        condition: String,
+
+        /// region to query
+        #[clap(required = true)]
+        region: String,
+
+        /// HTML output file name
+        #[clap(short, long, value_parser, default_value_t=String::from("groupplot.html"))]
+        output: String,
     },
 }
 
@@ -187,6 +211,13 @@ fn main() {
                 covariates,
             );
         }
+        Commands::Plot {
+            combined,
+            metadata,
+            condition,
+            region,
+            output,
+        } => plot::plot(combined, metadata, condition, region, output),
     }
 }
 

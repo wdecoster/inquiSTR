@@ -1,6 +1,6 @@
 [package]
 name = "inquiSTR"
-version = "0.7.1"
+version = "0.8.0"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -18,6 +18,7 @@ histo_fp = "0.2.1"
 indicatif = {version = "0.17.1", features = ["rayon"]}
 linecount = "0.1.0"
 itertools = "0.10.5"
+plotly = "0.8.3"
 
 [dev-dependencies]
 ctor = "*"
