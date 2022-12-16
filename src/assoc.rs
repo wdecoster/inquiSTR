@@ -1,5 +1,7 @@
 use clap::ValueEnum;
+use itertools::Itertools;
 use log::error;
+use std::cmp::Ordering;
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
 
@@ -13,11 +15,6 @@ pub enum Mode {
     Min,
 }
 
-struct Individual {
-    identifier: String,
-    group: String,
-}
-
 pub fn assocation(
     combined: PathBuf,
     metadata: PathBuf,
@@ -27,8 +24,8 @@ pub fn assocation(
     covariates: Option<String>,
 ) {
     // Taking out the samples
-    let samples_of_interest =
-        parse_phenotypes(&metadata, &condition).expect("Problem parsing metadata file");
+    let samples_of_interest = crate::metadata::parse_phenotypes(&metadata, &condition)
+        .expect("Problem parsing metadata file");
     if samples_of_interest.len() < 2 {
         error!(
             "{}",
@@ -63,6 +60,7 @@ pub fn assocation(
         .filter(|(_, s)| sample_names_of_interest.contains(s))
         .map(|(index, _)| index)
         .collect();
+    assert!(sample_indices_of_interest.len() == 2 * sample_names_of_interest.len());
     // For each variant, take out the values that correspond with the sample_indices_of_interest
     for line in lines {
         let line = line.unwrap();
@@ -82,55 +80,34 @@ pub fn assocation(
 }
 
 fn summarize_values(values: Vec<f32>, mode: Mode) -> Vec<f32> {
-    unimplemented!();
     match mode {
-        Mode::Max => vec![1.0],
-        Mode::Min => vec![1.0],
-        Mode::Sum => vec![1.0],
-    }
-}
-
-fn parse_phenotypes(
-    metadata: &Path,
-    condition: &str,
-) -> Result<Vec<Individual>, Box<dyn std::error::Error>> {
-    let pheno_column = condition
-        .split(':')
-        .next()
-        .expect("Issue parsing condition string");
-    let pheno_values = condition
-        .split(':')
-        .nth(1)
-        .unwrap()
-        .split(',')
-        .collect::<Vec<&str>>();
-    let meta_file = crate::utils::reader(metadata.to_str().unwrap());
-    let mut lines = meta_file.lines();
-    let header = lines.next().unwrap().unwrap();
-    let pheno_column_index = header
-        .split('\t')
-        .enumerate()
-        .filter(|(_, col)| col == &pheno_column)
-        .map(|(index, _)| index)
-        .next()
-        .unwrap_or_else(|| {
-            panic!(
-                "Could not find column {} in {}",
-                pheno_column,
-                metadata.display()
-            )
-        });
-    let mut samples_of_interest: Vec<Individual> = vec![];
-    for line in lines {
-        let line = line.unwrap();
-        let splitline = line.split('\t').collect::<Vec<&str>>();
-        let pheno_value = splitline.get(pheno_column_index).unwrap();
-        if pheno_values.contains(pheno_value) {
-            samples_of_interest.push(Individual {
-                identifier: splitline.first().unwrap().to_string(),
-                group: pheno_value.to_string(),
+        Mode::Max => values
+            .iter()
+            .chunks(2)
+            .into_iter()
+            .map(|chunk| {
+                chunk
+                    .max_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Less))
+                    .unwrap()
+                    .to_owned()
             })
-        }
+            .collect::<Vec<f32>>(),
+        Mode::Min => values
+            .iter()
+            .chunks(2)
+            .into_iter()
+            .map(|chunk| {
+                chunk
+                    .min_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Less))
+                    .unwrap()
+                    .to_owned()
+            })
+            .collect::<Vec<f32>>(),
+        Mode::Sum => values
+            .iter()
+            .chunks(2)
+            .into_iter()
+            .map(|chunk| chunk.sum())
+            .collect::<Vec<f32>>(),
     }
-    Ok(samples_of_interest)
 }
