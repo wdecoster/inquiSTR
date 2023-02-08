@@ -1,5 +1,4 @@
-use plotly::layout::BarMode;
-use plotly::{Histogram, Layout, Plot};
+use plotly::{Histogram, Plot};
 use std::collections::HashMap;
 use std::io::BufRead;
 use std::path::PathBuf;
@@ -47,7 +46,7 @@ pub fn plot(
 fn get_str_lengths(region: String, lines: std::io::Lines<Box<dyn BufRead>>) -> Option<Vec<f64>> {
     let (chrom, reg_start, reg_end) = crate::utils::process_region(region).unwrap();
     // Add a tab character to the chromosome so we can search for this with starts_with below (to make sure chr1 does not match chr15)
-    let reg_chrom = format!("{}\t", chrom);
+    let reg_chrom = format!("{chrom}\t");
     for line in lines {
         let line = line.unwrap();
         if line.starts_with(&reg_chrom) {

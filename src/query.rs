@@ -9,7 +9,7 @@ pub fn query(combined: PathBuf, region: String) {
 
     let (chrom, reg_start, reg_end) = crate::utils::process_region(region).unwrap();
     // Add a tab character to the chromosome so we can search for this with starts_with below (to make sure chr1 does not match chr15)
-    let reg_chrom = format!("{}\t", chrom);
+    let reg_chrom = format!("{chrom}\t");
 
     for line in lines {
         let line = line.unwrap();
@@ -18,7 +18,7 @@ pub fn query(combined: PathBuf, region: String) {
             let begin: u32 = splitline[1].parse().expect("Failed parsing interval");
             let end: u32 = splitline[2].parse().expect("Failed parsing interval");
             if reg_start <= begin && end <= reg_end {
-                println!("{}:{}-{}", chrom, begin, end);
+                println!("{chrom}:{begin}-{end}");
                 let values = splitline
                     .iter()
                     .skip(3)

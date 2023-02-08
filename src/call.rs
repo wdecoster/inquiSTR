@@ -105,7 +105,7 @@ pub fn genotype_repeats(
             let (chrom, start, end) = crate::utils::process_region(region).unwrap();
             let bamf = bamp.into_os_string().into_string().unwrap();
             match genotype_repeat(&bamf, chrom, start, end, minlen, support, unphased) {
-                Ok(output) => println!("{}", output),
+                Ok(output) => println!("{output}"),
                 Err(chrom) => error!("Contig {chrom} not found in bam file"),
             };
         }
@@ -160,7 +160,7 @@ pub fn genotype_repeats(
                 // The final output is sorted by chrom, start and end
                 genotypes_vec.sort_unstable();
                 for g in &mut *genotypes_vec {
-                    println!("{}", g);
+                    println!("{g}");
                 }
             } else {
                 // When running single threaded things become easier and the tool will require less memory
@@ -185,7 +185,7 @@ pub fn genotype_repeats(
                         unphased,
                     ) {
                         Ok(output) => {
-                            println!("{}", output);
+                            println!("{output}");
                         }
                         Err(locus) => {
                             // For now the Err is only used for when a chromosome or (extended) interval from the bed file does not appear in the bam file
@@ -214,7 +214,7 @@ fn genotype_repeat(
     support: usize,
     unphased: bool,
 ) -> Result<Genotype, String> {
-    let bam = match bam::IndexedReader::from_path(&bamf) {
+    let bam = match bam::IndexedReader::from_path(bamf) {
         Ok(handle) => handle,
         Err(e) => {
             error!("Error opening BAM {}.\n{}", bamf, e);
@@ -376,7 +376,7 @@ fn get_phase(record: &bam::Record) -> u8 {
             if let Aux::U8(v) = value {
                 v
             } else {
-                panic!("Unexpected type of Aux {:?}", value)
+                panic!("Unexpected type of Aux {value:?}")
             }
         }
         Err(_e) => 0,

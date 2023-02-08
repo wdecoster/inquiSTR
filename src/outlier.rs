@@ -9,7 +9,7 @@ fn std_deviation_and_mean(data: &Vec<f32>) -> (f32, f32) {
     let variance = data
         .iter()
         .map(|value| {
-            let diff = data_mean - (*value as f32);
+            let diff = data_mean - *value;
             diff * diff
         })
         .sum::<f32>()
