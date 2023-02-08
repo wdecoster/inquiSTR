@@ -240,8 +240,6 @@ fn genotype_repeat(
             panic!();
         }
     };
-    let start = max(start - 10, 0);
-    let end = end + 10;
     info!("Checks passed, genotyping repeat");
     if unphased {
         genotype_repeat_unphased(bam, chrom, start, end, minlen, support)
@@ -258,8 +256,10 @@ fn genotype_repeat_unphased(
     minlen: u32,
     support: usize,
 ) -> Result<Genotype, String> {
+    let start_ext = max(start - 10, 0);
+    let end_ext = end + 10;
     if let Some(tid) = bam.header().tid(chrom.as_bytes()) {
-        bam.fetch((tid, start, end)).unwrap();
+        bam.fetch((tid, start_ext, end_ext)).unwrap();
         // Per haplotype the difference with the reference genome is kept in a dictionary
         let mut calls = vec![];
 
@@ -267,13 +267,13 @@ fn genotype_repeat_unphased(
         for r in bam.rc_records() {
             let r = r.expect("Error reading BAM file in region {chrom}:{start}-{end}.");
             // reads with either end inside the window are ignored or if mapping quality is low
-            if start < (r.reference_start() as u32)
-                || (r.reference_end() as u32) < end
+            if start_ext < (r.reference_start() as u32)
+                || (r.reference_end() as u32) < end_ext
                 || r.mapq() <= 10
             {
                 continue;
             }
-            let call = call_from_cigar(r, minlen, start, end);
+            let call = call_from_cigar(r, minlen, start_ext, end_ext);
             calls.push(call);
         }
         info!("Found {} reads for genotyping", calls.len(),);
@@ -301,8 +301,10 @@ fn genotype_repeat_phased(
     minlen: u32,
     support: usize,
 ) -> Result<Genotype, String> {
+    let start_ext = max(start - 10, 0);
+    let end_ext = end + 10;
     if let Some(tid) = bam.header().tid(chrom.as_bytes()) {
-        match bam.fetch((tid, start, end)) {
+        match bam.fetch((tid, start_ext, end_ext)) {
             Ok(_b) => (),
             Err(e) => return Err(e.to_string()),
         };
@@ -317,15 +319,15 @@ fn genotype_repeat_phased(
             // reads with either end inside the window are ignored or if mapping quality is low
             // if the bam is supposed to be phased, ignore all unphased reads
             let phase = get_phase(&r);
-            if start < (r.reference_start() as u32)
-                || (r.reference_end() as u32) < end
+            if start_ext < (r.reference_start() as u32)
+                || (r.reference_end() as u32) < end_ext
                 || r.mapq() <= 10
                 || phase == 0
             {
                 continue;
             }
 
-            let call = call_from_cigar(r, minlen, start, end);
+            let call = call_from_cigar(r, minlen, start_ext, end_ext);
             calls.get_mut(&phase).unwrap().push(call);
         }
         info!(
