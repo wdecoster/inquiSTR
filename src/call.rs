@@ -84,6 +84,7 @@ pub fn genotype_repeats(
     support: usize,
     threads: usize,
     unphased: bool,
+    sample_name: Option<String>,
 ) {
     if !bamp.is_file() {
         error!(
@@ -91,6 +92,19 @@ pub fn genotype_repeats(
             bamp.display()
         );
         panic!();
+    };
+    let sample = sample_name.unwrap_or_else(|| {
+        bamp.clone()
+            .file_stem()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .replace(".bam", "")
+    });
+    let header = if unphased {
+        format!("chromosome\tbegin\tend\t{sample}")
+    } else {
+        format!("chromosome\tbegin\tend\t{sample}_H1\t{sample}_H2")
     };
     match (region, region_file) {
         (Some(_region), Some(_region_file)) => {
@@ -104,8 +118,12 @@ pub fn genotype_repeats(
         (Some(region), None) => {
             let (chrom, start, end) = crate::utils::process_region(region).unwrap();
             let bamf = bamp.into_os_string().into_string().unwrap();
+
             match genotype_repeat(&bamf, chrom, start, end, minlen, support, unphased) {
-                Ok(output) => println!("{output}"),
+                Ok(output) => {
+                    println!("{header}");
+                    println!("{output}")
+                }
                 Err(chrom) => error!("Contig {chrom} not found in bam file"),
             };
         }
@@ -126,6 +144,7 @@ pub fn genotype_repeats(
                 let genotypes = Mutex::new(Vec::new());
                 // par_bridge does not guarantee that results are returned in order
                 let lines: usize = count_lines(std::fs::File::open(region_file).unwrap()).unwrap();
+                println!("{header}");
                 reader
                     .records()
                     .par_bridge()
@@ -425,6 +444,7 @@ fn test_region() {
         3,
         4,
         false,
+        Some("sample".to_string()),
     );
 }
 
@@ -438,6 +458,7 @@ fn test_region_bed() {
         3,
         4,
         false,
+        Some("sample".to_string()),
     );
 }
 #[test]
@@ -450,6 +471,7 @@ fn test_unphased() {
         3,
         4,
         true,
+        Some("sample".to_string()),
     );
 }
 
@@ -464,6 +486,7 @@ fn test_no_region() {
         3,
         4,
         false,
+        Some("sample".to_string()),
     );
 }
 
@@ -478,6 +501,7 @@ fn test_wrong_bam_path() {
         3,
         4,
         false,
+        Some("sample".to_string()),
     );
 }
 
@@ -491,5 +515,6 @@ fn test_region_wrong_chromosome() {
         3,
         4,
         false,
+        Some("sample".to_string()),
     );
 }

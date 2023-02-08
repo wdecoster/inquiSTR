@@ -54,6 +54,10 @@ enum Commands {
         /// If reads have to be considered unphased
         #[clap(short, long, value_parser)]
         unphased: bool,
+
+        /// sample name to use in output
+        #[clap(long, value_parser)]
+        sample_name: Option<String>,
     },
     /// Combine lengths from multiple bams to a TSV
     Combine {
@@ -174,7 +178,17 @@ fn main() {
             support,
             threads,
             unphased,
-        } => call::genotype_repeats(bam, region, region_file, minlen, support, threads, unphased),
+            sample_name,
+        } => call::genotype_repeats(
+            bam,
+            region,
+            region_file,
+            minlen,
+            support,
+            threads,
+            unphased,
+            sample_name,
+        ),
         Commands::Combine { calls, unphased } => {
             combine::combine(calls, unphased);
         }
