@@ -24,7 +24,7 @@ fn reader(filename: &str) -> Box<dyn BufRead> {
     }
 }
 
-pub fn combine(calls: Vec<PathBuf>, unphased: bool) {
+pub fn combine(calls: Vec<PathBuf>) {
     // open the first file, regardless if it is gzipped or not
     let file1 = reader(&calls[0].clone().into_os_string().into_string().unwrap());
 
@@ -33,8 +33,6 @@ pub fn combine(calls: Vec<PathBuf>, unphased: bool) {
         .iter()
         .map(|file| reader(&file.clone().into_os_string().into_string().unwrap()).lines())
         .collect();
-    // write out a header based on the filenames
-    write_header(calls, unphased);
     for line in file1.lines() {
         // Get the full line for the first file, create a vector to collect all data
         let line = line.unwrap();
@@ -54,51 +52,21 @@ pub fn combine(calls: Vec<PathBuf>, unphased: bool) {
     }
 }
 
-fn write_header(filenames: Vec<PathBuf>, unphased: bool) {
-    // make the header vector
-    let mut header = vec!["chrom".to_string(), "begin".to_string(), "end".to_string()];
-    // take all filenames without the last extension (file_stem())
-    if unphased {
-        for name in filenames
-            .iter()
-            .map(|f| f.file_stem().unwrap().to_str().unwrap().to_owned())
-        {
-            header.push(name);
-        }
-    } else {
-        // push twice to the header for every sample if phased
-        for name in filenames
-            .iter()
-            .map(|f| f.file_stem().unwrap().to_str().unwrap().to_owned())
-        {
-            header.push(format!("{name}_H1"));
-            header.push(format!("{name}_H2"));
-        }
-    }
-    println!("{}", header.join("\t"));
-}
-
 #[cfg(test)]
 #[test]
 fn test_combine() {
-    combine(
-        vec![
-            PathBuf::from("test-data/file1.inq"),
-            PathBuf::from("test-data/file2.inq"),
-            PathBuf::from("test-data/file3.inq"),
-        ],
-        false,
-    );
+    combine(vec![
+        PathBuf::from("test-data/file1.inq"),
+        PathBuf::from("test-data/file2.inq"),
+        PathBuf::from("test-data/file3.inq"),
+    ]);
 }
 
 #[test]
 fn test_combine_gzipped() {
-    combine(
-        vec![
-            PathBuf::from("test-data/file1.inq.gz"),
-            PathBuf::from("test-data/file2.inq.gz"),
-            PathBuf::from("test-data/file3.inq.gz"),
-        ],
-        false,
-    );
+    combine(vec![
+        PathBuf::from("test-data/file1.inq.gz"),
+        PathBuf::from("test-data/file2.inq.gz"),
+        PathBuf::from("test-data/file3.inq.gz"),
+    ]);
 }
