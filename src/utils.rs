@@ -26,17 +26,27 @@ pub fn reader(filename: &str) -> Box<dyn BufRead> {
 /// parse a region string
 pub fn process_region(reg: String) -> Result<(String, u32, u32), Box<dyn std::error::Error>> {
     let reg = reg.replace(',', "");
+    if reg.matches(':').count() != 1 {
+        panic!(
+            "\n\nError while parsing interval, could not find exactly one `:` character separating chromosome and start"
+        );
+    }
+    if reg.matches('-').count() != 1 {
+        panic!(
+            "\n\nError while parsing interval, could not find exactly one `-` character separating start and end"
+        );
+    }
     let chrom = reg.split(':').collect::<Vec<&str>>()[0];
     let interval = reg.split(':').collect::<Vec<&str>>()[1];
     let start: u32 = interval.split('-').collect::<Vec<&str>>()[0]
         .parse()
-        .unwrap();
+        .expect("\n\nError while parsing interval start coordinate!\n\n");
     let end: u32 = interval.split('-').collect::<Vec<&str>>()[1]
         .parse()
-        .unwrap();
+        .expect("\n\nError while parsing interval end coordinate!\n\n");
     assert!(
-        end - start > 0,
-        r#"Invalid region: begin has to be smaller than end."#
+        start < end,
+        r#"\n\nInvalid region: start coordinate has to be smaller than end.\n\n"#
     );
     Ok((chrom.to_string(), start, end))
 }
