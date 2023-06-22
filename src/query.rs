@@ -1,3 +1,4 @@
+use log::debug;
 use std::io::BufRead;
 use std::path::PathBuf;
 
@@ -6,14 +7,18 @@ pub fn query(combined: PathBuf, region: String) {
     let mut lines = file.lines();
     let header_line = lines.next().unwrap().unwrap();
     let samples = header_line.split('\t').skip(3);
+    debug!("Samples: {:?}", samples.clone().collect::<Vec<_>>());
 
     let (chrom, reg_start, reg_end) = crate::utils::process_region(region).unwrap();
     // Add a tab character to the chromosome so we can search for this with starts_with below (to make sure chr1 does not match chr15)
     let reg_chrom = format!("{chrom}\t");
+    debug!("Searching for region: {}:{}-{}", chrom, reg_start, reg_end);
 
     for line in lines {
         let line = line.unwrap();
+        debug!("Found line: {}", line);
         if line.starts_with(&reg_chrom) {
+            debug!("Found right chromosome: {}", line);
             let splitline = line.split('\t').collect::<Vec<&str>>();
             let begin: u32 = splitline[1].parse().expect("Failed parsing interval");
             let end: u32 = splitline[2].parse().expect("Failed parsing interval");
@@ -23,7 +28,7 @@ pub fn query(combined: PathBuf, region: String) {
                     .iter()
                     .skip(3)
                     .map(|number| number.parse::<f64>().expect("Failed parsing lengths"));
-                let mut zipped = samples.zip(values).into_iter().collect::<Vec<_>>();
+                let mut zipped = samples.zip(values).collect::<Vec<_>>();
                 zipped.sort_by_key(
                     |&(_, val)| {
                         if !val.is_nan() {
