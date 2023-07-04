@@ -381,7 +381,7 @@ if (arg$run == "chr_interval") {
     calls_file <- subset(calls_file, ((chrom == single_variant_toAnalyze[1]) & (begin == single_variant_toAnalyze[2]) & (end == single_variant_toAnalyze[3])))
     message("single_variant run mode is selected (with expandedAllele)")
 }
-strnames <- paste(paste(calls_file$chrom, calls_file$begin, sep = ":"), calls_file$end, sep = "_")
+strnames <- paste(paste(calls_file$chr, calls_file$begin, sep = ":"), calls_file$end, sep = "_")
 rest <- calls_file[, -c(1:3)]
 col_index <- seq_len(ncol(rest))
 inqH1 <- as.data.table(rest %>% select(col_index[col_index %% 2 != 0]))
