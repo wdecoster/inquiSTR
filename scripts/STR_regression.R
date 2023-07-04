@@ -273,83 +273,6 @@ assoc_continuous_expandedAllele <- function(arg, calls_file, phenotype, no_cols,
     write.table(sorted_results_calls_file, arg$out, sep = "\t", col.names = TRUE, quote = F, row.names = F)
 }
 
-read_calls_full <- function(input) {
-    message("Loading and processing the input file...")
-    calls_file <- fread(input, header = TRUE)
-    strnames <- paste(calls_file$chrom, calls_file$begin, calls_file$end, sep = "_")
-    rest <- calls_file[, -c(1:3)]
-    col_index <- seq_len(ncol(rest))
-    inqH1 <- as.data.table(rest %>% select(col_index[col_index %% 2 != 0]))
-    inqH2 <- as.data.table(rest %>% select(col_index[col_index %% 2 == 0]))
-    colnames(inqH1) <- gsub(".[^.]+$", "", colnames(inqH1))
-    colnames(inqH2) <- gsub(".[^.]+$", "", colnames(inqH2))
-    return(list("H1" = inqH1, "H2" = inqH2, "strnames" = strnames))
-}
-
-read_calls_chr <- function(input, chr) {
-    message("Loading and processing the input file...")
-    calls_file <- fread(input, header = TRUE)
-    calls_file <- subset(calls_file, chr == chr)
-    strnames <- paste(calls_file$chrom, calls_file$begin, calls_file$end, sep = "_")
-    rest <- calls_file[, -c(1:3)]
-    col_index <- seq_len(ncol(rest))
-    inqH1 <- as.data.table(rest %>% select(col_index[col_index %% 2 != 0]))
-    inqH2 <- as.data.table(rest %>% select(col_index[col_index %% 2 == 0]))
-    colnames(inqH1) <- gsub(".[^.]+$", "", colnames(inqH1))
-    colnames(inqH2) <- gsub(".[^.]+$", "", colnames(inqH2))
-    return(list("H1" = inqH1, "H2" = inqH2, "strnames" = strnames))
-}
-
-read_calls_chr_begin_end <- function(input, chr, chr_begin, chr_end) {
-    message("Loading and processing the input file...")
-    calls_file <- fread(input, header = TRUE)
-    calls_file <- subset(calls_file, ((chr == chr) & (begin >= chr_begin) & (end <= chr_end)))
-    strnames <- paste(calls_file$chrom, calls_file$begin, calls_file$end, sep = "_")
-    rest <- calls_file[, -c(1:3)]
-    col_index <- seq_len(ncol(rest))
-    inqH1 <- as.data.table(rest %>% select(col_index[col_index %% 2 != 0]))
-    inqH2 <- as.data.table(rest %>% select(col_index[col_index %% 2 == 0]))
-    colnames(inqH1) <- gsub(".[^.]+$", "", colnames(inqH1))
-    colnames(inqH2) <- gsub(".[^.]+$", "", colnames(inqH2))
-    return(list("H1" = inqH1, "H2" = inqH2, "strnames" = strnames))
-}
-
-read_calls_bed <- function(input, bed) {
-    message("Loading and processing the input file...")
-    calls_file <- fread(input, header = TRUE)
-    bedfile <- fread(bed, header = FALSE)
-    colnames(bedfile) <- c("chrom", "start", "end")
-    colnames(calls_file)[2] <- "start"
-    intersecttable <- as.data.table(bed_intersect(calls_file, bedfile, suffix = c("", ".y")))
-    intersecttable <- intersecttable[, 1:(length(intersecttable) - 3)]
-    intersecttable <- subset(intersecttable, !is.na(chrom)) ## WDC here is something wrong - there is no chrom ## FK - no it is fine, we can keep it is. It is just to make sure that there are no "NA" entries in the datatable, based on a chrom column != NA condition (I did it because I've seen it sometimes after bed_intersect). (feel free to remove this comment)
-    colnames(intersecttable)[2] <- "begin"
-    intersect_strnames <- paste(intersecttable$chrom, intersecttable$begin, intersecttable$end, sep = "_")
-    rest <- intersecttable[, -c(1:3)]
-    col_index <- seq_len(ncol(rest))
-    inqH1 <- as.data.table(rest %>% select(col_index[col_index %% 2 != 0]))
-    inqH2 <- as.data.table(rest %>% select(col_index[col_index %% 2 == 0]))
-    colnames(inqH1) <- gsub(".[^.]+$", "", colnames(inqH1))
-    colnames(inqH2) <- gsub(".[^.]+$", "", colnames(inqH2))
-    return(list("H1" = inqH1, "H2" = inqH2, "strnames" = intersect_strnames))
-}
-
-read_calls_singleVariant_expandedAllele <- function(input, single_variant) {
-    message("Loading and processing the input file...")
-    calls_file <- fread(input, header = TRUE)
-    single_variant_toAnalyze <- unlist(strsplit(arg$single_variant, split = "_"))
-    single_variant_toAnalyze <- unlist(strsplit(unlist(strsplit(single_variant_toAnalyze, split = "-")), ":"))
-    calls_file <- subset(calls_file, ((chrom == single_variant_toAnalyze[1]) & (begin == single_variant_toAnalyze[2]) & (end == single_variant_toAnalyze[3])))
-    strnames <- paste(calls_file$chrom, calls_file$begin, calls_file$end, sep = "_")
-    rest <- calls_file[, -c(1:3)]
-    col_index <- seq_len(ncol(rest))
-    inqH1 <- as.data.table(rest %>% select(col_index[col_index %% 2 != 0]))
-    inqH2 <- as.data.table(rest %>% select(col_index[col_index %% 2 == 0]))
-    colnames(inqH1) <- gsub(".[^.]+$", "", colnames(inqH1))
-    colnames(inqH2) <- gsub(".[^.]+$", "", colnames(inqH2))
-    return(list("H1" = inqH1, "H2" = inqH2, "strnames" = strnames))
-}
-
 prepare_phenotype <- function(phenofile, phenotype, sample_list) {
     message("Processing the phenotype file...")
     phenocovar <- fread(phenofile, header = TRUE)
@@ -437,22 +360,39 @@ if ((arg$run == "single_variant") && is.na(arg$expandedAllele)) {
 }
 
 # calls is a list with H1, H2 and strnames attributes
+message("Loading and processing the input file...")
+calls_file <- fread(arg$input, header = TRUE)
 if (arg$run == "chr_interval") {
-    calls <- read_calls_chr_begin_end(input = arg$input, chr = arg$chr, chr_begin = arg$chr_begin, chr_end = arg$chr_end)
+    calls_file <- subset(calls_file, ((chr == arg$chr) & (begin >= arg$chr_begin) & (end <= arg$chr_end)))
     message("chr_interval run mode is selected")
 } else if (arg$run == "bed_interval") {
-    calls <- read_calls_bed(input = arg$input, bed = arg$bed)
+    bedfile <- fread(arg$bed, header = FALSE)
+    colnames(bedfile) <- c("chrom", "start", "end")
+    colnames(calls_file)[2] <- "start"
+    calls_file <- as.data.table(bed_intersect(calls_file, bedfile, suffix = c("", ".y")))
+    calls_file <- intersecttable[, 1:(length(intersecttable) - 3)]
+    calls_file <- subset(intersecttable, !is.na(chrom))
+    colnames(calls_file)[2] <- "begin"
     message("bed_interval run mode is selected")
 } else if (arg$run == "chromosome") {
-    calls <- read_calls_chr(input = arg$input, chr = arg$chr)
+    calls_file <- subset(calls_file, chr == arg$chr)
     message("chromosome run mode is selected")
 } else if (arg$run == "full") {
-    calls <- read_calls_full(input = arg$input)
     message("full run mode is selected")
 } else if (arg$run == "single_variant") {
-    calls <- read_calls_singleVariant_expandedAllele(input = arg$input, single_variant = arg$single_variant)
+    single_variant_toAnalyze <- unlist(strsplit(arg$single_variant, split = "_"))
+    single_variant_toAnalyze <- unlist(strsplit(unlist(strsplit(single_variant_toAnalyze, split = "-")), ":"))
+    calls_file <- subset(calls_file, ((chrom == single_variant_toAnalyze[1]) & (begin == single_variant_toAnalyze[2]) & (end == single_variant_toAnalyze[3])))
     message("single_variant run mode is selected (with expandedAllele)")
 }
+strnames <- paste(paste(calls_file$chrom, calls_file$begin, sep = ":"), calls_file$end, sep = "_")
+rest <- calls_file[, -c(1:3)]
+col_index <- seq_len(ncol(rest))
+inqH1 <- as.data.table(rest %>% select(col_index[col_index %% 2 != 0]))
+inqH2 <- as.data.table(rest %>% select(col_index[col_index %% 2 == 0]))
+colnames(inqH1) <- gsub("_H1$", "", colnames(inqH1))
+colnames(inqH2) <- gsub("_H2$", "", colnames(inqH2))
+calls <- list("H1" = inqH1, "H2" = inqH2, "strnames" = strnames)
 
 # pheno_info is a list with sample_list, phenotype and no_cols attributes
 pheno_info <- prepare_phenotype(
