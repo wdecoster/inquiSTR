@@ -321,40 +321,32 @@ parse_arguments <- function() {
     p <- argparser::add_argument(p, "--expandedAllele", help = "A cut-off number (integer or decimal) to define 2 groups with and without expanded allele. STR_length >= expandedAllele is Group 2, STR_length < expandedAllele is Group 1.", type = "integer", nargs = "?")
     Version <- "inquiSTR - STR_regression Rscript Version 1.5.1, July 04, 2023"
     message(Version)
-    return(argparser::parse_args(p))
-}
-
-arg <- parse_arguments()
-
+    args <- argparser::parse_args(p)
+    return(args)
 # argument checks
 if (is.na(arg$input) || is.na(arg$phenocovar) || is.na(arg$phenotype) || is.na(arg$out) || is.na(arg$STRmode) || is.na(arg$outcometype) || is.na(arg$run)) {
-    message("Error: exiting because at least one of the following required arguments is missing: --input, --phenocovar, --phenotype, --out, --STRmode, --outcometype, --run")
-    q("no")
+        stop("Error: exiting because at least one of the following required arguments is missing: --input, --phenocovar, --phenotype, --out, --STRmode, --outcometype, --run")
 }
 
 if ((arg$outcometype == "binary") && is.na(arg$binaryOrder)) {
-    message("Error: exiting because --binaryOrder argument is missing, please provide it when you use --outcometype binary")
-    q("no")
+        stop("Error: exiting because --binaryOrder argument is missing, please provide it when you use --outcometype binary")
 }
 
 if ((arg$run == "chromosome") && is.na(arg$chr)) {
-    message("Error: exiting because --chr argument is missing, please provide it when you use --run chromosome")
-    q("no")
+        stop("Error: exiting because --chr argument is missing, please provide it when you use --run chromosome")
 }
 
 if ((arg$run == "chr_interval") && ((is.na(arg$chr)) || (is.na(arg$chr_begin)) || (is.na(arg$chr_end)))) {
-    message("Error: exiting because At least one of the --chr, --chr_begin, or --chr_end arguments is missing, please provide these when you use --run chr_interval")
-    q("no")
+        stop("Error: exiting because At least one of the --chr, --chr_begin, or --chr_end arguments is missing, please provide these when you use --run chr_interval")
 }
 
 if ((arg$run == "bed_interval") && is.na(arg$bed)) {
-    message("Error: exiting because --bed argument, therefore input bed file, is missing; please provide it when you use --run bed_interval")
-    q("no")
+        stop("Error: exiting because --bed argument, therefore input bed file, is missing; please provide it when you use --run bed_interval")
 }
 
 if ((arg$run == "single_variant") && is.na(arg$expandedAllele)) {
-    message("Error: exiting because At least one of the two following aruguments is missing: --single_variant --expandedAllele; please provide these when you use --run single_variant")
-    q("no")
+        stop("Error: exiting because At least one of the two following aruguments is missing: --single_variant --expandedAllele; please provide these when you use --run single_variant")
+    }
 }
 
 arg <- parse_arguments()
