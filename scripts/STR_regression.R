@@ -37,15 +37,15 @@ assoc_binary <- function(arg, calls_file, phenotype, no_cols, covariates, missin
             selectedtable <- as.data.table(cbind(as.character(calls_file_selected[[phenotype]]), as.numeric(calls_file_selected[[VariantToBeTested]])))
         }
         colnames(selectedtable)[1:2] <- c(phenotype, VariantToBeTested)
-            group2 <- subset(selectedtable, selectedtable[[phenotype]] == binaryOrder_prepared[2])
-            group1 <- subset(selectedtable, selectedtable[[phenotype]] == binaryOrder_prepared[1])
-            AvgSize <- round(mean(as.numeric(selectedtable[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
-            Group2_AvgSize <- round(mean(as.numeric(group2[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
-            Group1_AvgSize <- round(mean(as.numeric(group1[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
-            Group2_Group1_absAvgSizeDiff <- round(abs(Group2_AvgSize - Group1_AvgSize), digits = 3)
-            Group2_N <- nrow(subset(group2, group2[[VariantToBeTested]] != "NaN"))
-            Group1_N <- nrow(subset(group1, group1[[VariantToBeTested]] != "NaN"))
-            binaryOrderInTable <- arg$binaryOrder
+        group2 <- subset(selectedtable, selectedtable[[phenotype]] == binaryOrder_prepared[2])
+        group1 <- subset(selectedtable, selectedtable[[phenotype]] == binaryOrder_prepared[1])
+        AvgSize <- round(mean(as.numeric(selectedtable[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
+        Group2_AvgSize <- round(mean(as.numeric(group2[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
+        Group1_AvgSize <- round(mean(as.numeric(group1[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
+        Group2_Group1_absAvgSizeDiff <- round(abs(Group2_AvgSize - Group1_AvgSize), digits = 3)
+        Group2_N <- nrow(subset(group2, group2[[VariantToBeTested]] != "NaN"))
+        Group1_N <- nrow(subset(group1, group1[[VariantToBeTested]] != "NaN"))
+        binaryOrderInTable <- arg$binaryOrder
         glm_result <- glm(formula = formulax, data = calls_file_selected, family = binomial(link = "logit"))
         Predictors <- names(glm_result$coefficients)
         VariantID <- names(glm_result$coefficients)[2]
@@ -57,6 +57,10 @@ assoc_binary <- function(arg, calls_file, phenotype, no_cols, covariates, missin
         N <- nobs(glm_result)
         Group2_Group1_OR_for_absAvgSizeDiff <- round((exp(Group2_Group1_absAvgSizeDiff * log(OR))), digits = 3)
         model <- as.character(glm_result$formula)[1]
+
+        # instead of creating data frames and rbind'ing them every iteration, it would be better to just print to stdout
+        # we don't get sorting then, but that's not too bad
+
         tabular_result <- as.data.frame(cbind(Predictors, OR, OR_L95, OR_U95, OR_stdErr, Pvalue, N, Group1_N, Group2_N, AvgSize, Group1_AvgSize, Group2_AvgSize, Group2_Group1_absAvgSizeDiff, Group2_Group1_OR_for_absAvgSizeDiff, model, binaryOrderInTable))
         tabular_result <- subset(tabular_result, Predictors == VariantID)
         colnames(tabular_result) <- c("VariantID", "OR", "OR_L95", "OR_U95", "OR_stdErr", "Pvalue", "N", paste0(binaryOrder_prepared[1], "_N"), paste0(binaryOrder_prepared[2], "_N"), "AvgSize", paste0(binaryOrder_prepared[1], "_AvgSize"), paste0(binaryOrder_prepared[2], "_AvgSize"), paste0(binaryOrder_prepared[2], "_", binaryOrder_prepared[1], "_absAvgSizeDiff"), paste0(binaryOrder_prepared[2], "_", binaryOrder_prepared[1], "_OR_for_absAvgSizeDiff"), "model", "binaryOrder")
@@ -323,28 +327,28 @@ parse_arguments <- function() {
     message(Version)
     args <- argparser::parse_args(p)
     return(args)
-# argument checks
-if (is.na(arg$input) || is.na(arg$phenocovar) || is.na(arg$phenotype) || is.na(arg$out) || is.na(arg$STRmode) || is.na(arg$outcometype) || is.na(arg$run)) {
+    # argument checks
+    if (is.na(arg$input) || is.na(arg$phenocovar) || is.na(arg$phenotype) || is.na(arg$out) || is.na(arg$STRmode) || is.na(arg$outcometype) || is.na(arg$run)) {
         stop("Error: exiting because at least one of the following required arguments is missing: --input, --phenocovar, --phenotype, --out, --STRmode, --outcometype, --run")
-}
+    }
 
-if ((arg$outcometype == "binary") && is.na(arg$binaryOrder)) {
+    if ((arg$outcometype == "binary") && is.na(arg$binaryOrder)) {
         stop("Error: exiting because --binaryOrder argument is missing, please provide it when you use --outcometype binary")
-}
+    }
 
-if ((arg$run == "chromosome") && is.na(arg$chr)) {
+    if ((arg$run == "chromosome") && is.na(arg$chr)) {
         stop("Error: exiting because --chr argument is missing, please provide it when you use --run chromosome")
-}
+    }
 
-if ((arg$run == "chr_interval") && ((is.na(arg$chr)) || (is.na(arg$chr_begin)) || (is.na(arg$chr_end)))) {
+    if ((arg$run == "chr_interval") && ((is.na(arg$chr)) || (is.na(arg$chr_begin)) || (is.na(arg$chr_end)))) {
         stop("Error: exiting because At least one of the --chr, --chr_begin, or --chr_end arguments is missing, please provide these when you use --run chr_interval")
-}
+    }
 
-if ((arg$run == "bed_interval") && is.na(arg$bed)) {
+    if ((arg$run == "bed_interval") && is.na(arg$bed)) {
         stop("Error: exiting because --bed argument, therefore input bed file, is missing; please provide it when you use --run bed_interval")
-}
+    }
 
-if ((arg$run == "single_variant") && is.na(arg$expandedAllele)) {
+    if ((arg$run == "single_variant") && is.na(arg$expandedAllele)) {
         stop("Error: exiting because At least one of the two following aruguments is missing: --single_variant --expandedAllele; please provide these when you use --run single_variant")
     }
 }
