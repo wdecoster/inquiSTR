@@ -65,10 +65,6 @@ enum Commands {
         // this validator gets applied to each element from the Vec separately
         #[clap(parse(from_os_str), multiple_values = true, required = true, validator=is_file)]
         calls: Vec<PathBuf>,
-
-        /// If reads were unphased for inquiSTR call
-        #[clap(short, long, value_parser)]
-        unphased: bool,
     },
     /// Search for regions potentially containing a polymorphic repeat
     Scan {},
@@ -85,6 +81,10 @@ enum Commands {
         /// zscore cutoff to decide if a value is an outlier
         #[clap(short, long, value_parser, default_value_t = 3.0)]
         zscore: f32,
+
+        /// method to test for outliers
+        #[clap(short, long, value_enum, value_parser, default_value_t = outlier::Method::Zscore)]
+        method: outlier::Method,
     },
     /// Lookup genotypes and display
     Query {
@@ -189,8 +189,8 @@ fn main() {
             unphased,
             sample_name,
         ),
-        Commands::Combine { calls, unphased } => {
-            combine::combine(calls, unphased);
+        Commands::Combine { calls } => {
+            combine::combine(calls);
         }
         Commands::Scan {} => {
             unimplemented!();
@@ -199,8 +199,9 @@ fn main() {
             combined,
             minsize,
             zscore,
+            method,
         } => {
-            outlier::outlier(combined, minsize, zscore);
+            outlier::outlier(combined, minsize, zscore, method);
         }
         Commands::Query { combined, region } => {
             query::query(combined, region);
