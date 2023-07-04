@@ -294,8 +294,6 @@ prepare_calls <- function(calls, sample_list_wPheno, STRmode, missing_cutoff) {
         calls_file <- transpose(pmin(calls$H1, calls$H2, na.rm = TRUE))
     }
     colnames(calls_file) <- calls$strnames
-    # write calls_file to disk
-    write.table(calls_file, "calls_file.txt", sep = "\t", col.names = TRUE, quote = FALSE, row.names = TRUE)
     calls_file <- cbind(sample_list_wPheno, calls_file)
     calls_file <- calls_file[, which(unlist(lapply(calls_file, function(x) !all(is.na(x))))), with = F]
     calls_file <- data.table(data.frame(calls_file)[, which(colMeans(!is.na(data.frame(calls_file))) >= missing_cutoff)])
@@ -358,6 +356,12 @@ if ((arg$run == "single_variant") && is.na(arg$expandedAllele)) {
     message("Error: exiting because At least one of the two following aruguments is missing: --single_variant --expandedAllele; please provide these when you use --run single_variant")
     q("no")
 }
+
+arg <- parse_arguments()
+# for interactive debugging:
+# arg <- list(input = "all.inq.gz", chr = "chrY", phenocovar = "sample_info_with_haplotype.tsv", phenotype = "fus", binaryOrder = "FALSE,TRUE")
+
+
 
 # calls is a list with H1, H2 and strnames attributes
 message("Loading and processing the input file...")
@@ -448,14 +452,3 @@ if (arg$outcometype == "binary" && arg$run != "single_variant") {
         missing_cutoff = arg$missing_cutoff
     )
 }
-
-# inquiSTR - STR_regression Rscript Version 1.5, November 14, 2022
-# Loading and processing the input file...
-# chromosome run mode is selected
-# Processing the phenotype file...
-# Processing the input file based on the STRmode chosen...
-# Running association testing for -11 qualifying variants...
-# Error in seq.default(no_cols, ncol(calls_file_selected), 1) :
-#   wrong sign in 'by' argument
-# Calls: assoc_binary -> seq -> seq.default
-# Execution halted
