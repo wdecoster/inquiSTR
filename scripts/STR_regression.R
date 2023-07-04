@@ -9,8 +9,14 @@ suppressWarnings(suppressMessages(library(svMisc)))
 suppressWarnings(suppressMessages(library(valr)))
 
 assoc_binary <- function(arg, calls_file, phenotype, no_cols, covariates, missing_cutoff) {
-    binaryOrder <- gsub(",", " ", arg$binaryOrder)
-    binaryOrder_prepared <- unlist(strsplit(binaryOrder, split = " "))
+    binaryOrder_prepared <- unlist(strsplit(arg$binaryOrder, split = ","))
+    # make sure that all values in binaryOrder_prepared are in the calls_file[[phenotype]] column
+    for (i in binaryOrder_prepared) {
+        if (!i %in% calls_file[[phenotype]]) {
+            stop(paste0("The value ", i, " in binaryOrder is not present in the phenotype column of the input file."))
+        }
+    }
+
     calls_file_selected <- as.data.table(calls_file[calls_file[[phenotype]] %in% c(binaryOrder_prepared), ])
     calls_file_selected[[phenotype]] <- factor(calls_file_selected[[phenotype]], c(binaryOrder_prepared))
     calls_file_selected <- calls_file_selected[, which(unlist(lapply(calls_file_selected, function(x) !all(is.na(x))))), with = FALSE]
@@ -266,6 +272,10 @@ assoc_continuous_expandedAllele <- function(arg, calls_file, phenotype, no_cols,
 prepare_phenotype <- function(phenofile, phenotype, sample_list) {
     message("Processing the phenotype file...")
     phenocovar <- fread(phenofile, header = TRUE)
+    # check if phenotype is a column in phenocovar
+    if (!phenotype %in% colnames(phenocovar)) {
+        stop(paste0("The phenotype variable you provided is not a column in the phenotype file you provided. Please check the column names in your phenotype file."))
+    }
     colnames(sample_list) <- "individual"
     return(list(
         "sample_list" = left_join(sample_list, phenocovar, by = "individual"),
