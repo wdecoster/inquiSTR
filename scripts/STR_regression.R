@@ -26,20 +26,11 @@ assoc_binary <- function(arg, calls_file, phenotype, no_cols, covariates, missin
             covlist_prepared <- unlist(strsplit(covlist, split = " "))
             formulax <- paste(phenotype, paste(c(VariantToBeTested, covlist_prepared), collapse = "+"), sep = "~")
             selectedtable <- na.omit(as.data.table(cbind(as.character(calls_file_selected[[phenotype]]), as.numeric(calls_file_selected[[VariantToBeTested]]), calls_file_selected[, ..covlist_prepared])))
-            colnames(selectedtable)[1:2] <- c(phenotype, VariantToBeTested)
-            group2 <- subset(selectedtable, selectedtable[[phenotype]] == binaryOrder_prepared[2])
-            group1 <- subset(selectedtable, selectedtable[[phenotype]] == binaryOrder_prepared[1])
-            AvgSize <- round(mean(as.numeric(selectedtable[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
-            Group2_AvgSize <- round(mean(as.numeric(group2[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
-            Group1_AvgSize <- round(mean(as.numeric(group1[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
-            Group2_Group1_absAvgSizeDiff <- round(abs(Group2_AvgSize - Group1_AvgSize), digits = 3)
-            Group2_N <- nrow(subset(group2, group2[[VariantToBeTested]] != "NaN"))
-            Group1_N <- nrow(subset(group1, group1[[VariantToBeTested]] != "NaN"))
-            binaryOrderInTable <- arg$binaryOrder
         } else {
             formulax <- paste(phenotype, VariantToBeTested, sep = "~")
             selectedtable <- as.data.table(cbind(as.character(calls_file_selected[[phenotype]]), as.numeric(calls_file_selected[[VariantToBeTested]])))
-            colnames(selectedtable) <- c(phenotype, VariantToBeTested)
+        }
+        colnames(selectedtable)[1:2] <- c(phenotype, VariantToBeTested)
             group2 <- subset(selectedtable, selectedtable[[phenotype]] == binaryOrder_prepared[2])
             group1 <- subset(selectedtable, selectedtable[[phenotype]] == binaryOrder_prepared[1])
             AvgSize <- round(mean(as.numeric(selectedtable[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
@@ -49,7 +40,6 @@ assoc_binary <- function(arg, calls_file, phenotype, no_cols, covariates, missin
             Group2_N <- nrow(subset(group2, group2[[VariantToBeTested]] != "NaN"))
             Group1_N <- nrow(subset(group1, group1[[VariantToBeTested]] != "NaN"))
             binaryOrderInTable <- arg$binaryOrder
-        }
         glm_result <- glm(formula = formulax, data = calls_file_selected, family = binomial(link = "logit"))
         Predictors <- names(glm_result$coefficients)
         VariantID <- names(glm_result$coefficients)[2]
