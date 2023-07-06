@@ -17,7 +17,7 @@ pub fn process_region(reg: String) -> Result<(String, u32, u32), Box<dyn std::er
     let reg = reg.replace(',', "");
     if reg.matches(':').count() != 1 {
         panic!(
-            "\n\nError while parsing interval, could not find exactly one `:` character separating chromosome and start"
+            "\n\nError while parsing interval, could not find exactly one `:` character separating chromosome and start\nGot {reg}"
         );
     }
     if reg.matches('-').count() != 1 {
