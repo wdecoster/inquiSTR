@@ -3,7 +3,7 @@ use clap::{Parser, Subcommand};
 use log::info;
 use std::path::PathBuf;
 
-pub mod assoc;
+// pub mod assoc;
 pub mod call;
 pub mod combine;
 pub mod histogram;
@@ -75,7 +75,7 @@ enum Commands {
         combined: PathBuf,
 
         /// minimal length of expansion to be present in cohort
-        #[clap(short, long, value_parser, default_value_t = 10)]
+        #[clap(long, value_parser, default_value_t = 10)]
         minsize: u32,
 
         /// zscore cutoff to decide if a value is an outlier
@@ -83,7 +83,7 @@ enum Commands {
         zscore: f32,
 
         /// method to test for outliers
-        #[clap(short, long, value_enum, value_parser, default_value_t = outlier::Method::Zscore)]
+        #[clap(long, value_enum, value_parser, default_value_t = outlier::Method::Zscore)]
         method: outlier::Method,
     },
     /// Lookup genotypes and display
@@ -92,7 +92,7 @@ enum Commands {
         #[clap(parse(from_os_str), required = true, validator=is_file)]
         combined: PathBuf,
 
-        /// region to query
+        /// region to query or file with regions to query
         #[clap(required = true)]
         region: String,
     },
@@ -105,33 +105,33 @@ enum Commands {
         #[clap(required = true)]
         region: String,
     },
-    /// Test for association of repeat length by comparing two cohorts
-    Association {
-        /// combined file of calls
-        #[clap(parse(from_os_str), required = true, validator=is_file)]
-        combined: PathBuf,
+    // /// Test for association of repeat length by comparing two cohorts
+    // Association {
+    //     /// combined file of calls
+    //     #[clap(parse(from_os_str), required = true, validator=is_file)]
+    //     combined: PathBuf,
 
-        /// file with sample_id, phenotype and covariates
-        #[clap(parse(from_os_str), required = true, validator=is_file)]
-        metadata: PathBuf,
+    //     /// file with sample_id, phenotype and covariates
+    //     #[clap(parse(from_os_str), required = true, validator=is_file)]
+    //     metadata: PathBuf,
 
-        /// missing genotypes cutoff
-        #[clap(long, value_parser, default_value_t = 0.8)]
-        missing_cutoff: f32,
+    //     /// missing genotypes cutoff
+    //     #[clap(long, value_parser, default_value_t = 0.8)]
+    //     missing_cutoff: f32,
 
-        /// association mode
-        #[clap(short, long, value_enum, value_parser, default_value_t = assoc::Mode::Max)]
-        mode: assoc::Mode,
+    //     /// association mode
+    //     #[clap(short, long, value_enum, value_parser, default_value_t = assoc::Mode::Max)]
+    //     mode: assoc::Mode,
 
-        /// test column and 2 groups to test e.g. group:PAT,CON with <group> the name of the column containing <PAT> and <CON>
-        #[clap(short, long, value_parser)]
-        condition: String,
+    //     /// test column and 2 groups to test e.g. group:PAT,CON with <group> the name of the column containing <PAT> and <CON>
+    //     #[clap(short, long, value_parser)]
+    //     condition: String,
 
-        /// covariates, comma separated
-        #[clap(long, value_parser)]
-        covariates: Option<String>,
-        // p <- add_argument(p, "--outcometype", help = "Select a outcome variable type: binary or continuous", nargs = 1)
-    },
+    //     /// covariates, comma separated
+    //     #[clap(long, value_parser)]
+    //     covariates: Option<String>,
+    //     // p <- add_argument(p, "--outcometype", help = "Select a outcome variable type: binary or continuous", nargs = 1)
+    // },
     /// Show a histogram with multiple groups for a specific repeat
     Plot {
         /// combined file of calls
@@ -209,23 +209,23 @@ fn main() {
         Commands::Histogram { combined, region } => {
             histogram::histogram(combined, region);
         }
-        Commands::Association {
-            combined,
-            metadata,
-            missing_cutoff,
-            mode,
-            condition,
-            covariates,
-        } => {
-            assoc::assocation(
-                combined,
-                metadata,
-                missing_cutoff,
-                mode,
-                condition,
-                covariates,
-            );
-        }
+        // Commands::Association {
+        //     combined,
+        //     metadata,
+        //     missing_cutoff,
+        //     mode,
+        //     condition,
+        //     covariates,
+        // } => {
+        //     assoc::assocation(
+        //         combined,
+        //         metadata,
+        //         missing_cutoff,
+        //         mode,
+        //         condition,
+        //         covariates,
+        //     );
+        // }
         Commands::Plot {
             combined,
             metadata,
