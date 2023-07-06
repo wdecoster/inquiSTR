@@ -297,6 +297,11 @@ prepare_calls <- function(calls, sample_list_wPheno, STRmode, missing_cutoff) {
     } else if (STRmode == "MIN") {
         calls_file <- transpose(pmin(calls$H1, calls$H2, na.rm = TRUE))
     }
+
+    if (all(is.na(calls_file))) {
+        stop(paste0("The STRmode and run mode you chose resulted in all missing values. Aborting."))
+    }
+
     colnames(calls_file) <- calls$strnames
     calls_file <- cbind(sample_list_wPheno, calls_file)
     calls_file <- calls_file[, which(unlist(lapply(calls_file, function(x) !all(is.na(x))))), with = F]
