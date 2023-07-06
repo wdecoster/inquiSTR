@@ -281,35 +281,34 @@ assoc_continuous_expandedAllele <- function(arg, calls_file, phenotype, no_cols,
     write.table(sorted_results_calls_file, arg$out, sep = "\t", col.names = TRUE, quote = F, row.names = F)
 }
 
-prepare_phenotype <- function(phenofile, phenotype, sample_list, arg) {
+prepare_phenotype <- function(sample_list, arg) {
     if (!arg$quiet) {
         message("Processing the phenotype file...")
     }
-    phenocovar <- fread(phenofile, header = TRUE)
+    phenocovar <- fread(arg$phenocovar, header = TRUE)
     # check if phenotype is a column in phenocovar
-    if (!phenotype %in% colnames(phenocovar)) {
+    if (!arg$phenotype %in% colnames(phenocovar)) {
         stop(paste0("The phenotype variable you provided is not a column in the phenotype file you provided. Please check the column names in your phenotype file."))
     }
     colnames(sample_list) <- "individual"
     return(list(
         "sample_list" = left_join(sample_list, phenocovar, by = "individual"),
-        "phenotype" = phenotype <- paste0(phenotype, ""),
+        "phenotype" = arg$phenotype <- paste0(arg$phenotype, ""),
         "no_cols" = ncol(phenocovar) + 1
     ))
 }
 
-prepare_calls <- function(calls, sample_list_wPheno, STRmode, missing_cutoff, arg) {
+prepare_calls <- function(calls, sample_list_wPheno, arg) {
     if (!arg$quiet) {
         message("Processing the input file based on the STRmode chosen...")
     }
-    if (STRmode == "MEAN") {
+    if (arg$STRmode == "MEAN") {
         calls_file <- transpose((pmax(calls$H1, calls$H2, na.rm = TRUE) + pmin(calls$H1, calls$H2, na.rm = TRUE)) / 2)
-    } else if (STRmode == "MAX") {
+    } else if (arg$STRmode == "MAX") {
         calls_file <- transpose(pmax(calls$H1, calls$H2, na.rm = TRUE))
-    } else if (STRmode == "MIN") {
+    } else if (arg$STRmode == "MIN") {
         calls_file <- transpose(pmin(calls$H1, calls$H2, na.rm = TRUE))
     }
-
     if (all(is.na(calls_file))) {
         stop(paste0("The STRmode and run mode you chose resulted in all missing values. Aborting."))
     }
@@ -317,7 +316,7 @@ prepare_calls <- function(calls, sample_list_wPheno, STRmode, missing_cutoff, ar
     colnames(calls_file) <- calls$strnames
     calls_file <- cbind(sample_list_wPheno, calls_file)
     calls_file <- calls_file[, which(unlist(lapply(calls_file, function(x) !all(is.na(x))))), with = FALSE]
-    calls_file <- data.table(data.frame(calls_file)[, which(colMeans(!is.na(data.frame(calls_file))) >= missing_cutoff)])
+    calls_file <- data.table(data.frame(calls_file)[, which(colMeans(!is.na(data.frame(calls_file))) >= arg$missing_cutoff)])
     calls_file <- calls_file %>% select(where(~ n_distinct(., na.rm = TRUE) > 1))
     return(calls_file)
 }
@@ -340,13 +339,12 @@ parse_arguments <- function() {
     p <- argparser::add_argument(p, "--bed", help = "A bed file (without a header) with three columns: chromosome (with chr prefix), begin, and end positions for region(s) of interest (optional). valr Rpackage is required - can be installed with mamba install r-valr on conda environment", type = "character", nargs = "?")
     p <- argparser::add_argument(p, "--single_variant", help = "A single variant to be analyzed, indicated as chr_begin_end OR chr:begin-end, based on a cut-off value provided by the argument --expandedAllele", type = "character", nargs = "?")
     p <- argparser::add_argument(p, "--expandedAllele", help = "A cut-off number (integer or decimal) to define 2 groups with and without expanded allele. STR_length >= expandedAllele is Group 2, STR_length < expandedAllele is Group 1.", type = "integer", nargs = "?")
-    p <= argparser::add_argument(p, "--quiet", help = "Do not print progress messages", action = "store_true")
-    args <- argparser::parse_args(p)
+    p <- argparser::add_argument(p, "--quiet", help = "Do not print progress messages", flag = TRUE)
+    arg <- argparser::parse_args(p)
     if (!arg$quiet) {
         Version <- "inquiSTR - STR_regression Rscript Version 1.5.1, July 04, 2023"
         message(Version)
     }
-    return(args)
     # argument checks
     if (is.na(arg$input) || is.na(arg$phenocovar) || is.na(arg$phenotype) || is.na(arg$out) || is.na(arg$STRmode) || is.na(arg$outcometype) || is.na(arg$run)) {
         stop("Error: exiting because at least one of the following required arguments is missing: --input, --phenocovar, --phenotype, --out, --STRmode, --outcometype, --run")
@@ -371,11 +369,12 @@ parse_arguments <- function() {
     if ((arg$run == "single_variant") && is.na(arg$expandedAllele)) {
         stop("Error: exiting because At least one of the two following aruguments is missing: --single_variant --expandedAllele; please provide these when you use --run single_variant")
     }
+    return(arg)
 }
 
 arg <- parse_arguments()
 # for interactive debugging:
-# arg <- list(input = "all.inq.gz", out="test.tsv", chr = "chrY_KI270740v1_random", run="chromosome", phenocovar = "sample_info_with_haplotype.tsv", phenotype = "fus", binaryOrder = "Nietes,Klopt", covnames="Sex", STRmode = 'MAX', missing_cutoff = 0.8)
+# arg <- list(input = "all.inq.gz", out="test.tsv", chr = "chrY", run="chromosome", phenocovar = "sample_info_with_haplotype.tsv", phenotype = "fus", binaryOrder = "Nietes,Klopt", covnames="Sex", STRmode = 'MAX', missing_cutoff = 0.8)
 
 
 
@@ -428,8 +427,6 @@ calls <- list("H1" = inqH1, "H2" = inqH2, "strnames" = strnames)
 
 # pheno_info is a list with sample_list, phenotype and no_cols attributes
 pheno_info <- prepare_phenotype(
-    phenofile = arg$phenocovar,
-    phenotype = arg$phenotype,
     sample_list = as.data.table(colnames(calls$H1)),
     arg = arg
 )
@@ -438,8 +435,6 @@ pheno_info <- prepare_phenotype(
 calls_file <- prepare_calls(
     calls = calls,
     sample_list_wPheno = pheno_info$sample_list,
-    STRmode = arg$STRmode,
-    missing_cutoff = arg$missing_cutoff,
     arg = arg
 )
 
