@@ -1,6 +1,7 @@
 use plotly::{Histogram, Plot};
 use std::collections::HashMap;
 use std::io::BufRead;
+use std::io::{BufReader, Lines, Read};
 use std::path::PathBuf;
 
 pub fn plot(
@@ -16,7 +17,7 @@ pub fn plot(
     let samples: Vec<String> = header_line
         .split('\t')
         .skip(3)
-        .map(|s| s.replace(".inq_H1", "").replace(".inq_H2", ""))
+        .map(|s| s.replace("_H1", "").replace("_H2", ""))
         .collect();
 
     let samples_of_interest = crate::metadata::parse_phenotypes(&metadata, &condition)
@@ -43,7 +44,7 @@ pub fn plot(
     plot_hist(lengths_for_plot, ids_for_plot, output);
 }
 
-fn get_str_lengths(region: String, lines: std::io::Lines<Box<dyn BufRead>>) -> Option<Vec<f64>> {
+fn get_str_lengths(region: String, lines: Lines<BufReader<Box<dyn Read>>>) -> Option<Vec<f64>> {
     let (chrom, reg_start, reg_end) = crate::utils::process_region(region).unwrap();
     // Add a tab character to the chromosome so we can search for this with starts_with below (to make sure chr1 does not match chr15)
     let reg_chrom = format!("{chrom}\t");
