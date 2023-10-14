@@ -431,7 +431,7 @@ fn median_str_length(array: &Vec<Call>, support: usize) -> f64 {
         let ind_right = spanning.len() / 2;
         (spanning[ind_left] + spanning[ind_right]) as f64 / 2.0
     } else {
-        spanning[(spanning.len() / 2)] as f64
+        spanning[spanning.len() / 2] as f64
     }
 }
 
