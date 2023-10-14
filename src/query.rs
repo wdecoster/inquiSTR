@@ -43,6 +43,7 @@ pub fn query(combined: PathBuf, region: String) {
         for line in crate::utils::reader(filename).lines() {
             let line = line.unwrap();
             debug!("Found line: {}", line);
+            // only search for the interval in the right chromosome
             if line.starts_with(&reg_chrom) {
                 debug!("Found right chromosome: {}", line);
                 let splitline = line.split('\t').collect::<Vec<&str>>();

@@ -1,7 +1,7 @@
 use clap::ValueEnum;
-use linfa::traits::Transformer;
-use linfa_clustering::Dbscan;
-use ndarray::prelude::*;
+
+use dbscan::Classification::*;
+use dbscan::Model;
 
 use std::cmp::Ordering;
 use std::io::BufRead;
@@ -10,7 +10,7 @@ use std::path::PathBuf;
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
 pub enum Method {
     Zscore,
-    // Dbscan,
+    Dbscan,
 }
 
 fn std_deviation_and_mean(data: &Vec<f32>) -> (f32, f32) {
@@ -74,10 +74,24 @@ pub fn outlier(combined: PathBuf, minsize: u32, zscore_cutoff: f32, method: Meth
                     println!("{chrom}\t{begin}\t{end}\t{expanded}")
                 }
             }
-            // Method::Dbscan => {
-            //     let arr = array![values];
-            //     let clusters = Dbscan::params(3).tolerance(1e-2).transform(&arr);
-            // }
+            Method::Dbscan => {
+                let values = values
+                    .iter()
+                    .map(|&value| vec![value])
+                    .collect::<Vec<Vec<f32>>>();
+                let model = Model::new(1.0, 3);
+                let output = model.run(&values);
+                let outliers = output
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, &classification)| matches!(classification, Noise))
+                    .map(|(index, _)| samples[index])
+                    .collect::<Vec<&str>>();
+                if !outliers.is_empty() {
+                    let outliers = outliers.join(",");
+                    println!("{chrom}\t{begin}\t{end}\t{outliers}")
+                }
+            }
         }
     }
 }

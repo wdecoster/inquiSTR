@@ -15,7 +15,7 @@ rayon = "1.5.3"
 human-sort = "0.2.2"
 flate2 = "1.0.24"
 histo_fp = "0.2.1"
-indicatif = {version = "0.17.1", features = ["rayon"]}
+indicatif = { version = "0.17.1", features = ["rayon"] }
 linecount = "0.1.0"
 itertools = "0.11.0"
 plotly = "0.8.3"
@@ -23,6 +23,7 @@ linfa-clustering = "0.6.1"
 linfa = "0.6.1"
 ndarray = "0.15.6"
 niffler = "2.5.0"
+dbscan = "0.3.1"
 
 [dev-dependencies]
 ctor = "*"
