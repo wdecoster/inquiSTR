@@ -316,11 +316,10 @@ fn genotype_repeat_phased(
         // CIGAR operations are assessed per read
         for r in bam.rc_records() {
             let r = r.expect("Error reading BAM file in region {chrom}:{start}-{end}.");
-            // reads with either end inside the window are ignored or if mapping quality is low
-            // if the bam is supposed to be phased, ignore all unphased reads
+            // reads with both ends inside the window are ignored or if mapping quality is low
+            // since the bam is supposed to be phased, ignore all unphased reads
             let phase = get_phase(&r);
-            if start_ext < (r.reference_start() as u32)
-                || (r.reference_end() as u32) < end_ext
+            if start_ext < (r.reference_start() as u32) && (r.reference_end() as u32) < end_ext
                 || r.mapq() <= 10
                 || phase == 0
             {
@@ -409,7 +408,7 @@ fn get_phase(record: &bam::Record) -> u8 {
 /// Spanning reads have the preference, so if more than <support> spanning reads are present the median is calculated for those
 /// Otherwise, the longest softclipped reads are added up to <support> reads
 fn median_str_length(array: &Vec<Call>, support: usize) -> f64 {
-    if array.len() <= support {
+    if array.len() < support {
         return NAN;
     }
     let mut spanning = vec![];
