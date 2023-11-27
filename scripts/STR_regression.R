@@ -16,7 +16,6 @@ assoc_binary <- function(arg, calls_file, phenotype, no_cols, covariates, missin
             stop(paste0("The value ", i, " in binaryOrder is not present in the phenotype column of the input file."))
         }
     }
-
     calls_file_selected <- as.data.table(calls_file[calls_file[[phenotype]] %in% c(binaryOrder_prepared), ])
     calls_file_selected[[phenotype]] <- factor(calls_file_selected[[phenotype]], c(binaryOrder_prepared))
     calls_file_selected <- calls_file_selected[, which(unlist(lapply(calls_file_selected, function(x) !all(is.na(x))))), with = FALSE]
@@ -59,10 +58,8 @@ assoc_binary <- function(arg, calls_file, phenotype, no_cols, covariates, missin
         N <- nobs(glm_result)
         Group2_Group1_OR_for_absAvgSizeDiff <- round((exp(Group2_Group1_absAvgSizeDiff * log(OR))), digits = 3)
         model <- as.character(glm_result$formula)[1]
-
         # instead of creating data frames and rbind'ing them every iteration, it would be better to just print to stdout
         # we don't get sorting then, but that's not too bad
-
         tabular_result <- as.data.frame(cbind(Predictors, OR, OR_L95, OR_U95, OR_stdErr, Pvalue, N, Group1_N, Group2_N, AvgSize, Group1_AvgSize, Group2_AvgSize, Group2_Group1_absAvgSizeDiff, Group2_Group1_OR_for_absAvgSizeDiff, model, binaryOrderInTable))
         tabular_result <- subset(tabular_result, Predictors == VariantID)
         colnames(tabular_result) <- c("VariantID", "OR", "OR_L95", "OR_U95", "OR_stdErr", "Pvalue", "N", paste0(binaryOrder_prepared[1], "_N"), paste0(binaryOrder_prepared[2], "_N"), "AvgSize", paste0(binaryOrder_prepared[1], "_AvgSize"), paste0(binaryOrder_prepared[2], "_AvgSize"), paste0(binaryOrder_prepared[2], "_", binaryOrder_prepared[1], "_absAvgSizeDiff"), paste0(binaryOrder_prepared[2], "_", binaryOrder_prepared[1], "_OR_for_absAvgSizeDiff"), "model", "binaryOrder")
@@ -374,7 +371,7 @@ parse_arguments <- function() {
 
 arg <- parse_arguments()
 # for interactive debugging:
-# arg <- list(input = "all.inq.gz", out="test.tsv", chr = "chrY", run="chromosome", phenocovar = "sample_info_with_haplotype.tsv", phenotype = "fus", binaryOrder = "Nietes,Klopt", covnames="Sex", STRmode = 'MAX', missing_cutoff = 0.8)
+# arg <- list(input = "all.inq.gz", out="test.tsv", chr = "chr22", run="chromosome", phenocovar = "sample_info_with_haplotype.tsv", phenotype = "fus", binaryOrder = "N,Y", covnames="Sex", STRmode = 'MAX', missing_cutoff = 0.8, quiet=FALSE)
 
 
 
