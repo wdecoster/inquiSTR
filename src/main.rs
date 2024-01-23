@@ -28,8 +28,8 @@ enum Commands {
     #[clap(arg_required_else_help = true)]
     Call {
         /// bam file to call STRs in
-        #[clap(parse(from_os_str), validator=is_file)]
-        bam: PathBuf,
+        #[clap(validator=is_file)]
+        bam: String,
 
         /// region string to genotype expansion in
         #[clap(short, long, value_parser)]

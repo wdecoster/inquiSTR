@@ -11,11 +11,13 @@ use rust_htslib::{bam, bam::Read};
 use std::cmp::max;
 use std::cmp::Ordering;
 use std::collections::HashMap;
+use std::env;
 use std::f64::NAN;
 use std::fmt;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Mutex;
+use url::Url;
 
 // This struct keeps the genotype information and allows to compare them and thus sort them on chromosomal location
 struct Genotype {
@@ -77,7 +79,7 @@ enum Call {
 /// For a bed file the genotyping is done in parallel
 /// The minlen argument indicates the smallest CIGAR operation that is considered
 pub fn genotype_repeats(
-    bamp: PathBuf,
+    bamp: String,
     region: Option<String>,
     region_file: Option<PathBuf>,
     minlen: u32,
@@ -86,15 +88,13 @@ pub fn genotype_repeats(
     unphased: bool,
     sample_name: Option<String>,
 ) {
-    if !bamp.is_file() {
-        error!(
-            "ERROR: path to bam file {} is not valid!\n\n",
-            bamp.display()
-        );
+    if !PathBuf::from(&bamp).is_file() && !bamp.starts_with("s3") && !bamp.starts_with("https://") {
+        error!("ERROR: path to bam file {} is not valid!\n\n", &bamp);
         panic!();
     };
     let sample = sample_name.unwrap_or_else(|| {
-        bamp.clone()
+        PathBuf::from(&bamp)
+            .clone()
             .file_stem()
             .unwrap()
             .to_str()
@@ -117,9 +117,8 @@ pub fn genotype_repeats(
         }
         (Some(region), None) => {
             let (chrom, start, end) = crate::utils::process_region(region).unwrap();
-            let bamf = bamp.into_os_string().into_string().unwrap();
 
-            match genotype_repeat(&bamf, chrom, start, end, minlen, support, unphased) {
+            match genotype_repeat(&bamp, chrom, start, end, minlen, support, unphased) {
                 Ok(output) => {
                     println!("{header}");
                     println!("{output}")
@@ -135,7 +134,6 @@ pub fn genotype_repeats(
                     .unwrap();
                 // TODO: check if bed file is okay
                 let mut reader = bed::Reader::from_file(region_file.clone()).unwrap();
-                let bamf = bamp.into_os_string().into_string().unwrap();
                 // chrom_reported and genotypes are vectors that are used by multiple threads to add findings, therefore as a Mutex
                 // chrom_reported contains those chromosomes for which an error (absence in the bam) was already reported
                 // to avoid reporting the same error multiple times
@@ -152,7 +150,7 @@ pub fn genotype_repeats(
                     .for_each(|record| {
                         let rec = record.expect("Error reading bed record.");
                         match genotype_repeat(
-                            &bamf,
+                            &bamp,
                             rec.chrom().to_string(),
                             rec.start().try_into().unwrap(),
                             rec.end().try_into().unwrap(),
@@ -186,7 +184,6 @@ pub fn genotype_repeats(
                 // Output is returned in the same order as the bed, and therefore not sorted before writing to stdout
                 // TODO: check if bed file is okay
                 let mut reader = bed::Reader::from_file(region_file.clone()).unwrap();
-                let bamf = bamp.into_os_string().into_string().unwrap();
                 // chrom_reported contains those chromosomes for which an error (absence in the bam) was already reported
                 // to avoid reporting the same error multiple times
                 let mut chrom_reported = Vec::new();
@@ -195,7 +192,7 @@ pub fn genotype_repeats(
                 for record in reader.records().progress_count(lines as u64) {
                     let rec = record.expect("Error reading bed record.");
                     match genotype_repeat(
-                        &bamf,
+                        &bamp,
                         rec.chrom().to_string(),
                         rec.start().try_into().unwrap(),
                         rec.end().try_into().unwrap(),
@@ -233,12 +230,15 @@ fn genotype_repeat(
     support: usize,
     unphased: bool,
 ) -> Result<Genotype, String> {
-    let bam = match bam::IndexedReader::from_path(bamf) {
-        Ok(handle) => handle,
-        Err(e) => {
-            error!("Error opening BAM {}.\n{}", bamf, e);
-            panic!();
+    let bam = if bamf.starts_with("s3") || bamf.starts_with("https://") {
+        if env::var("CURL_CA_BUNDLE").is_err() {
+            env::set_var("CURL_CA_BUNDLE", "/etc/ssl/certs/ca-certificates.crt");
         }
+        bam::IndexedReader::from_url(&Url::parse(bamf.as_str()).expect("Failed to parse s3 URL"))
+            .unwrap_or_else(|err| panic!("Error opening remote BAM: {err}"))
+    } else {
+        bam::IndexedReader::from_path(bamf)
+            .unwrap_or_else(|err| panic!("Error opening local BAM: {err}"))
     };
     info!("Checks passed, genotyping repeat");
     if unphased {
@@ -392,13 +392,11 @@ fn call_from_cigar(r: Rc<bam::Record>, minlen: u32, start: u32, end: u32) -> Cal
 /// If the tag is absent '0' is returned, indicating unphased
 fn get_phase(record: &bam::Record) -> u8 {
     match record.aux(b"HP") {
-        Ok(value) => {
-            if let Aux::U8(v) = value {
-                v
-            } else {
-                panic!("Unexpected type of Aux {value:?}")
-            }
-        }
+        Ok(value) => match value {
+            Aux::U8(v) => v,
+            Aux::I32(v) => v as u8,
+            _ => panic!("Unexpected type of Aux {value:?}"),
+        },
         Err(_e) => 0,
     }
 }
@@ -438,7 +436,21 @@ fn median_str_length(array: &Vec<Call>, support: usize) -> f64 {
 #[test]
 fn test_region() {
     genotype_repeats(
-        PathBuf::from("test-data/small-test.bam"),
+        String::from("test-data/small-test.bam"),
+        Some("chr7:154778571-154779363".to_string()),
+        None,
+        5,
+        3,
+        4,
+        false,
+        Some("sample".to_string()),
+    );
+}
+
+#[test]
+fn test_region_from_url() {
+    genotype_repeats(
+        String::from("https://s3.amazonaws.com/1000g-ont/FIRST_100_FREEZE/minimap2_2.24_alignment_data/GM18501/GM18501.LSK110.R9.guppy646.sup.with5mC.pass.phased.bam"),
         Some("chr7:154778571-154779363".to_string()),
         None,
         5,
@@ -452,7 +464,7 @@ fn test_region() {
 #[test]
 fn test_region_bed() {
     genotype_repeats(
-        PathBuf::from("test-data/small-test.bam"),
+        String::from("test-data/small-test.bam"),
         None,
         Some(PathBuf::from("test-data/test.bed")),
         5,
@@ -465,7 +477,7 @@ fn test_region_bed() {
 #[test]
 fn test_unphased() {
     genotype_repeats(
-        PathBuf::from("test-data/small-test.bam"),
+        String::from("test-data/small-test.bam"),
         None,
         Some(PathBuf::from("test-data/test.bed")),
         5,
@@ -480,7 +492,7 @@ fn test_unphased() {
 #[should_panic]
 fn test_no_region() {
     genotype_repeats(
-        PathBuf::from("test-data/small-test.bam"),
+        String::from("test-data/small-test.bam"),
         None,
         None,
         5,
@@ -495,7 +507,7 @@ fn test_no_region() {
 #[should_panic]
 fn test_wrong_bam_path() {
     genotype_repeats(
-        PathBuf::from("test-data/wrong-test.bam"),
+        String::from("test-data/wrong-test.bam"),
         Some("chr7:154778571-154779363".to_string()),
         None,
         5,
@@ -509,7 +521,7 @@ fn test_wrong_bam_path() {
 #[test]
 fn test_region_wrong_chromosome() {
     genotype_repeats(
-        PathBuf::from("test-data/small-test.bam"),
+        String::from("test-data/small-test.bam"),
         Some("7:154778571-154779363".to_string()),
         None,
         5,
