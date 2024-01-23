@@ -117,8 +117,19 @@ pub fn genotype_repeats(
         }
         (Some(region), None) => {
             let (chrom, start, end) = crate::utils::process_region(region).unwrap();
-
-            match genotype_repeat(&bamp, chrom, start, end, minlen, support, unphased) {
+            let mut bam = if bamp.starts_with("s3") || bamp.starts_with("https://") {
+                if env::var("CURL_CA_BUNDLE").is_err() {
+                    env::set_var("CURL_CA_BUNDLE", "/etc/ssl/certs/ca-certificates.crt");
+                }
+                bam::IndexedReader::from_url(
+                    &Url::parse(bamp.as_str()).expect("Failed to parse s3 URL"),
+                )
+                .unwrap_or_else(|err| panic!("Error opening remote BAM: {err}"))
+            } else {
+                bam::IndexedReader::from_path(bamp)
+                    .unwrap_or_else(|err| panic!("Error opening local BAM: {err}"))
+            };
+            match genotype_repeat(&mut bam, chrom, start, end, minlen, support, unphased) {
                 Ok(output) => {
                     println!("{header}");
                     println!("{output}")
@@ -149,7 +160,7 @@ pub fn genotype_repeats(
                     .progress_count(lines as u64)
                     .for_each(|record| {
                         let rec = record.expect("Error reading bed record.");
-                        match genotype_repeat(
+                        match genotype_repeat_multithreaded(
                             &bamp,
                             rec.chrom().to_string(),
                             rec.start().try_into().unwrap(),
@@ -189,10 +200,23 @@ pub fn genotype_repeats(
                 let mut chrom_reported = Vec::new();
                 // genotypes contains the output of the genotyping, a struct instance
                 let lines: usize = count_lines(std::fs::File::open(region_file).unwrap()).unwrap();
+                let mut bam = if bamp.starts_with("s3") || bamp.starts_with("https://") {
+                    if env::var("CURL_CA_BUNDLE").is_err() {
+                        env::set_var("CURL_CA_BUNDLE", "/etc/ssl/certs/ca-certificates.crt");
+                    }
+                    bam::IndexedReader::from_url(
+                        &Url::parse(bamp.as_str()).expect("Failed to parse s3 URL"),
+                    )
+                    .unwrap_or_else(|err| panic!("Error opening remote BAM: {err}"))
+                } else {
+                    bam::IndexedReader::from_path(bamp)
+                        .unwrap_or_else(|err| panic!("Error opening local BAM: {err}"))
+                };
+
                 for record in reader.records().progress_count(lines as u64) {
                     let rec = record.expect("Error reading bed record.");
                     match genotype_repeat(
-                        &bamp,
+                        &mut bam,
                         rec.chrom().to_string(),
                         rec.start().try_into().unwrap(),
                         rec.end().try_into().unwrap(),
@@ -221,7 +245,9 @@ pub fn genotype_repeats(
 /// This function genotypes a particular repeat defined by chrom, start and end in the specified bam file
 /// All indel cigar operations longer than minlen are considered
 /// The bam file is expected to be phased using the HP tag
-fn genotype_repeat(
+/// This function is specific to multithreaded use, as it takes a String for the bam rather than the Reader
+/// The function below is the single threaded version
+fn genotype_repeat_multithreaded(
     bamf: &String,
     chrom: String,
     start: u32,
@@ -230,7 +256,7 @@ fn genotype_repeat(
     support: usize,
     unphased: bool,
 ) -> Result<Genotype, String> {
-    let bam = if bamf.starts_with("s3") || bamf.starts_with("https://") {
+    let mut bam = if bamf.starts_with("s3") || bamf.starts_with("https://") {
         if env::var("CURL_CA_BUNDLE").is_err() {
             env::set_var("CURL_CA_BUNDLE", "/etc/ssl/certs/ca-certificates.crt");
         }
@@ -242,6 +268,23 @@ fn genotype_repeat(
     };
     info!("Checks passed, genotyping repeat");
     if unphased {
+        genotype_repeat_unphased(&mut bam, chrom, start, end, minlen, support)
+    } else {
+        genotype_repeat_phased(&mut bam, chrom, start, end, minlen, support)
+    }
+}
+
+fn genotype_repeat(
+    bam: &mut bam::IndexedReader,
+    chrom: String,
+    start: u32,
+    end: u32,
+    minlen: u32,
+    support: usize,
+    unphased: bool,
+) -> Result<Genotype, String> {
+    info!("Checks passed, genotyping repeat");
+    if unphased {
         genotype_repeat_unphased(bam, chrom, start, end, minlen, support)
     } else {
         genotype_repeat_phased(bam, chrom, start, end, minlen, support)
@@ -249,7 +292,7 @@ fn genotype_repeat(
 }
 
 fn genotype_repeat_unphased(
-    mut bam: bam::IndexedReader,
+    bam: &mut bam::IndexedReader,
     chrom: String,
     start: u32,
     end: u32,
@@ -294,7 +337,7 @@ fn genotype_repeat_unphased(
 }
 
 fn genotype_repeat_phased(
-    mut bam: bam::IndexedReader,
+    bam: &mut bam::IndexedReader,
     chrom: String,
     start: u32,
     end: u32,
