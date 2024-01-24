@@ -15,6 +15,7 @@ use std::collections::HashMap;
 use std::env;
 use std::f64::NAN;
 use std::fmt;
+use std::io::{self, Write};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Mutex;
@@ -184,9 +185,11 @@ pub fn genotype_repeats(
                     });
                 let mut genotypes_vec = genotypes.lock().unwrap();
                 // The final output is sorted by chrom, start and end
+                let stdout = io::stdout(); // get the global stdout entity
+                let mut handle = io::BufWriter::new(stdout); // optional: wrap that handle in a buffer
                 genotypes_vec.sort_unstable();
                 for g in &mut *genotypes_vec {
-                    println!("{g}");
+                    writeln!(handle, "{g}").expect("Failed writing the result.");
                 }
             } else {
                 // When running single threaded things become easier and the tool will require less memory
@@ -199,6 +202,8 @@ pub fn genotype_repeats(
                 // genotypes contains the output of the genotyping, a struct instance
                 let lines: usize = count_lines(std::fs::File::open(region_file).unwrap()).unwrap();
                 let mut bam = get_bam_reader(&bamp);
+                let stdout = io::stdout(); // get the global stdout entity
+                let mut handle = io::BufWriter::new(stdout); // optional: wrap that handle in a buffer
 
                 for record in reader.records().progress_count(lines as u64) {
                     let rec = record.expect("Error reading bed record.");
@@ -212,7 +217,7 @@ pub fn genotype_repeats(
                         unphased,
                     ) {
                         Ok(output) => {
-                            println!("{output}");
+                            writeln!(handle, "{output}").expect("Failed writing the result.");
                         }
                         Err(locus) => {
                             // For now the Err is only used for when a chromosome or (extended) interval from the bed file does not appear in the bam file
