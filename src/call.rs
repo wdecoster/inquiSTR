@@ -1,4 +1,5 @@
 use bio::io::bed;
+use hts_sys;
 use human_sort::compare as human_compare;
 use indicatif::ParallelProgressIterator;
 use indicatif::ProgressIterator;
@@ -100,6 +101,7 @@ pub fn genotype_repeats(
             .to_str()
             .unwrap()
             .replace(".bam", "")
+            .replace(".cram", "")
     });
     let header = if unphased {
         format!("chromosome\tbegin\tend\t{sample}")
@@ -117,18 +119,7 @@ pub fn genotype_repeats(
         }
         (Some(region), None) => {
             let (chrom, start, end) = crate::utils::process_region(region).unwrap();
-            let mut bam = if bamp.starts_with("s3") || bamp.starts_with("https://") {
-                if env::var("CURL_CA_BUNDLE").is_err() {
-                    env::set_var("CURL_CA_BUNDLE", "/etc/ssl/certs/ca-certificates.crt");
-                }
-                bam::IndexedReader::from_url(
-                    &Url::parse(bamp.as_str()).expect("Failed to parse s3 URL"),
-                )
-                .unwrap_or_else(|err| panic!("Error opening remote BAM: {err}"))
-            } else {
-                bam::IndexedReader::from_path(bamp)
-                    .unwrap_or_else(|err| panic!("Error opening local BAM: {err}"))
-            };
+            let mut bam = get_bam_reader(&bamp);
             match genotype_repeat(&mut bam, chrom, start, end, minlen, support, unphased) {
                 Ok(output) => {
                     println!("{header}");
@@ -200,18 +191,7 @@ pub fn genotype_repeats(
                 let mut chrom_reported = Vec::new();
                 // genotypes contains the output of the genotyping, a struct instance
                 let lines: usize = count_lines(std::fs::File::open(region_file).unwrap()).unwrap();
-                let mut bam = if bamp.starts_with("s3") || bamp.starts_with("https://") {
-                    if env::var("CURL_CA_BUNDLE").is_err() {
-                        env::set_var("CURL_CA_BUNDLE", "/etc/ssl/certs/ca-certificates.crt");
-                    }
-                    bam::IndexedReader::from_url(
-                        &Url::parse(bamp.as_str()).expect("Failed to parse s3 URL"),
-                    )
-                    .unwrap_or_else(|err| panic!("Error opening remote BAM: {err}"))
-                } else {
-                    bam::IndexedReader::from_path(bamp)
-                        .unwrap_or_else(|err| panic!("Error opening local BAM: {err}"))
-                };
+                let mut bam = get_bam_reader(&bamp);
 
                 for record in reader.records().progress_count(lines as u64) {
                     let rec = record.expect("Error reading bed record.");
@@ -256,22 +236,36 @@ fn genotype_repeat_multithreaded(
     support: usize,
     unphased: bool,
 ) -> Result<Genotype, String> {
-    let mut bam = if bamf.starts_with("s3") || bamf.starts_with("https://") {
-        if env::var("CURL_CA_BUNDLE").is_err() {
-            env::set_var("CURL_CA_BUNDLE", "/etc/ssl/certs/ca-certificates.crt");
-        }
-        bam::IndexedReader::from_url(&Url::parse(bamf.as_str()).expect("Failed to parse s3 URL"))
-            .unwrap_or_else(|err| panic!("Error opening remote BAM: {err}"))
-    } else {
-        bam::IndexedReader::from_path(bamf)
-            .unwrap_or_else(|err| panic!("Error opening local BAM: {err}"))
-    };
+    let mut bam = get_bam_reader(bamf);
     info!("Checks passed, genotyping repeat");
     if unphased {
         genotype_repeat_unphased(&mut bam, chrom, start, end, minlen, support)
     } else {
         genotype_repeat_phased(&mut bam, chrom, start, end, minlen, support)
     }
+}
+
+fn get_bam_reader(bamp: &String) -> bam::IndexedReader {
+    let mut bam = if bamp.starts_with("s3") || bamp.starts_with("https://") {
+        if env::var("CURL_CA_BUNDLE").is_err() {
+            env::set_var("CURL_CA_BUNDLE", "/etc/ssl/certs/ca-certificates.crt");
+        }
+        bam::IndexedReader::from_url(&Url::parse(bamp.as_str()).expect("Failed to parse s3 URL"))
+            .unwrap_or_else(|err| panic!("Error opening remote BAM: {err}"))
+    } else {
+        bam::IndexedReader::from_path(bamp)
+            .unwrap_or_else(|err| panic!("Error opening local BAM: {err}"))
+    };
+    if bamp.ends_with(".cram") {
+        bam.set_cram_options(
+            hts_sys::hts_fmt_option_CRAM_OPT_REQUIRED_FIELDS,
+            hts_sys::sam_fields_SAM_AUX
+                | hts_sys::sam_fields_SAM_MAPQ
+                | hts_sys::sam_fields_SAM_CIGAR,
+        )
+        .expect("Failed setting cram options");
+    }
+    bam
 }
 
 fn genotype_repeat(

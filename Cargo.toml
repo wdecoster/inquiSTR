@@ -25,6 +25,7 @@ ndarray = "0.15.6"
 niffler = "2.5.0"
 dbscan = "0.3.1"
 url = "2.5.0"
+hts-sys = "2.1.1"
 
 [dev-dependencies]
 ctor = "*"
