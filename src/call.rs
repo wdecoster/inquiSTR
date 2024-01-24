@@ -129,6 +129,13 @@ pub fn genotype_repeats(
             };
         }
         (None, Some(region_file)) => {
+            if !region_file.is_file() {
+                error!(
+                    "ERROR: path to bed file {} is not valid!\n\n",
+                    &region_file.display()
+                );
+                panic!();
+            };
             if threads > 1 {
                 rayon::ThreadPoolBuilder::new()
                     .num_threads(threads)

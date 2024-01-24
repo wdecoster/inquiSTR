@@ -5,6 +5,9 @@ use std::path::Path;
 use std::path::PathBuf;
 
 pub fn query(combined: PathBuf, region: String) {
+    if !combined.exists() {
+        panic!("Combined file does not exist!");
+    }
     let filename = combined
         .file_name()
         .expect("Problem getting filename")

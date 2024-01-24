@@ -23,6 +23,12 @@ pub fn assocation(
     condition: String,
     covariates: Option<String>,
 ) {
+    if !combined.exists() {
+        panic!("Combined file does not exist!");
+    }
+    if !metadata.exists() {
+        panic!("Metadata file does not exist!");
+    }
     // Taking out the samples
     let samples_of_interest = crate::metadata::parse_phenotypes(&metadata, &condition)
         .expect("Problem parsing metadata file");

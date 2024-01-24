@@ -3,6 +3,9 @@ use std::io::BufRead;
 use std::path::PathBuf;
 
 pub fn histogram(combined: PathBuf, region: String) {
+    if !combined.exists() {
+        panic!("Combined file does not exist!");
+    }
     let file = crate::utils::reader(&combined.into_os_string().into_string().unwrap());
     let lines = file.lines();
 

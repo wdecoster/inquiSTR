@@ -11,6 +11,12 @@ pub fn plot(
     region: String,
     output: String,
 ) {
+    if !combined.exists() {
+        panic!("Combined file does not exist!");
+    }
+    if !metadata.exists() {
+        panic!("Metadata file does not exist!");
+    }
     let file = crate::utils::reader(&combined.into_os_string().into_string().unwrap());
     let mut lines = file.lines();
     let header_line = lines.next().unwrap().unwrap();
@@ -33,11 +39,11 @@ pub fn plot(
         if samples_map.contains_key(sample) {
             lengths_for_plot
                 .entry(samples_map[sample].clone())
-                .or_insert(Vec::new())
+                .or_default()
                 .push(length);
             ids_for_plot
                 .entry(samples_map[sample].clone())
-                .or_insert(Vec::new())
+                .or_default()
                 .push(sample);
         }
     }

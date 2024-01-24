@@ -25,6 +25,12 @@ fn reader(filename: &str) -> Box<dyn BufRead> {
 }
 
 pub fn combine(calls: Vec<PathBuf>) {
+    // check if all files exist
+    for file in &calls {
+        if !file.exists() {
+            panic!("File {} does not exist!", file.display());
+        }
+    }
     // open the first file, regardless if it is gzipped or not
     let file1 = reader(&calls[0].clone().into_os_string().into_string().unwrap());
 

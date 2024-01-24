@@ -31,6 +31,9 @@ fn std_deviation_and_mean(data: &Vec<f32>) -> (f32, f32) {
 }
 
 pub fn outlier(combined: PathBuf, minsize: u32, zscore_cutoff: f32, method: Method) {
+    if !combined.exists() {
+        panic!("Combined file does not exist!");
+    }
     let file = crate::utils::reader(&combined.into_os_string().into_string().unwrap());
     let mut lines = file.lines();
     let line = lines.next().unwrap().unwrap();

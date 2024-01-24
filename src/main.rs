@@ -1,4 +1,3 @@
-use clap::AppSettings::DeriveDisplayOrder;
 use clap::{Parser, Subcommand};
 use log::info;
 use std::path::PathBuf;
@@ -15,7 +14,6 @@ pub mod utils;
 
 // The arguments end up in the Cli struct
 #[derive(Parser, Debug)]
-#[structopt(global_settings=&[DeriveDisplayOrder])]
 #[clap(author, version, about="Tool to genotype STRs from long reads", long_about = None)]
 struct Cli {
     #[clap(subcommand)]
@@ -28,7 +26,7 @@ enum Commands {
     #[clap(arg_required_else_help = true)]
     Call {
         /// bam file to call STRs in
-        #[clap(validator=is_file)]
+        #[clap()]
         bam: String,
 
         /// region string to genotype expansion in
@@ -36,7 +34,7 @@ enum Commands {
         region: Option<String>,
 
         /// Bed file with region(s) to genotype expansion(s) in
-        #[clap(short = 'R', long, value_parser, validator=is_file)]
+        #[clap(short = 'R', long, value_parser)]
         region_file: Option<PathBuf>,
 
         /// minimal length of insertion/deletion operation
@@ -63,7 +61,7 @@ enum Commands {
     Combine {
         /// files from inquiSTR call
         // this validator gets applied to each element from the Vec separately
-        #[clap(parse(from_os_str), multiple_values = true, required = true, validator=is_file)]
+        #[clap(value_parser, required = true)]
         calls: Vec<PathBuf>,
     },
     /// Search for regions potentially containing a polymorphic repeat
@@ -71,7 +69,7 @@ enum Commands {
     /// Find outliers from TSV
     Outlier {
         /// combined file of calls
-        #[clap(parse(from_os_str), required = true, validator=is_file)]
+        #[clap(value_parser, required = true)]
         combined: PathBuf,
 
         /// minimal length of expansion to be present in cohort
@@ -89,7 +87,7 @@ enum Commands {
     /// Lookup genotypes and display
     Query {
         /// combined file of calls
-        #[clap(parse(from_os_str), required = true, validator=is_file)]
+        #[clap(value_parser, required = true)]
         combined: PathBuf,
 
         /// region to query or file with regions to query
@@ -98,7 +96,7 @@ enum Commands {
     },
     Histogram {
         /// combined file of calls
-        #[clap(parse(from_os_str), required = true, validator=is_file)]
+        #[clap(value_parser, required = true)]
         combined: PathBuf,
 
         /// region to query
@@ -135,11 +133,11 @@ enum Commands {
     /// Show a histogram with multiple groups for a specific repeat
     Plot {
         /// combined file of calls
-        #[clap(parse(from_os_str), required = true, validator=is_file)]
+        #[clap(value_parser, required = true)]
         combined: PathBuf,
 
         /// file with sample_id, phenotype and covariates
-        #[clap(parse(from_os_str), required = true, validator=is_file)]
+        #[clap(value_parser, required = true)]
         metadata: PathBuf,
 
         /// test column and groups to plot e.g. group:PAT,CON with <group> the name of the column containing <PAT> and <CON>
@@ -154,15 +152,6 @@ enum Commands {
         #[clap(short, long, value_parser, default_value_t=String::from("groupplot.html"))]
         output: String,
     },
-}
-
-fn is_file(pathname: &str) -> Result<(), String> {
-    let path = PathBuf::from(pathname);
-    if path.is_file() {
-        Ok(())
-    } else {
-        Err(format!("Input file {} is invalid", path.display()))
-    }
 }
 
 fn main() {
