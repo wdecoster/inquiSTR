@@ -46,7 +46,7 @@ enum Commands {
         support: usize,
 
         /// Number of parallel threads to use
-        #[clap(short, long, value_parser, default_value_t = 8)]
+        #[clap(short, long, value_parser, default_value_t = 1)]
         threads: usize,
 
         /// If reads have to be considered unphased
