@@ -28,7 +28,6 @@ struct Genotype {
     end: u32,
     phase1: f64,
     phase2: f64,
-    unphased: f64,
 }
 
 impl Ord for Genotype {
@@ -55,19 +54,11 @@ impl Eq for Genotype {}
 // self.unphased should be 0, except if explicitly opted in to use unphased calls
 impl fmt::Display for Genotype {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        if self.unphased > 0.0 {
-            write!(
-                f,
-                "{}\t{}\t{}\t{}",
-                self.chrom, self.start, self.end, self.unphased
-            )
-        } else {
-            write!(
-                f,
-                "{}\t{}\t{}\t{}\t{}",
-                self.chrom, self.start, self.end, self.phase1, self.phase2
-            )
-        }
+        write!(
+            f,
+            "{}\t{}\t{}\t{}\t{}",
+            self.chrom, self.start, self.end, self.phase1, self.phase2
+        )
     }
 }
 
@@ -104,11 +95,8 @@ pub fn genotype_repeats(
             .replace(".bam", "")
             .replace(".cram", "")
     });
-    let header = if unphased {
-        format!("chromosome\tbegin\tend\t{sample}")
-    } else {
-        format!("chromosome\tbegin\tend\t{sample}_H1\t{sample}_H2")
-    };
+    let header = format!("chromosome\tbegin\tend\t{sample}_H1\t{sample}_H2");
+
     match (region, region_file) {
         (Some(_region), Some(_region_file)) => {
             error!("ERROR: Specify either a region (-r) or region_file (-R), not both!\n\n");
@@ -326,15 +314,23 @@ fn genotype_repeat_unphased(
             calls.push(call);
         }
         info!("Found {} reads for genotyping", calls.len(),);
+        // sort the vec of calls based on the value
+        let f = |c: &Call| match c {
+            Call::Span(v) => *v,
+            Call::Clip(v) => *v,
+        };
+        calls.sort_unstable_by_key(f);
+        // split both haplotypes with median split, split_at divides one slice into two at an index.
+        let (h1, h2) = calls.split_at(calls.len() / 2);
+
         // unphased is set to 0 if those are to be ignored and vice versa
         // just taking the median of unphased reads is not optimal
         let output = Genotype {
             chrom,
             start,
             end,
-            phase1: 0.0,
-            phase2: 0.0,
-            unphased: median_str_length(&calls.clone(), support),
+            phase1: median_str_length(&h1.to_vec(), support),
+            phase2: median_str_length(&h2.to_vec(), support),
         };
         Ok(output)
     } else {
@@ -390,7 +386,6 @@ fn genotype_repeat_phased(
             end,
             phase1: median_str_length(&calls[&1].clone(), support),
             phase2: median_str_length(&calls[&2].clone(), support),
-            unphased: 0.0,
         };
         Ok(output)
     } else {
