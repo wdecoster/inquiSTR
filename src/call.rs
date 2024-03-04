@@ -1,9 +1,7 @@
-use bio::io::bed;
 use hts_sys;
 use human_sort::compare as human_compare;
 use indicatif::ParallelProgressIterator;
 use indicatif::ProgressIterator;
-use linecount::count_lines;
 use log::{error, info, warn};
 use rayon::prelude::*;
 use rust_htslib::bam::ext::BamRecordExtensions;
@@ -21,18 +19,20 @@ use std::rc::Rc;
 use std::sync::Mutex;
 use url::Url;
 
+use crate::repeats::RepeatInterval;
+use crate::repeats::RepeatIntervalIterator;
+
 // This struct keeps the genotype information and allows to compare them and thus sort them on chromosomal location
 struct Genotype {
-    chrom: String,
-    start: u32,
-    end: u32,
+    repeat: RepeatInterval,
     phase1: f64,
     phase2: f64,
 }
 
 impl Ord for Genotype {
     fn cmp(&self, other: &Self) -> Ordering {
-        human_compare(&self.chrom, &other.chrom).then(self.start.cmp(&other.start))
+        human_compare(&self.repeat.chrom, &other.repeat.chrom)
+            .then(self.repeat.start.cmp(&other.repeat.start))
     }
 }
 
@@ -44,7 +44,8 @@ impl PartialOrd for Genotype {
 
 impl PartialEq for Genotype {
     fn eq(&self, other: &Self) -> bool {
-        (self.chrom.clone(), &self.start) == (other.chrom.clone(), &other.start)
+        (self.repeat.chrom.clone(), &self.repeat.start)
+            == (other.repeat.chrom.clone(), &other.repeat.start)
     }
 }
 
@@ -57,7 +58,7 @@ impl fmt::Display for Genotype {
         write!(
             f,
             "{}\t{}\t{}\t{}\t{}",
-            self.chrom, self.start, self.end, self.phase1, self.phase2
+            self.repeat.chrom, self.repeat.start, self.repeat.end, self.phase1, self.phase2
         )
     }
 }
@@ -83,141 +84,117 @@ pub fn genotype_repeats(
 ) {
     if !PathBuf::from(&bamp).is_file() && !bamp.starts_with("s3") && !bamp.starts_with("https://") {
         error!("ERROR: path to bam file {} is not valid!\n\n", &bamp);
-        panic!();
+        std::process::exit(1);
     };
     let sample = sample_name.unwrap_or_else(|| {
         PathBuf::from(&bamp)
             .clone()
             .file_stem()
-            .unwrap()
+            .expect("Failed to get file stem")
             .to_str()
-            .unwrap()
+            .expect("Failed to convert to string")
             .replace(".bam", "")
             .replace(".cram", "")
     });
-    let header = format!("chromosome\tbegin\tend\t{sample}_H1\t{sample}_H2");
-
-    match (region, region_file) {
-        (Some(_region), Some(_region_file)) => {
-            error!("ERROR: Specify either a region (-r) or region_file (-R), not both!\n\n");
-            panic!();
+    let file_header = format!("chromosome\tbegin\tend\t{sample}_H1\t{sample}_H2");
+    let repeats = get_targets(region, region_file, &bamp);
+    if threads > 1 {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .expect("Failed to build thread pool");
+        // chrom_reported and genotypes are vectors that are used by multiple threads to add findings, therefore as a Mutex
+        // chrom_reported contains those chromosomes for which an error (absence in the bam) was already reported
+        // to avoid reporting the same error multiple times
+        let chrom_reported = Mutex::new(Vec::new());
+        // genotypes contains the output of the genotyping, a struct instance
+        let genotypes = Mutex::new(Vec::new());
+        let num_intervals = repeats.num_intervals;
+        repeats
+            .par_bridge()
+            .progress_count(num_intervals as u64)
+            .for_each(|repeat| {
+                match genotype_repeat_multithreaded(&bamp, repeat, minlen, support, unphased) {
+                    Ok(output) => {
+                        let mut geno = genotypes.lock().expect("Failed to lock genotypes");
+                        geno.push(output);
+                    }
+                    Err(locus) => {
+                        // For now the Err is only used for when a chromosome or (extended) interval from the bed file does not appear in the bam file
+                        // this error is reported once per locus
+                        let mut chroms_reported = chrom_reported
+                            .lock()
+                            .expect("Failed to lock chrom_reported");
+                        if !chroms_reported.contains(&locus) {
+                            warn!("{locus} not found in bam file");
+                            chroms_reported.push(locus);
+                        }
+                    }
+                };
+            });
+        let mut genotypes_vec = genotypes.lock().expect("Failed to lock genotypes");
+        // The final output is sorted by chrom, start and end
+        let stdout = io::stdout(); // get the global stdout entity
+        let mut handle = io::BufWriter::new(stdout); // optional: wrap that handle in a buffer
+        genotypes_vec.sort_unstable();
+        writeln!(handle, "{file_header}").expect("Failed writing the header.");
+        for g in &mut *genotypes_vec {
+            writeln!(handle, "{g}").expect("Failed writing the result.");
         }
-        (None, None) => {
-            error!("ERROR: Specify one of region (-r) or region_file (-R)!\n\n");
-            panic!();
-        }
-        (Some(region), None) => {
-            let (chrom, start, end) = crate::utils::process_region(region).unwrap();
-            let mut bam = get_bam_reader(&bamp);
-            match genotype_repeat(&mut bam, chrom, start, end, minlen, support, unphased) {
+    } else {
+        let mut bam = get_bam_reader(&bamp);
+        let num_intervals = repeats.num_intervals;
+        println!("{file_header}");
+        for repeat in repeats.progress_count(num_intervals as u64) {
+            match genotype_repeat(&mut bam, repeat, minlen, support, unphased) {
                 Ok(output) => {
-                    println!("{header}");
                     println!("{output}")
                 }
                 Err(chrom) => error!("Contig {chrom} not found in bam file"),
             };
         }
-        (None, Some(region_file)) => {
-            if !region_file.is_file() {
-                error!(
-                    "ERROR: path to bed file {} is not valid!\n\n",
-                    &region_file.display()
-                );
-                panic!();
-            };
-            if threads > 1 {
-                rayon::ThreadPoolBuilder::new()
-                    .num_threads(threads)
-                    .build()
-                    .unwrap();
-                // TODO: check if bed file is okay
-                let mut reader = bed::Reader::from_file(region_file.clone()).unwrap();
-                // chrom_reported and genotypes are vectors that are used by multiple threads to add findings, therefore as a Mutex
-                // chrom_reported contains those chromosomes for which an error (absence in the bam) was already reported
-                // to avoid reporting the same error multiple times
-                let chrom_reported = Mutex::new(Vec::new());
-                // genotypes contains the output of the genotyping, a struct instance
-                let genotypes = Mutex::new(Vec::new());
-                // par_bridge does not guarantee that results are returned in order
-                let lines: usize = count_lines(std::fs::File::open(region_file).unwrap()).unwrap();
-                println!("{header}");
-                reader
-                    .records()
-                    .par_bridge()
-                    .progress_count(lines as u64)
-                    .for_each(|record| {
-                        let rec = record.expect("Error reading bed record.");
-                        match genotype_repeat_multithreaded(
-                            &bamp,
-                            rec.chrom().to_string(),
-                            rec.start().try_into().unwrap(),
-                            rec.end().try_into().unwrap(),
-                            minlen,
-                            support,
-                            unphased,
-                        ) {
-                            Ok(output) => {
-                                let mut geno = genotypes.lock().unwrap();
-                                geno.push(output);
-                            }
-                            Err(locus) => {
-                                // For now the Err is only used for when a chromosome or (extended) interval from the bed file does not appear in the bam file
-                                // this error is reported once per locus
-                                let mut chroms_reported = chrom_reported.lock().unwrap();
-                                if !chroms_reported.contains(&locus) {
-                                    warn!("{locus} not found in bam file");
-                                    chroms_reported.push(locus);
-                                }
-                            }
-                        };
-                    });
-                let mut genotypes_vec = genotypes.lock().unwrap();
-                // The final output is sorted by chrom, start and end
-                let stdout = io::stdout(); // get the global stdout entity
-                let mut handle = io::BufWriter::new(stdout); // optional: wrap that handle in a buffer
-                genotypes_vec.sort_unstable();
-                for g in &mut *genotypes_vec {
-                    writeln!(handle, "{g}").expect("Failed writing the result.");
-                }
-            } else {
-                // When running single threaded things become easier and the tool will require less memory
-                // Output is returned in the same order as the bed, and therefore not sorted before writing to stdout
-                // TODO: check if bed file is okay
-                let mut reader = bed::Reader::from_file(region_file.clone()).unwrap();
-                // chrom_reported contains those chromosomes for which an error (absence in the bam) was already reported
-                // to avoid reporting the same error multiple times
-                let mut chrom_reported = Vec::new();
-                // genotypes contains the output of the genotyping, a struct instance
-                let lines: usize = count_lines(std::fs::File::open(region_file).unwrap()).unwrap();
-                let mut bam = get_bam_reader(&bamp);
-                let stdout = io::stdout(); // get the global stdout entity
-                let mut handle = io::BufWriter::new(stdout); // optional: wrap that handle in a buffer
+    }
+}
 
-                for record in reader.records().progress_count(lines as u64) {
-                    let rec = record.expect("Error reading bed record.");
-                    match genotype_repeat(
-                        &mut bam,
-                        rec.chrom().to_string(),
-                        rec.start().try_into().unwrap(),
-                        rec.end().try_into().unwrap(),
-                        minlen,
-                        support,
-                        unphased,
-                    ) {
-                        Ok(output) => {
-                            writeln!(handle, "{output}").expect("Failed writing the result.");
-                        }
-                        Err(locus) => {
-                            // For now the Err is only used for when a chromosome or (extended) interval from the bed file does not appear in the bam file
-                            // this error is reported once per locus
-                            if !chrom_reported.contains(&locus) {
-                                warn!("{locus} not found in bam file");
-                                chrom_reported.push(locus);
-                            }
-                        }
-                    };
-                }
+fn get_chrom_lengths_from_bam_header(bam: String) -> HashMap<String, u64> {
+    let bam = get_bam_reader(&bam);
+    let header = bam::Header::from_template(bam.header());
+    let mut chrom_lengts = HashMap::new();
+    for (key, records) in header.to_hashmap() {
+        for record in records {
+            if key != "SQ" {
+                continue;
             }
+            chrom_lengts.insert(
+                record["SN"].clone(),
+                record["LN"]
+                    .parse()
+                    .expect("Failed to parse length of chromosome"),
+            );
+        }
+    }
+
+    chrom_lengts
+}
+
+fn get_targets(
+    region: Option<String>,
+    region_file: Option<PathBuf>,
+    bam: &str,
+) -> RepeatIntervalIterator {
+    let chrom_lengths = get_chrom_lengths_from_bam_header(bam.to_string());
+    match (&region, &region_file) {
+        // a region string
+        (Some(region), None) => RepeatIntervalIterator::from_string(region, chrom_lengths),
+        // a region file
+        (None, Some(region_file)) => RepeatIntervalIterator::from_bed(
+            &region_file.to_string_lossy().to_string(),
+            chrom_lengths,
+        ),
+        // invalid input
+        _ => {
+            eprintln!("ERROR: Specify a region string (-r) or a region_file (-R)!\n");
+            std::process::exit(1);
         }
     }
 }
@@ -229,9 +206,7 @@ pub fn genotype_repeats(
 /// The function below is the single threaded version
 fn genotype_repeat_multithreaded(
     bamf: &String,
-    chrom: String,
-    start: u32,
-    end: u32,
+    repeat: RepeatInterval,
     minlen: u32,
     support: usize,
     unphased: bool,
@@ -239,9 +214,9 @@ fn genotype_repeat_multithreaded(
     let mut bam = get_bam_reader(bamf);
     info!("Checks passed, genotyping repeat");
     if unphased {
-        genotype_repeat_unphased(&mut bam, chrom, start, end, minlen, support)
+        genotype_repeat_unphased(&mut bam, repeat, minlen, support)
     } else {
-        genotype_repeat_phased(&mut bam, chrom, start, end, minlen, support)
+        genotype_repeat_phased(&mut bam, repeat, minlen, support)
     }
 }
 
@@ -270,32 +245,28 @@ fn get_bam_reader(bamp: &String) -> bam::IndexedReader {
 
 fn genotype_repeat(
     bam: &mut bam::IndexedReader,
-    chrom: String,
-    start: u32,
-    end: u32,
+    repeat: RepeatInterval,
     minlen: u32,
     support: usize,
     unphased: bool,
 ) -> Result<Genotype, String> {
     info!("Checks passed, genotyping repeat");
     if unphased {
-        genotype_repeat_unphased(bam, chrom, start, end, minlen, support)
+        genotype_repeat_unphased(bam, repeat, minlen, support)
     } else {
-        genotype_repeat_phased(bam, chrom, start, end, minlen, support)
+        genotype_repeat_phased(bam, repeat, minlen, support)
     }
 }
 
 fn genotype_repeat_unphased(
     bam: &mut bam::IndexedReader,
-    chrom: String,
-    start: u32,
-    end: u32,
+    repeat: RepeatInterval,
     minlen: u32,
     support: usize,
 ) -> Result<Genotype, String> {
-    let start_ext = max(start - 10, 0);
-    let end_ext = end + 10;
-    if let Some(tid) = bam.header().tid(chrom.as_bytes()) {
+    let start_ext = max(repeat.start - 10, 0);
+    let end_ext = repeat.end + 10;
+    if let Some(tid) = bam.header().tid(repeat.chrom.as_bytes()) {
         bam.fetch((tid, start_ext, end_ext)).unwrap();
         // Per haplotype the difference with the reference genome is kept in a dictionary
         let mut calls = vec![];
@@ -326,29 +297,25 @@ fn genotype_repeat_unphased(
         // unphased is set to 0 if those are to be ignored and vice versa
         // just taking the median of unphased reads is not optimal
         let output = Genotype {
-            chrom,
-            start,
-            end,
+            repeat,
             phase1: median_str_length(&h1.to_vec(), support),
             phase2: median_str_length(&h2.to_vec(), support),
         };
         Ok(output)
     } else {
-        Err(chrom)
+        Err(repeat.chrom)
     }
 }
 
 fn genotype_repeat_phased(
     bam: &mut bam::IndexedReader,
-    chrom: String,
-    start: u32,
-    end: u32,
+    repeat: RepeatInterval,
     minlen: u32,
     support: usize,
 ) -> Result<Genotype, String> {
-    let start_ext = max(start - 10, 0);
-    let end_ext = end + 10;
-    if let Some(tid) = bam.header().tid(chrom.as_bytes()) {
+    let start_ext = max(repeat.start - 10, 0);
+    let end_ext = repeat.end + 10;
+    if let Some(tid) = bam.header().tid(repeat.chrom.as_bytes()) {
         match bam.fetch((tid, start_ext, end_ext)) {
             Ok(_b) => (),
             Err(e) => return Err(e.to_string()),
@@ -381,15 +348,13 @@ fn genotype_repeat_phased(
         );
         // unphased is set to 0 if those are to be ignored and vice versa
         let output = Genotype {
-            chrom,
-            start,
-            end,
+            repeat,
             phase1: median_str_length(&calls[&1].clone(), support),
             phase2: median_str_length(&calls[&2].clone(), support),
         };
         Ok(output)
     } else {
-        Err(chrom)
+        Err(repeat.chrom)
     }
 }
 
@@ -534,35 +499,6 @@ fn test_unphased() {
 
 #[test]
 #[should_panic]
-fn test_no_region() {
-    genotype_repeats(
-        String::from("test-data/small-test.bam"),
-        None,
-        None,
-        5,
-        3,
-        4,
-        false,
-        Some("sample".to_string()),
-    );
-}
-
-#[test]
-#[should_panic]
-fn test_wrong_bam_path() {
-    genotype_repeats(
-        String::from("test-data/wrong-test.bam"),
-        Some("chr7:154778571-154779363".to_string()),
-        None,
-        5,
-        3,
-        4,
-        false,
-        Some("sample".to_string()),
-    );
-}
-
-#[test]
 fn test_region_wrong_chromosome() {
     genotype_repeats(
         String::from("test-data/small-test.bam"),
@@ -574,4 +510,11 @@ fn test_region_wrong_chromosome() {
         false,
         Some("sample".to_string()),
     );
+}
+
+#[test]
+fn test_get_chrom_lengths_from_bam_header() {
+    let bam = String::from("test-data/small-test.bam");
+    let chrom_lengths = get_chrom_lengths_from_bam_header(bam);
+    assert_eq!(chrom_lengths.get("chr7").unwrap(), &159345973);
 }

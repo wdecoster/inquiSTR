@@ -10,6 +10,7 @@ pub mod metadata;
 pub mod outlier;
 pub mod plot;
 pub mod query;
+pub mod repeats;
 pub mod utils;
 
 // The arguments end up in the Cli struct
