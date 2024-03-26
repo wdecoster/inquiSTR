@@ -346,7 +346,6 @@ fn genotype_repeat_phased(
             calls[&1].len(),
             calls[&2].len()
         );
-        // unphased is set to 0 if those are to be ignored and vice versa
         let output = Genotype {
             repeat,
             phase1: median_str_length(&calls[&1].clone(), support),
