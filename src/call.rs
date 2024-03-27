@@ -331,15 +331,15 @@ fn genotype_repeat_phased(
             // reads with both ends inside the window are ignored or if mapping quality is low
             // since the bam is supposed to be phased, ignore all unphased reads
             let phase = get_phase(&r);
-            if start_ext < (r.reference_start() as u32) && (r.reference_end() as u32) < end_ext
+            if phase.is_none() 
+                || start_ext < (r.reference_start() as u32) && (r.reference_end() as u32) < end_ext
                 || r.mapq() <= 10
-                || phase == 0
             {
                 continue;
             }
 
             let call = call_from_cigar(r, minlen, start_ext, end_ext);
-            calls.get_mut(&phase).unwrap().push(call);
+            calls.get_mut(&phase.expect("Couldn't get phase - this shouldn't happen")).unwrap().push(call);
         }
         info!(
             "Found {}[H1]+{}[H2] reads for genotyping",
@@ -398,14 +398,14 @@ fn call_from_cigar(r: Rc<bam::Record>, minlen: u32, start: u32, end: u32) -> Cal
 /// Get the phase of a read by parsing the HP tag
 /// The outcome should always be a u8
 /// If the tag is absent '0' is returned, indicating unphased
-fn get_phase(record: &bam::Record) -> u8 {
+fn get_phase(record: &bam::Record) -> Option<u8> {
     match record.aux(b"HP") {
         Ok(value) => match value {
-            Aux::U8(v) => v,
-            Aux::I32(v) => v as u8,
+            Aux::U8(v) => Some(v),
+            Aux::I32(v) => Some(v as u8),
             _ => panic!("Unexpected type of Aux {value:?}"),
         },
-        Err(_e) => 0,
+        Err(_e) => None,
     }
 }
 
