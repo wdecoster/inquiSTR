@@ -2,6 +2,7 @@ use hts_sys;
 use human_sort::compare as human_compare;
 use indicatif::ParallelProgressIterator;
 use indicatif::ProgressIterator;
+use log::debug;
 use log::{error, info, warn};
 use rayon::prelude::*;
 use rust_htslib::bam::ext::BamRecordExtensions;
@@ -236,7 +237,9 @@ fn get_bam_reader(bamp: &String) -> bam::IndexedReader {
             hts_sys::hts_fmt_option_CRAM_OPT_REQUIRED_FIELDS,
             hts_sys::sam_fields_SAM_AUX
                 | hts_sys::sam_fields_SAM_MAPQ
-                | hts_sys::sam_fields_SAM_CIGAR,
+                | hts_sys::sam_fields_SAM_CIGAR
+                | hts_sys::sam_fields_SAM_POS
+                | hts_sys::sam_fields_SAM_TLEN,
         )
         .expect("Failed setting cram options");
     }
@@ -267,8 +270,9 @@ fn genotype_repeat_unphased(
     let start_ext = max(repeat.start - 10, 0);
     let end_ext = repeat.end + 10;
     if let Some(tid) = bam.header().tid(repeat.chrom.as_bytes()) {
-        bam.fetch((tid, start_ext, end_ext)).unwrap();
+        bam.fetch((tid, start_ext, end_ext)).expect("Failed to fetch region");
         // Per haplotype the difference with the reference genome is kept in a dictionary
+        // If there is no difference, a 0 is added to the vector
         let mut calls = vec![];
 
         // CIGAR operations are assessed per read
@@ -316,15 +320,12 @@ fn genotype_repeat_phased(
     let start_ext = max(repeat.start - 10, 0);
     let end_ext = repeat.end + 10;
     if let Some(tid) = bam.header().tid(repeat.chrom.as_bytes()) {
-        match bam.fetch((tid, start_ext, end_ext)) {
-            Ok(_b) => (),
-            Err(e) => return Err(e.to_string()),
-        };
+        bam.fetch((tid, start_ext, end_ext)).expect("Failed to fetch region");
 
         // Per haplotype the difference with the reference genome is kept in a dictionary
         let mut calls: HashMap<u8, Vec<Call>> =
             HashMap::from([(1, Vec::new()), (2, Vec::new()), (0, Vec::new())]);
-
+        debug!("Reading records in region {tid}[tid]:{start_ext}-{end_ext}.");
         // CIGAR operations are assessed per read
         for r in bam.rc_records() {
             let r = r.expect("Error reading BAM file in region {chrom}:{start}-{end}.");
