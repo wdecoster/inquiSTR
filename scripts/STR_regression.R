@@ -320,7 +320,7 @@ prepare_calls <- function(calls, sample_list_wPheno, arg) {
 
 parse_arguments <- function() {
     p <- argparser::arg_parser("Run association testing for STRs with different modes and options. Version 1.5, November 14, 2022")
-    p <- argparser::add_argument(p, "--input", help = "inquiSTR input STR file with a header, first 3 columns are chr, begin, end, and rest are sample ids with inqH1 & inqH2 STR lengths", type = "character", nargs = 1)
+    p <- argparser::add_argument(p, "--input", help = "inquiSTR input STR file with a header, first 3 columns are chromosome, begin, end, and rest are sample ids with H1 & H2 STR lengths", type = "character", nargs = 1)
     p <- argparser::add_argument(p, "--phenocovar", help = "Phenotype and covariate file with header, first column is individual", type = "character", nargs = 1)
     p <- argparser::add_argument(p, "--covnames", help = "Covariate names you want to use (optional), separated by comma", type = "character", nargs = "*")
     p <- argparser::add_argument(p, "--phenotype", help = "Column name of your phenotype of interest variable in the --phenocovar file", type = "character", nargs = 1)
@@ -381,7 +381,7 @@ if (!arg$quiet) {
 }
 calls_file <- fread(arg$input, header = TRUE)
 if (arg$run == "chr_interval") {
-    calls_file <- subset(calls_file, ((chr == arg$chr) & (begin >= arg$chr_begin) & (end <= arg$chr_end)))
+    calls_file <- subset(calls_file, ((chromosome == arg$chr) & (begin >= arg$chr_begin) & (end <= arg$chr_end)))
     if (!arg$quiet) {
         message("chr_interval run mode is selected")
     }
@@ -397,7 +397,7 @@ if (arg$run == "chr_interval") {
         message("bed_interval run mode is selected")
     }
 } else if (arg$run == "chromosome") {
-    calls_file <- subset(calls_file, chr == arg$chr)
+    calls_file <- subset(calls_file, chromosome == arg$chr)
     if (!arg$quiet) {
         message("chromosome run mode is selected")
     }
