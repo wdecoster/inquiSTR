@@ -82,6 +82,7 @@ pub fn genotype_repeats(
     threads: usize,
     unphased: bool,
     sample_name: Option<String>,
+    reference: Option<String>,
 ) {
     if !PathBuf::from(&bamp).is_file() && !bamp.starts_with("s3") && !bamp.starts_with("https://") {
         error!("ERROR: path to bam file {} is not valid!\n\n", &bamp);
@@ -115,7 +116,7 @@ pub fn genotype_repeats(
             .par_bridge()
             .progress_count(num_intervals as u64)
             .for_each(|repeat| {
-                match genotype_repeat_multithreaded(&bamp, repeat, minlen, support, unphased) {
+                match genotype_repeat_multithreaded(&bamp, repeat, minlen, support, unphased, &reference) {
                     Ok(output) => {
                         let mut geno = genotypes.lock().expect("Failed to lock genotypes");
                         geno.push(output);
@@ -143,7 +144,7 @@ pub fn genotype_repeats(
             writeln!(handle, "{g}").expect("Failed writing the result.");
         }
     } else {
-        let mut bam = get_bam_reader(&bamp);
+        let mut bam = get_bam_reader(&bamp, &reference);
         let num_intervals = repeats.num_intervals;
         println!("{file_header}");
         for repeat in repeats.progress_count(num_intervals as u64) {
@@ -158,7 +159,7 @@ pub fn genotype_repeats(
 }
 
 fn get_chrom_lengths_from_bam_header(bam: String) -> HashMap<String, u64> {
-    let bam = get_bam_reader(&bam);
+    let bam = get_bam_reader(&bam, &None);
     let header = bam::Header::from_template(bam.header());
     let mut chrom_lengts = HashMap::new();
     for (key, records) in header.to_hashmap() {
@@ -211,8 +212,9 @@ fn genotype_repeat_multithreaded(
     minlen: u32,
     support: usize,
     unphased: bool,
+    reference: &Option<String>,
 ) -> Result<Genotype, String> {
-    let mut bam = get_bam_reader(bamf);
+    let mut bam = get_bam_reader(bamf, reference);
     info!("Checks passed, genotyping repeat");
     if unphased {
         genotype_repeat_unphased(&mut bam, repeat, minlen, support)
@@ -221,10 +223,18 @@ fn genotype_repeat_multithreaded(
     }
 }
 
-fn get_bam_reader(bamp: &String) -> bam::IndexedReader {
+fn get_bam_reader(bamp: &String, reference: &Option<String>) -> bam::IndexedReader {
     let mut bam = if bamp.starts_with("s3") || bamp.starts_with("https://") {
         if env::var("CURL_CA_BUNDLE").is_err() {
-            env::set_var("CURL_CA_BUNDLE", "/etc/ssl/certs/ca-certificates.crt");
+            if PathBuf::from("/etc/ssl/certs/ca-certificates.crt").is_file() {
+                env::set_var("CURL_CA_BUNDLE", "/etc/ssl/certs/ca-certificates.crt");
+            } else if PathBuf::from("/etc/ssl/certs/ca-bundle.crt").is_file() {
+                env::set_var("CURL_CA_BUNDLE", "/etc/ssl/certs/ca-bundle.crt");
+            } else {
+                error!("No CA bundle found, please set CURL_CA_BUNDLE");
+                std::process::exit(1);
+            }
+            
         }
         bam::IndexedReader::from_url(&Url::parse(bamp.as_str()).expect("Failed to parse s3 URL"))
             .unwrap_or_else(|err| panic!("Error opening remote BAM: {err}"))
@@ -242,7 +252,12 @@ fn get_bam_reader(bamp: &String) -> bam::IndexedReader {
                 | hts_sys::sam_fields_SAM_TLEN,
         )
         .expect("Failed setting cram options");
+        if reference.is_some() {
+            bam.set_reference(reference.as_ref().unwrap().as_str())
+                .expect("Failed setting reference");
+        }
     }
+    
     bam
 }
 
@@ -328,13 +343,13 @@ fn genotype_repeat_phased(
         debug!("Reading records in region {tid}[tid]:{start_ext}-{end_ext}.");
         // CIGAR operations are assessed per read
         for r in bam.rc_records() {
-            let r = r.expect("Error reading BAM file in region {chrom}:{start}-{end}.");
+            let r = r.unwrap_or_else(|_| panic!("Error reading BAM file in region {}:{}-{}.", repeat.chrom, repeat.start, repeat.end));
             // reads with both ends inside the window are ignored or if mapping quality is low
             // since the bam is supposed to be phased, ignore all unphased reads
             let phase = get_phase(&r);
             if phase.is_none() 
                 || start_ext < (r.reference_start() as u32) && (r.reference_end() as u32) < end_ext
-                || r.mapq() <= 10
+                || r.mapq() <= 10 
             {
                 continue;
             }
@@ -357,6 +372,7 @@ fn genotype_repeat_phased(
         Err(repeat.chrom)
     }
 }
+
 
 fn call_from_cigar(r: Rc<bam::Record>, minlen: u32, start: u32, end: u32) -> Call {
     let mut call: i64 = 0;
@@ -453,13 +469,14 @@ fn test_region() {
         4,
         false,
         Some("sample".to_string()),
+        None
     );
 }
 
 #[test]
 fn test_region_from_url() {
     genotype_repeats(
-        String::from("https://s3.amazonaws.com/1000g-ont/FIRST_100_FREEZE/minimap2_2.24_alignment_data/GM18501/GM18501.LSK110.R9.guppy646.sup.with5mC.pass.phased.bam"),
+        String::from("https://ftp.1000genomes.ebi.ac.uk/vol1/ftp/data_collections/1KG_ONT_VIENNA/hg38/HG00096.hg38.cram"),
         Some("chr7:154778571-154779363".to_string()),
         None,
         5,
@@ -467,6 +484,7 @@ fn test_region_from_url() {
         4,
         false,
         Some("sample".to_string()),
+        None
     );
 }
 
@@ -481,6 +499,7 @@ fn test_region_bed() {
         4,
         false,
         Some("sample".to_string()),
+        None
     );
 }
 #[test]
@@ -494,6 +513,7 @@ fn test_unphased() {
         4,
         true,
         Some("sample".to_string()),
+        None
     );
 }
 
@@ -509,6 +529,7 @@ fn test_region_wrong_chromosome() {
         4,
         false,
         Some("sample".to_string()),
+        None
     );
 }
 
