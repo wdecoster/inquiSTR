@@ -391,7 +391,7 @@ fn call_from_cigar(r: Rc<bam::Record>, minlen: u32, start: u32, end: u32) -> Cal
                 reference_position += *len;
             }
             Cigar::SoftClip(len) => {
-                if *len > minlen && start < reference_position && reference_position < end {
+                if !is_accidental_2d(&r) && *len > minlen && start < reference_position && reference_position < end {
                     call += i64::from(*len);
                     clipped = true
                 }
@@ -410,6 +410,73 @@ fn call_from_cigar(r: Rc<bam::Record>, minlen: u32, start: u32, end: u32) -> Cal
     } else {
         Call::Span(call)
     }
+}
+
+fn is_accidental_2d(record: &bam::Record) -> bool {
+    // this function will determine if a read is an accidental 2D read
+    // this means that right after the template strand also the complement strand was sequenced
+    // this is a common artifact in ONT data
+    // the read will then align in two pieces of similar length to the reference genome, with the second piece on the opposite strand
+    // in that case, softclipped fragments are not to be considered
+    // An entry in the SA tag consist of rname, POS, strand, CIGAR, mapQ, NM
+    let read_strand = if record.is_reverse() {'-'} else {'+'};
+    let sa = record.aux(b"SA");
+    // if the SA tag is not present, the read has no supplementary alignments and is thus not an accidental 2D read
+    if sa.is_err() {
+        println!("No SA tag found");
+        return false;
+    }
+    let sa_tag = sa.unwrap();
+    let sa_tag = match sa_tag {
+        Aux::String(s) => s,
+        _ => panic!("Unexpected type of Aux {sa_tag:?}"),
+    };
+    // split the SA tag into its entries, separated by ';', but remove any empty entries
+    let sa_entries = sa_tag.split(';').filter(|x| !x.is_empty()).collect::<Vec<&str>>();
+    // while not conclusive, if there are multiple entries in the SA tag, it is likely that the read is not just a 2D read
+    if sa_entries.len() > 1 {
+        println!("Multiple SA entries found");
+        return false;
+    }
+    let sa_entry = sa_entries[0].split(',').collect::<Vec<&str>>();
+    // check if the read is on the opposite strand. If it is on the same strand, it is not an accidental 2D read
+    if read_strand == sa_entry[2].chars().next().unwrap() {
+        println!("Read is on the same strand as the supplementary alignment");
+        return false;
+    }
+    // check if the supplementary alignment overlaps with the original alignment
+    // if it does overlap the read could be an accidental 2D read
+    // alternatively, it could indicate an inverted duplication
+    // but that is not of interst to inquiSTR
+    let start = record.reference_start();
+    let end = record.reference_end();
+    let sa_start = sa_entry[1].parse::<i64>().unwrap();
+    let sa_end = sa_start + cigar_to_rlen(sa_entry[3]);
+    // check if the max of the start values is smaller than the min of the end values
+    // if that is the case, the two alignments overlap
+    if max(start, sa_start) < std::cmp::min(end, sa_end) {
+        debug!("Identified read with id {} as accidental 2D read", std::str::from_utf8(record.qname()).unwrap());
+        return true;
+    }
+    false
+    }
+
+fn cigar_to_rlen(cigar: &str) -> i64 {
+    let mut rlen = 0;
+    let mut num = String::new();
+    for c in cigar.chars() {
+        if c.is_ascii_digit() {
+            num.push(c);
+        } else {
+            let n = num.parse::<i64>().unwrap();
+            match c {
+                'M' | '=' | 'X' | 'D' | 'N' => rlen += n,
+                _ => (),
+            }
+            num.clear();
+        }
+    }
+    rlen
 }
 
 /// Get the phase of a read by parsing the HP tag
@@ -538,4 +605,27 @@ fn test_get_chrom_lengths_from_bam_header() {
     let bam = String::from("test-data/small-test.bam");
     let chrom_lengths = get_chrom_lengths_from_bam_header(bam);
     assert_eq!(chrom_lengths.get("chr7").unwrap(), &159345973);
+}
+
+#[test]
+#[ignore]
+// the test data contains a 2D-candidates_test_set.bam file
+// this one should have reads that are identified as 2D reads
+// this test is ignored because the test data is not included in the repository
+fn test_is_accidental_2d() {
+    let mut bam = bam::Reader::from_path("test-data/2D-candidates_test_set.bam").unwrap();
+    let mut count = 0;
+    let mut all_reads = 0;
+    for r in bam.records() {
+        let r = r.unwrap();
+        all_reads += 1;
+        if is_accidental_2d(&r) {
+            count += 1;
+        }
+        if all_reads > 100 {
+            break;
+        }
+    }
+    println!("Found {} 2D reads out of {} reads", count, all_reads);
+    assert_eq!(count, all_reads);
 }
