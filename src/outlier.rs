@@ -15,7 +15,7 @@ pub enum Method {
     Dbscan,
 }
 
-fn std_deviation_and_mean(data: &Vec<f32>) -> (f32, f32) {
+fn std_deviation_and_mean(data: &[f32]) -> (f32, f32) {
     let sum = data.iter().sum::<f32>();
     let count = data.len() as f32;
     let data_mean = sum / count;
@@ -30,10 +30,7 @@ fn std_deviation_and_mean(data: &Vec<f32>) -> (f32, f32) {
     (data_mean, variance.sqrt())
 }
 
-pub fn outlier(combined: PathBuf, minsize: u32, zscore_cutoff: f32, method: Method) {
-    if !combined.exists() {
-        panic!("Combined file does not exist!");
-    }
+pub fn outlier(combined: PathBuf, minsize: u32, zscore_cutoff: f32, method: Method, subset: Option<Vec<String>>) {
     let file = crate::utils::reader(&combined.into_os_string().into_string().unwrap());
     let mut lines = file.lines();
     let line = lines.next().unwrap().unwrap();
@@ -58,8 +55,16 @@ pub fn outlier(combined: PathBuf, minsize: u32, zscore_cutoff: f32, method: Meth
                     expanded.len(),
                     expanded
                 );
-                let expanded = expanded.join(",");
-                println!("{chrom}\t{begin}\t{end}\t{expanded}")
+                // if subset is some, only print the line if at least one of the expanded samples is in the subset
+                if let Some(subset) = &subset {
+                    if expanded.iter().any(|sample| subset.contains(&sample.to_string())) {
+                        let expanded = expanded.join(",");
+                        println!("{chrom}\t{begin}\t{end}\t{expanded}")
+                    }
+                } else {
+                    let expanded = expanded.join(",");
+                    println!("{chrom}\t{begin}\t{end}\t{expanded}")
+                }
             }
         }
     }
@@ -89,7 +94,7 @@ fn get_repeat_lengths(line: &[&str], minsize: u32) -> Option<Vec<f32>> {
     }
 }
 
-fn z_score_outliers<'a>(values: Vec<f32>, samples: &[&'a str], zscore_cutoff: f32) -> Vec<&'a str> {
+fn z_score_outliers(values: Vec<f32>, samples: &[&str], zscore_cutoff: f32) -> Vec<String> {
     // calculate mean and std deviation of the STR lengths
     let (values_mean, values_std_dev) = std_deviation_and_mean(&values);
     debug!("mean: {}, std_dev: {}", values_mean, values_std_dev);
@@ -100,11 +105,11 @@ fn z_score_outliers<'a>(values: Vec<f32>, samples: &[&'a str], zscore_cutoff: f3
         .iter()
         .enumerate()
         .filter(|(_, &value)| ((value - values_mean) / values_std_dev) >= zscore_cutoff)
-        .map(|(index, _)| samples[index])
-        .collect::<Vec<&str>>()
+        .map(|(index, _)| samples[index].replace("_H1", "").replace("_H2", ""))
+        .collect::<Vec<String>>()
 }
 
-fn dbscan_outliers<'a>(values: Vec<f32>, samples: &[&'a str], mincluster: usize) -> Vec<&'a str> {
+fn dbscan_outliers(values: Vec<f32>, samples: &[&str], mincluster: usize) -> Vec<String> {
     // the parameters for the dbscan model are as used by the schizophrenia STR outlier paper (https://doi.org/10.1038/s41380-022-01857-4)
     // however, the eps parameter is set as minimally 10
     let eps = max(2 * mode(&values), 10) as f64;
@@ -120,8 +125,8 @@ fn dbscan_outliers<'a>(values: Vec<f32>, samples: &[&'a str], mincluster: usize)
         .iter()
         .enumerate()
         .filter(|(_, &classification)| matches!(classification, Noise))
-        .map(|(index, _)| samples[index])
-        .collect::<Vec<&str>>()
+        .map(|(index, _)| samples[index].replace("_H1", "").replace("_H2", ""))
+        .collect::<Vec<String>>()
 }
 
 fn mode(values: &[f32]) -> usize {

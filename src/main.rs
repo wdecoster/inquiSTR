@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand};
 use log::info;
-use std::path::PathBuf;
+use std::{io::BufRead, path::PathBuf};
 
 // pub mod assoc;
 pub mod call;
@@ -57,6 +57,10 @@ enum Commands {
         /// sample name to use in output
         #[clap(long, value_parser)]
         sample_name: Option<String>,
+
+        /// reference fasta for cram decoding
+        #[clap(long, value_parser)]
+        reference: Option<String>,
     },
     /// Combine lengths from multiple bams to a TSV
     Combine {
@@ -84,6 +88,14 @@ enum Commands {
         /// method to test for outliers
         #[clap(long, value_enum, value_parser, default_value_t = outlier::Method::Zscore)]
         method: outlier::Method,
+
+        /// sample to consider
+        #[clap(short='s', long, value_parser)]
+        sample: Option<String>,
+
+        /// file with subset of samples to consider
+        #[clap(short='S', long, value_parser)]
+        subset: Option<PathBuf>,
     },
     /// Lookup genotypes and display
     Query {
@@ -169,6 +181,7 @@ fn main() {
             threads,
             unphased,
             sample_name,
+            reference,
         } => call::genotype_repeats(
             bam,
             region,
@@ -178,6 +191,7 @@ fn main() {
             threads,
             unphased,
             sample_name,
+            reference,
         ),
         Commands::Combine { calls } => {
             combine::combine(calls);
@@ -190,8 +204,28 @@ fn main() {
             minsize,
             zscore,
             method,
+            sample,
+            subset,
         } => {
-            outlier::outlier(combined, minsize, zscore, method);
+            if !combined.exists() {
+                panic!("Combined file does not exist!");
+            }
+            let subset = match(sample, subset) {
+                (Some(_), Some(_)) => {
+                    panic!("Cannot use both -s and -S arguments");
+                }
+                (Some(sample), None) => {
+                    Some(vec![sample])
+                }
+                (None, Some(subset)) => {
+                    let file = crate::utils::reader(&subset.into_os_string().into_string().unwrap());
+                    Some(file.lines().map(|line| line.unwrap()).collect())
+                }
+                (None, None) => {
+                    None
+                }
+            };
+            outlier::outlier(combined, minsize, zscore, method, subset);
         }
         Commands::Query { combined, region } => {
             query::query(combined, region);
