@@ -1,10 +1,106 @@
 # inquiSTR
 
-Genotyping of STRs with long reads
+This repository contains Rust code for inquiSTR, a toolset to genotype and analyze STRs from long read sequencing data, and has been tested with ONT data.
 
-This repository contains Rust code for inquiSTR, a tool to genotype STRs from long read sequencing data, and has been tested with ONT data.
+## Installation
+
+Preferably, for most users, download a ready-to-use binary for your system to add directory on your $PATH from the [releases](https://github.com/wdecoster/inquiSTR/releases).  
+You may have to change the file permissions to execute it with chmod +x inquiSTR
+
+Alternatively, you can install the tool using cargo:
+
+```bash
+git clone https://github.com/wdecoster/inquiSTR.git
+cd STRdust
+cargo build --release
+```
+
+## Usage
+
+The inquiSTR tool has several subcommands, as detailed below. All commands write to stdout.
+
+```text
+Usage: inquiSTR <COMMAND>
+
+Commands:
+  call       Call lengths
+  combine    Combine lengths from multiple bams to a TSV
+  outlier    Find outliers from TSV
+  query      Lookup genotypes and display
+  histogram
+  plot       Show a histogram with multiple groups for a specific repeat
+  help       Print this message or the help of the given subcommand(s)
+
+Options:
+  -h, --help     Print help
+  -V, --version  Print version
+```
+
+Variants are genotyped with `inquiSTR call`, which will determine the length of each haplotype of each STR locus.
+
+```text
+Usage: inquiSTR call [OPTIONS] <BAM>
+
+Arguments:
+  <BAM>  bam file to call STRs in
+
+Options:
+  -r, --region <REGION>            region string to genotype expansion in
+  -R, --region-file <REGION_FILE>  Bed file with region(s) to genotype expansion(s) in
+  -m, --minlen <MINLEN>            minimal length of insertion/deletion operation [default: 5]
+  -s, --support <SUPPORT>          minimal number of supporting reads [default: 3]
+  -t, --threads <THREADS>          Number of parallel threads to use [default: 1]
+  -u, --unphased                   If reads have to be considered unphased
+      --sample-name <SAMPLE_NAME>  sample name to use in output
+      --reference <REFERENCE>      reference fasta for cram decoding
+  -h, --help                       Print help
+```
+
+Variants from multiple samples can be combined with `inquiSTR combine`.
+
+```text
+inquiSTR combine <CALLS>...
+
+Arguments:
+  <CALLS>...  files from inquiSTR call
+
+Options:
+  -h, --help  Print help
+```
+
+Querying genotypes from a combined file can be done with `inquiSTR query`, taking a region or a file with regions to query.
+
+```text
+Usage: inquiSTR query <COMBINED> <REGION>
+
+Arguments:
+  <COMBINED>  combined file of calls
+  <REGION>    region to query or file with regions to query
+
+Options:
+  -h, --help  Print help
+```
+
+Identifying outliers from a combined file can be done with `inquiSTR outlier`, using either z-scores or DBSCAN.
+
+```text
+Usage: inquiSTR outlier [OPTIONS] <COMBINED>
+
+Arguments:
+  <COMBINED>  combined file of calls
+
+Options:
+      --minsize <MINSIZE>  minimal length of expansion to be present in cohort [default: 10]
+  -z, --zscore <ZSCORE>    zscore cutoff to decide if a value is an outlier [default: 3]
+      --method <METHOD>    method to test for outliers [default: zscore] [possible values: zscore, dbscan]
+  -s, --sample <SAMPLE>    sample to consider
+  -S, --subset <SUBSET>    file with subset of samples to consider
+  -h, --help               Print help
+```
 
 ## Usage for Association Testing
+
+This repository additionally contains `str_assoc.R`, code to perform association testing of STRs. The code is written in R and can be found in the scripts folder.
 
 Below are some worked usage examples for "MAX" STRmode for binary phenotypes, without covariates.
 
