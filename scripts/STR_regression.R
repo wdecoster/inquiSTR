@@ -1,6 +1,5 @@
 #!~/miniconda3/bin/Rscript
 ## Run association testing for STRs with different modes and options
-# For now in R, to be converted into Rust (maybe)
 
 suppressWarnings(suppressMessages(library(data.table)))
 suppressWarnings(suppressMessages(library(dplyr)))
@@ -319,7 +318,7 @@ prepare_calls <- function(calls, sample_list_wPheno, arg) {
 }
 
 parse_arguments <- function() {
-    p <- argparser::arg_parser("Run association testing for STRs with different modes and options. Version 1.5, November 14, 2022")
+    p <- argparser::arg_parser("Run association testing for STRs with different modes and options. Version 1.6, Feb 2025")
     p <- argparser::add_argument(p, "--input", help = "inquiSTR input STR file with a header, first 3 columns are chromosome, begin, end, and rest are sample ids with H1 & H2 STR lengths", type = "character", nargs = 1)
     p <- argparser::add_argument(p, "--phenocovar", help = "Phenotype and covariate file with header, first column is individual", type = "character", nargs = 1)
     p <- argparser::add_argument(p, "--covnames", help = "Covariate names you want to use (optional), separated by comma", type = "character", nargs = "*")
@@ -339,7 +338,7 @@ parse_arguments <- function() {
     p <- argparser::add_argument(p, "--quiet", help = "Do not print progress messages", flag = TRUE)
     arg <- argparser::parse_args(p)
     if (!arg$quiet) {
-        Version <- "inquiSTR - STR_regression Rscript Version 1.5.1, July 04, 2023"
+        Version <- "inquiSTR - STR_regression Rscript Version 1.6, Feb 2025"
         message(Version)
     }
     # argument checks
