@@ -137,3 +137,8 @@ dmypy.json
 
 /target
 GM18501.LSK110.R9.guppy646.sup.with5mC.pass.phased.bam.bai
+
+# test data
+HG00096.hg38.cram.crai
+test-data/2D-candidates_test_set.bam
+test-data/2D-candidates_test_set.bam.bai
