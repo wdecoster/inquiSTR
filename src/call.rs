@@ -423,7 +423,6 @@ fn is_accidental_2d(record: &bam::Record) -> bool {
     let sa = record.aux(b"SA");
     // if the SA tag is not present, the read has no supplementary alignments and is thus not an accidental 2D read
     if sa.is_err() {
-        println!("No SA tag found");
         return false;
     }
     let sa_tag = sa.unwrap();
@@ -435,13 +434,11 @@ fn is_accidental_2d(record: &bam::Record) -> bool {
     let sa_entries = sa_tag.split(';').filter(|x| !x.is_empty()).collect::<Vec<&str>>();
     // while not conclusive, if there are multiple entries in the SA tag, it is likely that the read is not just a 2D read
     if sa_entries.len() > 1 {
-        println!("Multiple SA entries found");
         return false;
     }
     let sa_entry = sa_entries[0].split(',').collect::<Vec<&str>>();
     // check if the read is on the opposite strand. If it is on the same strand, it is not an accidental 2D read
     if read_strand == sa_entry[2].chars().next().unwrap() {
-        println!("Read is on the same strand as the supplementary alignment");
         return false;
     }
     // check if the supplementary alignment overlaps with the original alignment
@@ -455,7 +452,7 @@ fn is_accidental_2d(record: &bam::Record) -> bool {
     // check if the max of the start values is smaller than the min of the end values
     // if that is the case, the two alignments overlap
     if max(start, sa_start) < std::cmp::min(end, sa_end) {
-        debug!("Identified read with id {} as accidental 2D read", std::str::from_utf8(record.qname()).unwrap());
+        debug!("Identified read as accidental 2D read");
         return true;
     }
     false
