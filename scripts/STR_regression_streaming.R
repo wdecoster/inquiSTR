@@ -217,8 +217,9 @@ process_single_variant <- function(variant_data, pheno_info, missing_cutoff, min
                 for(i in 1:length(pheno_info$binary_levels)) {
                     level <- pheno_info$binary_levels[i]
                     group_data <- analysis_data[analysis_data[[pheno_info$phenotype_col]] == level, ]
-                    group_stats[[paste0(level, "_N")]] <- nrow(group_data)
-                    group_stats[[paste0(level, "_AvgSize")]] <- round(mean(group_data$variant_value, na.rm = TRUE), 3)
+                    group_name <- paste0("Group", LETTERS[i])  # GroupA, GroupB, etc.
+                    group_stats[[paste0(group_name, "_N")]] <- nrow(group_data)
+                    group_stats[[paste0(group_name, "_AvgSize")]] <- round(mean(group_data$variant_value, na.rm = TRUE), 3)
                 }
             }
             
@@ -318,9 +319,7 @@ run_streaming_analysis <- function(arg) {
     # Write output header
     if(arg$outcometype == "binary") {
         if(!is.null(pheno_info$binary_levels)) {
-            output_header <- paste(c("VariantID", "OR", "OR_L95", "OR_U95", "OR_stdErr", "Pvalue", "N", "AvgSize",
-                                   paste0(pheno_info$binary_levels, "_N"), paste0(pheno_info$binary_levels, "_AvgSize")), 
-                                 collapse = "\t")
+            output_header <- "VariantID\tOR\tOR_L95\tOR_U95\tOR_stdErr\tPvalue\tN\tAvgSize\tGroupA_N\tGroupB_N\tGroupA_AvgSize\tGroupB_AvgSize"
         } else {
             output_header <- "VariantID\tOR\tOR_L95\tOR_U95\tOR_stdErr\tPvalue\tN\tAvgSize"
         }
@@ -374,7 +373,7 @@ run_streaming_analysis <- function(arg) {
             
             # Write buffer when it reaches buffer_size
             if(length(result_buffer) >= buffer_size) {
-                writeLines(result_buffer, arg$out, sep = "\n")
+                write(paste(result_buffer, collapse = "\n"), file = arg$out, append = TRUE)
                 result_buffer <- character(0)
             }
         }
@@ -382,7 +381,7 @@ run_streaming_analysis <- function(arg) {
     
     # Write any remaining results in buffer
     if(length(result_buffer) > 0) {
-        writeLines(result_buffer, arg$out, sep = "\n")
+        write(paste(result_buffer, collapse = "\n"), file = arg$out, append = TRUE)
     }
     
     close(con)

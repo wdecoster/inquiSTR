@@ -142,3 +142,15 @@ GM18501.LSK110.R9.guppy646.sup.with5mC.pass.phased.bam.bai
 HG00096.hg38.cram.crai
 test-data/2D-candidates_test_set.bam
 test-data/2D-candidates_test_set.bam.bai
+test_str_streaming/test_binary_max.txt
+scripts/STR_regression_streaming.R
+test_str_streaming/test_binary_mean.txt
+test_str_streaming/test_continuous.txt
+test_str_streaming/test_length_filter.txt
+test_str_streaming/test_missing_filter.txt
+test_str_streaming/test_performance.txt
+.gitignore
+test_str_streaming/test_str_data.txt
+test_str_streaming/test_phenotypes.txt
+test_str_streaming/test_large_data.txt
+test_str_streaming/test_binary_min.txt
