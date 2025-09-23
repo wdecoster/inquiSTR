@@ -2,15 +2,14 @@
 
 suppressWarnings(suppressMessages(library(data.table)))
 suppressWarnings(suppressMessages(library(argparser)))
+suppressWarnings(suppressMessages(library(parallel)))
 
-# Try to load optional libraries for enhanced functionality
-has_pbapply <- suppressWarnings(suppressMessages(require(pbapply, quietly = TRUE)))
-
-# Streaming version of STR_regression.R that processes variants one at a time
+# Chunk-based parallel version of STR_regression.R that processes variants in parallel chunks
+# for improved memory efficiency and faster processing
 # for improved memory efficiency
 
 parse_arguments <- function() {
-    p <- argparser::arg_parser("Run association testing for STRs with streaming approach. Version 2.0, Dec 2025")
+    p <- argparser::arg_parser("Run association testing for STRs with parallel chunk-based approach. Version 2.1, Dec 2025")
     p <- argparser::add_argument(p, "--input", help = "inquiSTR input STR file with header", type = "character", nargs = 1)
     p <- argparser::add_argument(p, "--phenocovar", help = "Phenotype and covariate file with header, first column is individual", type = "character", nargs = 1)
     p <- argparser::add_argument(p, "--covnames", help = "Covariate names, comma separated (optional)", type = "character", nargs = "*")
@@ -275,6 +274,34 @@ process_single_variant <- function(variant_data, pheno_info, missing_cutoff, min
     })
 }
 
+# Process a chunk of variants in parallel
+process_variant_chunk <- function(variant_lines, sample_names, str_mode, pheno_info, missing_cutoff, minimal_length, outcometype, quiet = FALSE) {
+    results <- list()
+    
+    for(i in 1:length(variant_lines)) {
+        line_data <- strsplit(variant_lines[i], "\t")[[1]]
+        
+        # Parse variant data
+        variant_data <- parse_variant_line(line_data, sample_names, str_mode)
+        
+        # Process the variant
+        result <- process_single_variant(
+            variant_data, 
+            pheno_info, 
+            missing_cutoff,
+            minimal_length,
+            outcometype,
+            quiet
+        )
+        
+        if(!is.null(result)) {
+            results[[length(results) + 1]] <- result
+        }
+    }
+    
+    return(results)
+}
+
 # Main streaming analysis function
 run_streaming_analysis <- function(arg) {
     if(!arg$quiet) {
@@ -329,59 +356,131 @@ run_streaming_analysis <- function(arg) {
     
     writeLines(output_header, arg$out)
     
-    # Process variants in small batches for better I/O efficiency
+    # Set up parallel processing
+    num_cores <- min(arg$threads, detectCores())
+    if(!arg$quiet) {
+        cat("Using", num_cores, "cores for parallel processing\n")
+    }
+    
+    # Process variants in chunks
     variants_processed <- 0
     variants_written <- 0
-    result_buffer <- character(0)
-    buffer_size <- 100  # Write results in batches of 100
+    chunk_lines <- character(0)
+    
+    if(!arg$quiet) {
+        cat("Reading and processing variants in chunks of", arg$chunk_size, "...\n")
+    }
     
     while(length(line <- readLines(con, n = 1)) > 0) {
+        chunk_lines <- c(chunk_lines, line)
         variants_processed <- variants_processed + 1
-       
-
         
-        if(!arg$quiet && variants_processed %% 1000 == 0) {
-            # Report memory usage every 1000 variants
-            mem_usage <- format(object.size(ls.str()), units = "MB")
-            cat("Processed", variants_processed, "variants,", variants_written, "passed filters")
-            cat(" | Memory:", mem_usage, "\n")
-        }
-        
-        # Parse the line
-        line_data <- strsplit(line, "\t")[[1]]
-        
-        # Parse variant data
-        variant_data <- parse_variant_line(line_data, sample_names, arg$STRmode)
-        
-        # Process the variant
-        result <- process_single_variant(
-            variant_data, 
-            pheno_info, 
-            arg$missing_cutoff,
-            arg$minimal_length,
-            arg$outcometype,
-            arg$quiet
-        )
-        
-        # Write result if valid
-        if(!is.null(result)) {
-            # Convert result to tab-separated line
-            result_values <- as.character(unlist(result))
-            result_line <- paste(result_values, collapse = "\t")
-            result_buffer <- c(result_buffer, result_line)
-            variants_written <- variants_written + 1
-            
-            # Write buffer when it reaches buffer_size
-            if(length(result_buffer) >= buffer_size) {
-                write(paste(result_buffer, collapse = "\n"), file = arg$out, append = TRUE)
-                result_buffer <- character(0)
+        # Process chunk when it reaches chunk_size or end of file
+        if(length(chunk_lines) >= arg$chunk_size) {
+            # Split chunk into sub-chunks for parallel processing
+            if(num_cores > 1) {
+                # Split chunk_lines into smaller sub-chunks for each core
+                sub_chunk_size <- ceiling(length(chunk_lines) / num_cores)
+                sub_chunks <- split(chunk_lines, ceiling(seq_along(chunk_lines) / sub_chunk_size))
+                
+                # Process sub-chunks in parallel
+                chunk_results <- mclapply(sub_chunks, function(sub_chunk) {
+                    process_variant_chunk(
+                        sub_chunk, 
+                        sample_names, 
+                        arg$STRmode, 
+                        pheno_info, 
+                        arg$missing_cutoff, 
+                        arg$minimal_length, 
+                        arg$outcometype, 
+                        arg$quiet
+                    )
+                }, mc.cores = num_cores)
+                
+                # Flatten results
+                all_results <- unlist(chunk_results, recursive = FALSE)
+            } else {
+                # Single-threaded processing
+                all_results <- process_variant_chunk(
+                    chunk_lines, 
+                    sample_names, 
+                    arg$STRmode, 
+                    pheno_info, 
+                    arg$missing_cutoff, 
+                    arg$minimal_length, 
+                    arg$outcometype, 
+                    arg$quiet
+                )
             }
+            
+            # Write results
+            if(length(all_results) > 0) {
+                result_lines <- character(length(all_results))
+                for(i in 1:length(all_results)) {
+                    result_values <- as.character(unlist(all_results[[i]]))
+                    result_lines[i] <- paste(result_values, collapse = "\t")
+                }
+                write(paste(result_lines, collapse = "\n"), file = arg$out, append = TRUE)
+                variants_written <- variants_written + length(all_results)
+            }
+            
+            # Progress reporting
+            if(!arg$quiet) {
+                pass_rate <- if(variants_processed > 0) round(variants_written / variants_processed * 100, 1) else 0
+                cat("Processed", variants_processed, "variants,", variants_written, "passed filters")
+                cat(" (", pass_rate, "% pass rate)\n")
+            }
+            
+            # Reset chunk
+            chunk_lines <- character(0)
         }
     }
     
-    # Write any remaining results in buffer
-    if(length(result_buffer) > 0) {
-        write(paste(result_buffer, collapse = "\n"), file = arg$out, append = TRUE)
+    # Process any remaining variants in the last incomplete chunk
+    if(length(chunk_lines) > 0) {
+        if(num_cores > 1 && length(chunk_lines) >= num_cores) {
+            # Split remaining chunk for parallel processing
+            sub_chunk_size <- ceiling(length(chunk_lines) / num_cores)
+            sub_chunks <- split(chunk_lines, ceiling(seq_along(chunk_lines) / sub_chunk_size))
+            
+            chunk_results <- mclapply(sub_chunks, function(sub_chunk) {
+                process_variant_chunk(
+                    sub_chunk, 
+                    sample_names, 
+                    arg$STRmode, 
+                    pheno_info, 
+                    arg$missing_cutoff, 
+                    arg$minimal_length, 
+                    arg$outcometype, 
+                    arg$quiet
+                )
+            }, mc.cores = num_cores)
+            
+            all_results <- unlist(chunk_results, recursive = FALSE)
+        } else {
+            # Process remaining variants sequentially
+            all_results <- process_variant_chunk(
+                chunk_lines, 
+                sample_names, 
+                arg$STRmode, 
+                pheno_info, 
+                arg$missing_cutoff, 
+                arg$minimal_length, 
+                arg$outcometype, 
+                arg$quiet
+            )
+        }
+        
+        # Write final results
+        if(length(all_results) > 0) {
+            result_lines <- character(length(all_results))
+            for(i in 1:length(all_results)) {
+                result_values <- as.character(unlist(all_results[[i]]))
+                result_lines[i] <- paste(result_values, collapse = "\t")
+            }
+            write(paste(result_lines, collapse = "\n"), file = arg$out, append = TRUE)
+            variants_written <- variants_written + length(all_results)
+        }
     }
     
     close(con)
@@ -410,7 +509,7 @@ main <- function() {
     arg <- parse_arguments()
     
     if(!arg$quiet) {
-        cat("inquiSTR - STR_regression Streaming Version 2.0, Dec 2025\n")
+        cat("inquiSTR - STR_regression Parallel Version 2.1, Dec 2025\n")
     }
     
     run_streaming_analysis(arg)
