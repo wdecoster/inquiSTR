@@ -6,7 +6,6 @@ suppressWarnings(suppressMessages(library(parallel)))
 
 # Chunk-based parallel version of STR_regression.R that processes variants in parallel chunks
 # for improved memory efficiency and faster processing
-# for improved memory efficiency
 
 parse_arguments <- function() {
     p <- argparser::arg_parser("Run association testing for STRs with parallel chunk-based approach. Version 2.1, Dec 2025")
@@ -75,7 +74,11 @@ parse_arguments <- function() {
 
 # Prepare phenotype data for analysis
 prepare_phenotype_data <- function(phenocovar_file, phenotype_col, covariates_str, binaryOrder = NULL, quiet = FALSE) {
-    pheno_data <- fread(phenocovar_file)
+    # Read with explicit header=TRUE to ensure first row is used as column names
+    pheno_data <- fread(phenocovar_file, header = TRUE)
+    
+    # Clean column names (remove any hidden characters)
+    names(pheno_data) <- trimws(gsub("[\r\n\t]", "", names(pheno_data)))
     
     # Parse covariates
     covariates <- if(!is.na(covariates_str) && covariates_str != "") {
@@ -103,10 +106,48 @@ prepare_phenotype_data <- function(phenocovar_file, phenotype_col, covariates_st
             cat("Filtered to", nrow(pheno_data), "samples with binary phenotype levels:", 
                 paste(binary_levels, collapse = ", "), "\n")
         }
+        
+        # Validate that we have samples in each binary group
+        if(nrow(pheno_data) == 0) {
+            stop("Error: No samples found with the specified binary phenotype levels: ", 
+                 paste(binary_levels, collapse = ", "), 
+                 ". Check your --binaryOrder specification and phenotype file.")
+        }
+        
+        # Check that we have at least one sample in each binary group
+        level_counts <- table(pheno_data[[phenotype_col]])
+        missing_levels <- binary_levels[!binary_levels %in% names(level_counts)]
+        if(length(missing_levels) > 0) {
+            stop("Error: No samples found for binary phenotype level(s): ", 
+                 paste(missing_levels, collapse = ", "), 
+                 ". Available levels in data: ", 
+                 paste(unique(pheno_data[[phenotype_col]]), collapse = ", "))
+        }
+        
+        # Check minimum sample count per group
+        min_samples_per_group <- 2  # Minimum for statistical analysis
+        low_count_levels <- names(level_counts)[level_counts < min_samples_per_group]
+        if(length(low_count_levels) > 0) {
+            stop("Error: Insufficient samples in binary phenotype level(s): ", 
+                 paste(paste(low_count_levels, " (n=", level_counts[low_count_levels], ")", sep=""), collapse = ", "),
+                 ". Need at least ", min_samples_per_group, " samples per group for analysis.")
+        }
+        
+        if(!quiet) {
+            cat("Sample counts per group: ", paste(paste(names(level_counts), "=", level_counts), collapse = ", "), "\n")
+        }
     }
     
     # Remove samples with missing phenotype
     pheno_data <- pheno_data[!is.na(get(phenotype_col))]
+    
+    # Final validation: ensure we have enough samples for analysis
+    min_total_samples <- 10  # Minimum for meaningful statistical analysis
+    if(nrow(pheno_data) < min_total_samples) {
+        stop("Error: Insufficient samples for analysis. Found ", nrow(pheno_data), 
+             " samples with valid phenotype data, but need at least ", min_total_samples, 
+             " for meaningful statistical analysis.")
+    }
     
     return(list(
         data = pheno_data,
