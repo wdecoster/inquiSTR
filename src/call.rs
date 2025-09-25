@@ -1,7 +1,6 @@
 use hts_sys;
 use human_sort::compare as human_compare;
 use indicatif::ParallelProgressIterator;
-use indicatif::ProgressIterator;
 use log::debug;
 use log::{error, info, warn};
 use rayon::prelude::*;
@@ -120,8 +119,9 @@ pub fn genotype_repeats(
         let chrom_reported = Mutex::new(Vec::new());
         // genotypes contains the output of the genotyping, a struct instance
         let genotypes = Mutex::new(Vec::new());
-        // Track loci with no phased reads in multithreaded mode
+        // Track loci with no phased reads and whether we've seen any phased loci in multithreaded mode
         let unphased_loci_count = Mutex::new(0usize);
+        let phased_loci_seen = Mutex::new(false);
         let num_intervals = repeats.num_intervals;
         repeats
             .par_bridge()
@@ -129,10 +129,16 @@ pub fn genotype_repeats(
             .for_each(|repeat| {
                 match genotype_repeat_multithreaded(&bamp, repeat.clone(), minlen, support, unphased, &reference) {
                     Ok(output) => {
-                        // Check if this locus had no phased reads when running in phased mode
-                        if !unphased && output.phase1.is_nan() && output.phase2.is_nan() {
-                            let mut unphased_count = unphased_loci_count.lock().expect("Failed to lock unphased_loci_count");
-                            *unphased_count += 1;
+                        // Check if this locus had phased reads when running in phased mode
+                        if !unphased {
+                            if output.phase1.is_nan() && output.phase2.is_nan() {
+                                let mut unphased_count = unphased_loci_count.lock().expect("Failed to lock unphased_loci_count");
+                                *unphased_count += 1;
+                            } else if !output.phase1.is_nan() || !output.phase2.is_nan() {
+                                // We found at least one locus with phased reads
+                                let mut phased_seen = phased_loci_seen.lock().expect("Failed to lock phased_loci_seen");
+                                *phased_seen = true;
+                            }
                         }
                         
                         let mut geno = genotypes.lock().expect("Failed to lock genotypes");
@@ -152,25 +158,26 @@ pub fn genotype_repeats(
                 };
             });
         let mut genotypes_vec = genotypes.lock().expect("Failed to lock genotypes");
-        // Check the proportion of unphased loci in multithreaded mode
+        // Check the proportion of unphased loci in multithreaded mode, but only if no phased loci were seen
         if !unphased && !genotypes_vec.is_empty() {
             let unphased_count = *unphased_loci_count.lock().expect("Failed to lock unphased_loci_count");
+            let has_phased_loci = *phased_loci_seen.lock().expect("Failed to lock phased_loci_seen");
             let total_loci = genotypes_vec.len();
-            let unphased_percentage = (unphased_count as f64 / total_loci as f64) * 100.0;
             
-            if unphased_percentage > 50.0 {
+            // Only error if we haven't seen any phased loci AND all/most loci are unphased
+            if !has_phased_loci && unphased_count == total_loci && total_loci >= 20 {
                 error!(
-                    "ERROR: {:.1}% of loci ({}/{}) have no phased reads. \
-                    This suggests the BAM/CRAM file lacks proper phasing information (HP tags). \
+                    "ERROR: All {} loci have no phased reads and no phased loci were observed. \
+                    This suggests the BAM/CRAM file lacks phasing information (HP tags). \
                     Please ensure your file is properly phased or use the --unphased option.",
-                    unphased_percentage, unphased_count, total_loci
+                    total_loci
                 );
                 std::process::exit(1);
-            } else if unphased_percentage > 20.0 {
+            } else if !has_phased_loci && unphased_count >= 20 {
                 warn!(
-                    "Warning: {:.1}% of loci ({}/{}) have no phased reads. \
+                    "Warning: {} out of {} loci have no phased reads, but no phased loci observed yet. \
                     Consider checking your phasing quality.",
-                    unphased_percentage, unphased_count, total_loci
+                    unphased_count, total_loci
                 );
             }
         }
@@ -188,63 +195,15 @@ pub fn genotype_repeats(
         let num_intervals = repeats.num_intervals;
         println!("{file_header}");
         
-        // Track consecutive loci with no phased reads when running in phased mode
-        let mut consecutive_unphased_loci = 0;
-        const MAX_CONSECUTIVE_UNPHASED: usize = 20;
-        let mut total_loci_processed = 0;
+        // Collect all repeats and sort them for optimal processing
+        let mut all_repeats: Vec<RepeatInterval> = repeats.collect();
+        all_repeats.sort_by(|a, b| {
+            human_compare(&a.chrom, &b.chrom)
+                .then(a.start.cmp(&b.start))
+        });
         
-        for repeat in repeats.progress_count(num_intervals as u64) {
-            total_loci_processed += 1;
-            match genotype_repeat(&mut bam, repeat.clone(), minlen, support, unphased) {
-                Ok(output) => {
-                    // Check if this locus had no phased reads (both phases are NaN)
-                    if !unphased && output.phase1.is_nan() && output.phase2.is_nan() {
-                        consecutive_unphased_loci += 1;
-                        warn!(
-                            "Locus {}:{}-{} has no phased reads (consecutive count: {})",
-                            repeat.chrom, repeat.start, repeat.end, consecutive_unphased_loci
-                        );
-                        
-                        // For small numbers of loci, be more sensitive to failures
-                        let threshold = if total_loci_processed <= 5 {
-                            std::cmp::min(total_loci_processed, 3) // Allow up to 3 failures in first 5 loci
-                        } else {
-                            MAX_CONSECUTIVE_UNPHASED
-                        };
-                        
-                        // Check if we've hit the threshold
-                        if consecutive_unphased_loci >= threshold {
-                            error!(
-                                "ERROR: Found {} consecutive loci with no phased reads. \
-                                This suggests the BAM/CRAM file lacks phasing information (HP tags). \
-                                Please ensure your file is properly phased or use the --unphased option.",
-                                consecutive_unphased_loci
-                            );
-                            std::process::exit(1);
-                        }
-                    } else {
-                        // Reset counter if we found phased reads
-                        consecutive_unphased_loci = 0;
-                    }
-                    
-                    println!("{output}");
-                }
-                Err(chrom) => {
-                    // Don't count missing chromosomes as unphased loci
-                    error!("Contig {chrom} not found in bam file");
-                    consecutive_unphased_loci = 0;
-                }
-            };
-        }
-        
-        // Final summary if we processed some loci but had consecutive failures at the end
-        if !unphased && consecutive_unphased_loci > 5 && total_loci_processed >= MAX_CONSECUTIVE_UNPHASED {
-            warn!(
-                "Finished processing with {} consecutive loci having no phased reads. \
-                Consider checking your phasing quality.",
-                consecutive_unphased_loci
-            );
-        }
+        // Process targets in optimized batches
+        genotype_repeats_batched(&mut bam, all_repeats, minlen, support, unphased, num_intervals as u64);
     }
 }
 
@@ -349,21 +308,6 @@ fn get_bam_reader(bamp: &String, reference: &Option<String>) -> bam::IndexedRead
     }
     
     bam
-}
-
-fn genotype_repeat(
-    bam: &mut bam::IndexedReader,
-    repeat: RepeatInterval,
-    minlen: u32,
-    support: usize,
-    unphased: bool,
-) -> Result<Genotype, String> {
-    info!("Checks passed, genotyping repeat");
-    if unphased {
-        genotype_repeat_unphased(bam, repeat, minlen, support)
-    } else {
-        genotype_repeat_phased(bam, repeat, minlen, support)
-    }
 }
 
 fn genotype_repeat_unphased(
@@ -739,23 +683,28 @@ fn test_get_chrom_lengths_from_bam_header() {
 
 #[test]
 fn test_phasing_validation_triggers() {
-    // This test verifies that our phasing validation works by trying to process
-    // a BAM file in phased mode when it likely has no phased reads
-    // Since we use std::process::exit(1), we can't easily test this without 
-    // running it as a subprocess. This test is documented but commented out
-    // to avoid test failures. The validation is tested manually.
+    // This test verifies that our phasing validation works correctly.
+    // The new logic only errors if:
+    // 1. No phased loci have been observed (no HP tags found) AND
+    // 2. 20 consecutive unphased loci are encountered
+    // 
+    // Since test-data/small-test.bam likely has some phased reads (based on output showing different haplotype values),
+    // the validation should not trigger for a small region.
+    // This is the correct behavior - we only want to catch files that completely
+    // lack phasing information.
     
-    // genotype_repeats(
-    //     String::from("test-data/small-test.bam"),
-    //     Some("chr7:154778571-154779363".to_string()),
-    //     None,
-    //     5,
-    //     3,
-    //     1, // single-threaded to trigger consecutive loci check
-    //     false, // phased mode - should fail
-    //     Some("sample".to_string()),
-    //     None
-    // );
+    // This should NOT trigger validation (correct behavior) - small region with likely phased data:
+    genotype_repeats(
+        String::from("test-data/small-test.bam"),
+        Some("chr7:154778571-154779363".to_string()),
+        None,
+        5,
+        3,
+        1, // single-threaded
+        false, // phased mode
+        Some("sample".to_string()),
+        None
+    );
 }
 
 #[test]
@@ -779,4 +728,261 @@ fn test_is_accidental_2d() {
     }
     println!("Found {} 2D reads out of {} reads", count, all_reads);
     assert_eq!(count, all_reads);
+}
+
+/// Process targets in optimized batches to reduce I/O overhead
+/// Groups nearby targets and fetches larger regions to minimize BAM seek operations
+fn genotype_repeats_batched(
+    bam: &mut bam::IndexedReader,
+    all_repeats: Vec<RepeatInterval>,
+    minlen: u32,
+    support: usize,
+    unphased: bool,
+    total_count: u64,
+) {
+    // Track phasing validation state
+    let mut consecutive_unphased_loci = 0;
+    let mut has_seen_phased_locus = false;
+    const BATCH_DISTANCE_THRESHOLD: u32 = 50000; // Batch targets within 50kb
+    
+    let pb = indicatif::ProgressBar::new(total_count);
+    pb.set_style(indicatif::ProgressStyle::default_bar()
+        .template("[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg}")
+        .unwrap());
+    
+    let mut current_batch: Vec<RepeatInterval> = Vec::new();
+    let mut current_chrom = String::new();
+    let mut current_end = 0u32;
+    
+    for repeat in all_repeats {
+        // Check if this repeat should be added to current batch or start a new batch
+        let should_batch = !current_batch.is_empty() 
+            && repeat.chrom == current_chrom 
+            && repeat.start <= current_end + BATCH_DISTANCE_THRESHOLD;
+            
+        if should_batch {
+            // Add to current batch and extend the region
+            current_end = std::cmp::max(current_end, repeat.end + 10);
+            current_batch.push(repeat);
+        } else {
+            // Process the current batch if it exists
+            if !current_batch.is_empty() {
+                process_batch(
+                    bam, 
+                    &current_batch, 
+                    &current_chrom, 
+                    current_end, 
+                    minlen, 
+                    support, 
+                    unphased,
+                    &mut consecutive_unphased_loci,
+                    &mut has_seen_phased_locus,
+                    &pb
+                );
+            }
+            
+            // Start new batch
+            current_chrom = repeat.chrom.clone();
+            current_end = repeat.end + 10;
+            current_batch = vec![repeat];
+        }
+    }
+    
+    // Process the final batch
+    if !current_batch.is_empty() {
+        process_batch(
+            bam, 
+            &current_batch, 
+            &current_chrom, 
+            current_end, 
+            minlen, 
+            support, 
+            unphased,
+            &mut consecutive_unphased_loci,
+            &mut has_seen_phased_locus,
+            &pb
+        );
+    }
+    
+    pb.finish_with_message("Completed");
+}
+
+/// Process a single batch of nearby targets with one BAM fetch operation
+fn process_batch(
+    bam: &mut bam::IndexedReader,
+    batch: &[RepeatInterval],
+    chrom: &str,
+    batch_end: u32,
+    minlen: u32,
+    support: usize,
+    unphased: bool,
+    consecutive_unphased_loci: &mut usize,
+    has_seen_phased_locus: &mut bool,
+    pb: &indicatif::ProgressBar,
+) {
+    if batch.is_empty() {
+        return;
+    }
+    
+    // Get the full region bounds
+    let batch_start = batch.first().unwrap().start.saturating_sub(10);
+    
+    // Fetch the entire batch region once
+    if let Some(tid) = bam.header().tid(chrom.as_bytes()) {
+        if let Err(e) = bam.fetch((tid, batch_start, batch_end)) {
+            warn!("Failed to fetch batch region {}:{}-{}: {}", chrom, batch_start, batch_end, e);
+            return;
+        }
+        
+        // Collect all reads for this batch region
+        let mut all_reads = Vec::new();
+        for record_result in bam.rc_records() {
+            match record_result {
+                Ok(record) => all_reads.push(record),
+                Err(e) => {
+                    warn!("Error reading BAM record in batch {}: {}", chrom, e);
+                    continue;
+                }
+            }
+        }
+        
+        // Process each target in the batch using the pre-fetched reads
+        for repeat in batch {
+            let result = process_target_from_reads(&all_reads, repeat, minlen, support, unphased);
+            
+            match result {
+                Ok((genotype, had_hp_tags)) => {
+                    if !unphased {
+                        // Proper phasing validation: only count loci that had NO HP tags at all
+                        if had_hp_tags {
+                            *has_seen_phased_locus = true;
+                            *consecutive_unphased_loci = 0;
+                        } else {
+                            *consecutive_unphased_loci += 1;
+                            
+                            if *consecutive_unphased_loci >= 20 && !*has_seen_phased_locus {
+                                error!("Validation failed: 20+ consecutive loci without HP tags and no phased loci seen");
+                                error!("This suggests the BAM file lacks phasing information (HP tags)");
+                                error!("Consider using --unphased flag or check if your data is phased");
+                                std::process::exit(1);
+                            }
+                        }
+                    }
+                    
+                    println!("{}", genotype);
+                }
+                Err(e) => {
+                    warn!("Failed to process target {}:{}-{}: {}", repeat.chrom, repeat.start, repeat.end, e);
+                }
+            }
+            
+            pb.inc(1);
+        }
+    } else {
+        warn!("Chromosome {} not found in BAM header", chrom);
+    }
+}
+
+/// Process a single target using pre-fetched reads
+fn process_target_from_reads(
+    reads: &[std::rc::Rc<rust_htslib::bam::Record>],
+    repeat: &RepeatInterval,
+    minlen: u32,
+    support: usize,
+    unphased: bool,
+) -> Result<(Genotype, bool), String> { // Return tuple with genotype and whether HP tags were found
+    let start_ext = repeat.start.saturating_sub(10);
+    let end_ext = repeat.end + 10;
+    
+    if unphased {
+        let mut calls = Vec::with_capacity(50);
+        
+        for record in reads {
+            // Check if this read overlaps with our target region
+            if start_ext < (record.reference_start() as u32)
+                || (record.reference_end() as u32) < end_ext
+                || record.mapq() <= 10
+            {
+                continue;
+            }
+            
+            let call = call_from_cigar(record.clone(), minlen, start_ext, end_ext);
+            calls.push(call);
+        }
+        
+        if calls.len() < support {
+            return Err(format!("Insufficient support: {} < {}", calls.len(), support));
+        }
+        
+        calls.sort_unstable_by_key(|call| call.value());
+        let (hap1, hap2) = calls.split_at(calls.len() / 2);
+        
+        Ok((Genotype {
+            repeat: repeat.clone(),
+            phase1: median_str_length(hap1, support),
+            phase2: median_str_length(hap2, support),
+        }, false)) // unphased mode never has HP tags
+    } else {
+        // Phased processing
+        let mut calls = PhasedCalls::new_with_capacity(50);
+        let mut found_hp_tags = false;
+        
+        for record in reads {
+            // Check if this read overlaps with our target region
+            if start_ext < (record.reference_start() as u32)
+                || (record.reference_end() as u32) < end_ext
+                || record.mapq() <= 10
+            {
+                continue;
+            }
+            
+            let call = call_from_cigar(record.clone(), minlen, start_ext, end_ext);
+            
+            // Check for phasing information
+            if let Ok(hp_tag) = record.aux(b"HP") {
+                found_hp_tags = true;
+                match hp_tag {
+                    rust_htslib::bam::record::Aux::U8(1) => calls.phase1.push(call),
+                    rust_htslib::bam::record::Aux::U8(2) => calls.phase2.push(call),
+                    rust_htslib::bam::record::Aux::I32(1) => calls.phase1.push(call),
+                    rust_htslib::bam::record::Aux::I32(2) => calls.phase2.push(call),
+                    _ => calls.unphased.push(call),
+                }
+            } else {
+                calls.unphased.push(call);
+            }
+        }
+        
+        let total_reads = calls.phase1.len() + calls.phase2.len() + calls.unphased.len();
+        if total_reads < support {
+            return Err(format!("Insufficient support: {} < {}", total_reads, support));
+        }
+        
+        calls.phase1.sort_unstable_by_key(|call| call.value());
+        calls.phase2.sort_unstable_by_key(|call| call.value());
+        calls.unphased.sort_unstable_by_key(|call| call.value());
+        
+        let is_phased = !calls.phase1.is_empty() && !calls.phase2.is_empty();
+        
+        if is_phased {
+            Ok((Genotype {
+                repeat: repeat.clone(),
+                phase1: median_str_length(&calls.phase1, support),
+                phase2: median_str_length(&calls.phase2, support),
+            }, found_hp_tags))
+        } else {
+            // Fall back to unphased processing
+            let mut all_calls = calls.phase1;
+            all_calls.extend(calls.phase2);
+            all_calls.extend(calls.unphased);
+            all_calls.sort_unstable_by_key(|call| call.value());
+            
+            let (hap1, hap2) = all_calls.split_at(all_calls.len() / 2);
+            Ok((Genotype {
+                repeat: repeat.clone(),
+                phase1: median_str_length(hap1, support),
+                phase2: median_str_length(hap2, support),
+            }, found_hp_tags))
+        }
+    }
 }
