@@ -28,30 +28,98 @@ pub fn combine(calls: Vec<PathBuf>) {
             panic!("File {} does not exist!", file.display());
         }
     }
-    // open the first file, regardless if it is gzipped or not
-    let file1 = reader(&calls[0].clone().into_os_string().into_string().unwrap());
-
-    // make a vector of readers over all other files
-    let mut files: Vec<_> = calls[1..]
+    
+    // Open all files
+    let mut file_readers: Vec<_> = calls
         .iter()
         .map(|file| reader(&file.clone().into_os_string().into_string().unwrap()).lines())
         .collect();
-    for line in file1.lines() {
-        // Get the full line for the first file, create a vector to collect all data
-        let line = line.unwrap();
-        let mut line_out = vec![line.as_str()];
-        // Get one line from every other file
-        let rest_of_files: Vec<String> = files
-            .iter_mut()
-            .map(|file2| file2.next().unwrap().unwrap())
-            .collect();
-        // Only get the scores, removing cols 1-3 for every other file
-        let mut scores: Vec<&str> = rest_of_files
-            .iter()
-            .flat_map(|rec| rec.split('\t').skip(3))
-            .collect();
-        line_out.append(&mut scores);
-        println!("{}", line_out.join("\t"));
+    
+    // Read headers from all files
+    let mut headers: Vec<String> = Vec::new();
+    for (i, file_reader) in file_readers.iter_mut().enumerate() {
+        let header = file_reader.next()
+            .unwrap_or_else(|| panic!("File {} is empty", calls[i].display()))
+            .unwrap_or_else(|e| panic!("Error reading header from {}: {}", calls[i].display(), e));
+        headers.push(header);
+    }
+    
+    // Check if files have headers (look for "chromosome" in first field)
+    let has_headers = headers[0].split('\t').next() == Some("chromosome");
+    
+    if has_headers {
+        // Construct combined header
+        let first_header_fields: Vec<&str> = headers[0].split('\t').collect();
+        if first_header_fields.len() < 5 {
+            panic!("Invalid header format in first file: {}", headers[0]);
+        }
+        
+        // Start with chr, begin, end
+        let mut combined_header = vec![first_header_fields[0], first_header_fields[1], first_header_fields[2]];
+        
+        // Add sample columns from first file
+        combined_header.extend(&first_header_fields[3..]);
+        
+        // Add sample columns from other files (skip chr, begin, end)
+        for header in &headers[1..] {
+            let fields: Vec<&str> = header.split('\t').collect();
+            if fields.len() < 5 {
+                panic!("Invalid header format: {}", header);
+            }
+            combined_header.extend(&fields[3..]);
+        }
+        
+        println!("{}", combined_header.join("\t"));
+    }
+    
+    // Process data lines
+    loop {
+        let mut data_lines: Vec<String> = Vec::new();
+        let mut all_done = true;
+        
+        // Read one line from each file
+        for file_reader in &mut file_readers {
+            match file_reader.next() {
+                Some(Ok(line)) => {
+                    data_lines.push(line);
+                    all_done = false;
+                }
+                Some(Err(e)) => panic!("Error reading file: {}", e),
+                None => {
+                    // File is finished - but we need all files to have same number of lines
+                    if !all_done {
+                        panic!("Files have different number of data lines");
+                    }
+                }
+            }
+        }
+        
+        if all_done {
+            break;
+        }
+        
+        // Construct combined line
+        let first_line_fields: Vec<&str> = data_lines[0].split('\t').collect();
+        if first_line_fields.len() < 3 {
+            panic!("Invalid data line format: {}", data_lines[0]);
+        }
+        
+        // Start with chr, begin, end from first file
+        let mut combined_line = vec![first_line_fields[0], first_line_fields[1], first_line_fields[2]];
+        
+        // Add all sample data from first file
+        combined_line.extend(&first_line_fields[3..]);
+        
+        // Add sample data from other files (skip chr, begin, end)
+        for line in &data_lines[1..] {
+            let fields: Vec<&str> = line.split('\t').collect();
+            if fields.len() < 3 {
+                panic!("Invalid data line format: {}", line);
+            }
+            combined_line.extend(&fields[3..]);
+        }
+        
+        println!("{}", combined_line.join("\t"));
     }
 }
 

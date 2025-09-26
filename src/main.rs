@@ -26,12 +26,12 @@ use clap::{Parser, Subcommand};
 use log::info;
 use std::{io::BufRead, path::PathBuf};
 
-// pub mod assoc;
 pub mod call;
 pub mod combine;
 pub mod histogram;
 pub mod metadata;
 pub mod outlier;
+pub mod pca;
 pub mod plot;
 pub mod query;
 pub mod repeats;
@@ -189,6 +189,20 @@ enum Commands {
         #[clap(short, long, value_parser, default_value_t=String::from("groupplot.html"))]
         output: String,
     },
+    /// Perform PCA analysis on combined STR data
+    Pca {
+        /// Combined file of STR calls from inquiSTR combine command
+        #[clap(value_parser, required = true)]
+        combined: PathBuf,
+
+        /// HTML output file name for interactive PCA plot
+        #[clap(short, long, value_parser, default_value_t=String::from("pca_plot.html"))]
+        output: String,
+
+        /// Number of principal components to compute (currently only first 2 are plotted)
+        #[clap(short, long, value_parser, default_value_t = 10)]
+        components: usize,
+    },
 }
 
 fn main() {
@@ -266,6 +280,12 @@ fn main() {
         // }
         Commands::Plot { combined, metadata, condition, region, output } => {
             plot::plot(combined, metadata, condition, region, output)
+        }
+        Commands::Pca { combined, output, components } => {
+            if !combined.exists() {
+                panic!("Combined file does not exist!");
+            }
+            pca::pca(combined, output, components);
         }
     }
 }
