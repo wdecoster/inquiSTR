@@ -1,475 +1,560 @@
-#!~/miniconda3/bin/Rscript
-## Run association testing for STRs with different modes and options
+#!/usr/bin/env Rscript
 
 suppressWarnings(suppressMessages(library(data.table)))
-suppressWarnings(suppressMessages(library(dplyr)))
 suppressWarnings(suppressMessages(library(argparser)))
-suppressWarnings(suppressMessages(library(svMisc)))
-suppressWarnings(suppressMessages(library(valr)))
+suppressWarnings(suppressMessages(library(parallel)))
 
-assoc_binary <- function(arg, calls_file, phenotype, no_cols, covariates, missing_cutoff) {
-    binaryOrder_prepared <- unlist(strsplit(arg$binaryOrder, split = ","))
-    # make sure that all values in binaryOrder_prepared are in the calls_file[[phenotype]] column
-    for (i in binaryOrder_prepared) {
-        if (!i %in% calls_file[[phenotype]]) {
-            stop(paste0("The value ", i, " in binaryOrder is not present in the phenotype column of the input file."))
-        }
-    }
-    calls_file_selected <- as.data.table(calls_file[calls_file[[phenotype]] %in% c(binaryOrder_prepared), ])
-    calls_file_selected[[phenotype]] <- factor(calls_file_selected[[phenotype]], c(binaryOrder_prepared))
-    calls_file_selected <- calls_file_selected[, which(unlist(lapply(calls_file_selected, function(x) !all(is.na(x))))), with = FALSE]
-    calls_file_selected <- data.table(data.frame(calls_file_selected)[, which(colMeans(!is.na(data.frame(calls_file_selected))) >= missing_cutoff)])
-    calls_file_selected <- calls_file_selected %>% select(where(~ n_distinct(., na.rm = TRUE) > 1))
-    results_calls_file_selected <- as.data.frame(matrix(0, 1, 16))
-    colnames(results_calls_file_selected) <- c("VariantID", "OR", "OR_L95", "OR_U95", "OR_stdErr", "Pvalue", "N", paste0(binaryOrder_prepared[1], "_N"), paste0(binaryOrder_prepared[2], "_N"), "AvgSize", paste0(binaryOrder_prepared[1], "_AvgSize"), paste0(binaryOrder_prepared[2], "_AvgSize"), paste0(binaryOrder_prepared[2], "_", binaryOrder_prepared[1], "_absAvgSizeDiff"), paste0(binaryOrder_prepared[2], "_", binaryOrder_prepared[1], "_OR_for_absAvgSizeDiff"), "model", "binaryOrder")
-    if (!arg$quiet) {
-        message(paste0("Running association testing for ", (ncol(calls_file_selected) - no_cols) + 1, " qualifying variants..."))
-    }
-    for (i in seq(no_cols, ncol(calls_file_selected), 1)) {
-        VariantToBeTested <- as.character(colnames(calls_file_selected)[i])
-        if (!is.na(covariates)) {
-            covlist <- gsub(",", " ", covariates)
-            covlist_prepared <- unlist(strsplit(covlist, split = " "))
-            formulax <- paste(phenotype, paste(c(VariantToBeTested, covlist_prepared), collapse = "+"), sep = "~")
-            selectedtable <- na.omit(as.data.table(cbind(as.character(calls_file_selected[[phenotype]]), as.numeric(calls_file_selected[[VariantToBeTested]]), calls_file_selected[, ..covlist_prepared])))
-        } else {
-            formulax <- paste(phenotype, VariantToBeTested, sep = "~")
-            selectedtable <- as.data.table(cbind(as.character(calls_file_selected[[phenotype]]), as.numeric(calls_file_selected[[VariantToBeTested]])))
-        }
-        colnames(selectedtable)[1:2] <- c(phenotype, VariantToBeTested)
-        group2 <- subset(selectedtable, selectedtable[[phenotype]] == binaryOrder_prepared[2])
-        group1 <- subset(selectedtable, selectedtable[[phenotype]] == binaryOrder_prepared[1])
-        AvgSize <- round(mean(as.numeric(selectedtable[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
-        Group2_AvgSize <- round(mean(as.numeric(group2[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
-        Group1_AvgSize <- round(mean(as.numeric(group1[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
-        Group2_Group1_absAvgSizeDiff <- round(abs(Group2_AvgSize - Group1_AvgSize), digits = 3)
-        Group2_N <- nrow(subset(group2, group2[[VariantToBeTested]] != "NaN"))
-        Group1_N <- nrow(subset(group1, group1[[VariantToBeTested]] != "NaN"))
-        binaryOrderInTable <- arg$binaryOrder
-        glm_result <- glm(formula = formulax, data = calls_file_selected, family = binomial(link = "logit"))
-        Predictors <- names(glm_result$coefficients)
-        VariantID <- names(glm_result$coefficients)[2]
-        OR <- round(as.numeric(exp(glm_result$coefficients)), digits = 3)
-        OR_L95 <- round(as.numeric(exp(confint.default(glm_result, level = 0.95)[, 1])), digits = 3)
-        OR_U95 <- round(as.numeric(exp(confint.default(glm_result, level = 0.95)[, 2])), digits = 3)
-        OR_stdErr <- round(as.numeric(coef(summary(glm_result))[, "Std. Error"]), digits = 3)
-        Pvalue <- as.numeric(coef(summary(glm_result))[, "Pr(>|z|)"])
-        N <- nobs(glm_result)
-        Group2_Group1_OR_for_absAvgSizeDiff <- round((exp(Group2_Group1_absAvgSizeDiff * log(OR))), digits = 3)
-        model <- as.character(glm_result$formula)[1]
-        # instead of creating data frames and rbind'ing them every iteration, it would be better to just print to stdout
-        # we don't get sorting then, but that's not too bad
-        tabular_result <- as.data.frame(cbind(Predictors, OR, OR_L95, OR_U95, OR_stdErr, Pvalue, N, Group1_N, Group2_N, AvgSize, Group1_AvgSize, Group2_AvgSize, Group2_Group1_absAvgSizeDiff, Group2_Group1_OR_for_absAvgSizeDiff, model, binaryOrderInTable))
-        tabular_result <- subset(tabular_result, Predictors == VariantID)
-        colnames(tabular_result) <- c("VariantID", "OR", "OR_L95", "OR_U95", "OR_stdErr", "Pvalue", "N", paste0(binaryOrder_prepared[1], "_N"), paste0(binaryOrder_prepared[2], "_N"), "AvgSize", paste0(binaryOrder_prepared[1], "_AvgSize"), paste0(binaryOrder_prepared[2], "_AvgSize"), paste0(binaryOrder_prepared[2], "_", binaryOrder_prepared[1], "_absAvgSizeDiff"), paste0(binaryOrder_prepared[2], "_", binaryOrder_prepared[1], "_OR_for_absAvgSizeDiff"), "model", "binaryOrder")
-        results_calls_file_selected <- rbind.data.frame(results_calls_file_selected, tabular_result)
-        svMisc::progress(i, init = TRUE, progress.bar = FALSE, console = TRUE, gui = FALSE)
-        if (i == ncol(calls_file_selected)) {
-            message("Done!")
-        }
-    }
-    results_calls_file_selected <- as.data.table(results_calls_file_selected[-1, ])
-    sorted_results_calls_file_selected <- results_calls_file_selected[order(as.numeric(results_calls_file_selected$Pvalue)), ]
-    write.table(sorted_results_calls_file_selected, arg$out, sep = "\t", col.names = TRUE, quote = FALSE, row.names = FALSE)
-}
-
-assoc_continuous <- function(arg, calls_file, phenotype, no_cols, covariates, missing_cutoff) {
-    calls_file <- calls_file[, which(unlist(lapply(calls_file, function(x) !all(is.na(x))))), with = FALSE]
-    calls_file <- data.table(data.frame(calls_file)[, which(colMeans(!is.na(data.frame(calls_file))) >= missing_cutoff)])
-    calls_file <- calls_file %>% select(where(~ n_distinct(., na.rm = TRUE) > 1))
-    results_calls_file <- as.data.frame(matrix(0, 1, 13))
-    colnames(results_calls_file) <- c("VariantID", "Beta", "Beta_L95", "Beta_U95", "Beta_stdErr", "Pvalue", "N", "AvgSize", "MinSize", "MaxSize", "Max_Min_absSizeDiff", "Max_Min_Beta_for_absSizeDiff", "model")
-    if (!arg$quiet) {
-        message(paste0("Running association testing for ", (ncol(calls_file) - no_cols) + 1, " qualifying variants..."))
-    }
-    for (i in seq(no_cols, ncol(calls_file), 1)) {
-        VariantToBeTested <- as.character(colnames(calls_file)[i])
-        if (!is.na(covariates)) {
-            covlist <- gsub(",", " ", covariates)
-            covlist_prepared <- unlist(strsplit(covlist, split = " "))
-            formulax <- paste(phenotype, paste(c(VariantToBeTested, covlist_prepared), collapse = "+"), sep = "~")
-            selectedtable <- na.omit(as.data.table(cbind(as.character(calls_file_selected[[phenotype]]), as.numeric(calls_file_selected[[VariantToBeTested]]), calls_file_selected[, ..covlist_prepared])))
-            colnames(selectedtable)[1:2] <- c(phenotype, VariantToBeTested)
-            AvgSize <- round(mean(as.numeric(selectedtable[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
-            MaxSize <- round(max(as.numeric(selectedtable[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
-            MinSize <- round(min(as.numeric(selectedtable[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
-            Max_Min_absSizeDiff <- round(abs(max(as.numeric(selectedtable[[VariantToBeTested]]), na.rm = TRUE) - min(as.numeric(selectedtable[[VariantToBeTested]]), na.rm = TRUE)), digits = 3)
-        } else {
-            formulax <- paste(phenotype, VariantToBeTested, sep = "~")
-            selectedtable <- as.data.table(cbind(as.character(calls_file[[phenotype]]), as.numeric(calls_file[[VariantToBeTested]])))
-            colnames(selectedtable) <- c(phenotype, VariantToBeTested)
-            AvgSize <- round(mean(as.numeric(selectedtable[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
-            MaxSize <- round(max(as.numeric(selectedtable[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
-            MinSize <- round(min(as.numeric(selectedtable[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
-            Max_Min_absSizeDiff <- round(abs(max(as.numeric(selectedtable[[VariantToBeTested]]), na.rm = TRUE) - min(as.numeric(selectedtable[[VariantToBeTested]]), na.rm = TRUE)), digits = 3)
-        }
-        glm_result <- glm(formula = formulax, data = calls_file, family = gaussian(link = "identity"))
-        Predictors <- names(glm_result$coefficients)
-        VariantID <- names(glm_result$coefficients)[2]
-        Beta <- round(as.numeric(exp(glm_result$coefficients)), digits = 3)
-        Beta_L95 <- round(as.numeric(exp(confint.default(glm_result, level = 0.95)[, 1])), digits = 3)
-        Beta_U95 <- round(as.numeric(exp(confint.default(glm_result, level = 0.95)[, 2])), digits = 3)
-        Beta_stdErr <- round(as.numeric(coef(summary(glm_result))[, "Std. Error"]), digits = 3)
-        Pvalue <- as.numeric(coef(summary(glm_result))[, "Pr(>|t|)"])
-        N <- nobs(glm_result)
-        Max_Min_Beta_for_absSizeDiff <- round((Max_Min_absSizeDiff * Beta), digits = 3)
-        model <- as.character(glm_result$formula)[1]
-        tabular_result <- as.data.frame(cbind(Predictors, Beta, Beta_L95, Beta_U95, Beta_stdErr, Pvalue, N, AvgSize, MinSize, MaxSize, Max_Min_absSizeDiff, Max_Min_Beta_for_absSizeDiff, model))
-        tabular_result <- subset(tabular_result, Predictors == VariantID)
-        colnames(tabular_result)[1] <- "VariantID"
-        results_calls_file <- rbind.data.frame(results_calls_file, tabular_result)
-        svMisc::progress(i, init = TRUE, progress.bar = FALSE, console = TRUE, gui = FALSE)
-        if (i == ncol(calls_file)) {
-            message("Done!")
-        }
-    }
-    results_calls_file <- results_calls_file[-1, ]
-    sorted_results_calls_file <- results_calls_file[order(as.numeric(results_calls_file$Pvalue)), ]
-    write.table(sorted_results_calls_file, arg$out, sep = "\t", col.names = TRUE, quote = FALSE, row.names = FALSE)
-}
-
-assoc_binary_expandedAllele <- function(arg, calls_file, phenotype, no_cols, covariates, expandedAllele, missing_cutoff) {
-    expandedAllele <- as.numeric(arg$expandedAllele)
-    binaryOrder <- gsub(",", " ", arg$binaryOrder)
-    binaryOrder_prepared <- unlist(strsplit(binaryOrder, split = " "))
-    calls_file_selected <- as.data.table(calls_file[calls_file[[phenotype]] %in% c(binaryOrder_prepared), ])
-    calls_file_selected[[phenotype]] <- factor(calls_file_selected[[phenotype]], c(binaryOrder_prepared))
-    calls_file_selected <- calls_file_selected[, which(unlist(lapply(calls_file_selected, function(x) !all(is.na(x))))), with = F]
-    calls_file_selected <- data.table(data.frame(calls_file_selected)[, which(colMeans(!is.na(data.frame(calls_file_selected))) >= missing_cutoff)])
-    calls_file_selected <- calls_file_selected %>% select(where(~ n_distinct(., na.rm = TRUE) > 1))
-    results_calls_file_selected <- as.data.frame(matrix(0, 1, 16))
-    colnames(results_calls_file_selected) <- c("VariantID", "OR", "OR_L95", "OR_U95", "OR_stdErr", "Pvalue", "N", paste0(binaryOrder_prepared[1], "_N"), paste0(binaryOrder_prepared[2], "_N"), "AvgSize", paste0(binaryOrder_prepared[1], "_AvgSize"), paste0(binaryOrder_prepared[2], "_AvgSize"), paste0(binaryOrder_prepared[2], "_", binaryOrder_prepared[1], "_absAvgSizeDiff"), paste0(binaryOrder_prepared[2], "_", binaryOrder_prepared[1], "_OR_for_absAvgSizeDiff"), "model", "binaryOrder")
-    if (!arg$quiet) {
-        message(paste0("Running association testing for ", (ncol(calls_file_selected) - no_cols) + 1, " qualifying variants..."))
-    }
-    for (i in seq(no_cols, ncol(calls_file_selected), 1)) {
-        VariantToBeTested <- as.character(colnames(calls_file_selected)[i])
-        if (!is.na(covariates)) {
-            covlist <- gsub(",", " ", covariates)
-            covlist_prepared <- unlist(strsplit(covlist, split = " "))
-            selectedtable <- na.omit(as.data.table(cbind(as.character(calls_file_selected[[phenotype]]), as.numeric(calls_file_selected[[VariantToBeTested]]), calls_file_selected[, ..covlist_prepared])))
-            colnames(selectedtable)[1:2] <- c(phenotype, VariantToBeTested)
-            group2 <- subset(selectedtable, selectedtable[[VariantToBeTested]] >= expandedAllele)
-            group1 <- subset(selectedtable, selectedtable[[VariantToBeTested]] < expandedAllele)
-            calls_file_selected$expanded_allele_group <- ifelse(calls_file_selected[[VariantToBeTested]] >= expandedAllele, "Expanded", "notExpanded")
-            calls_file_selected$expanded_allele_group <- factor(calls_file_selected$expanded_allele_group, c("notExpanded", "Expanded"))
-            formulax <- paste(phenotype, paste(c("expanded_allele_group", covlist_prepared), collapse = "+"), sep = "~")
-            AvgSize <- round(mean(as.numeric(selectedtable[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
-            Group2_AvgSize <- round(mean(as.numeric(group2[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
-            Group1_AvgSize <- round(mean(as.numeric(group1[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
-            Group2_Group1_absAvgSizeDiff <- round(abs(Group2_AvgSize - Group1_AvgSize), digits = 3)
-            Group2_N <- nrow(subset(group2, group2[[VariantToBeTested]] != "NaN"))
-            Group1_N <- nrow(subset(group1, group1[[VariantToBeTested]] != "NaN"))
-            binaryOrderInTable <- arg$binaryOrder
-        } else {
-            selectedtable <- as.data.table(cbind(as.character(calls_file_selected[[phenotype]]), as.numeric(calls_file_selected[[VariantToBeTested]])))
-            colnames(selectedtable) <- c(phenotype, VariantToBeTested)
-            group2 <- subset(selectedtable, selectedtable[[VariantToBeTested]] >= expandedAllele)
-            group1 <- subset(selectedtable, selectedtable[[VariantToBeTested]] < expandedAllele)
-            calls_file_selected$expanded_allele_group <- ifelse(calls_file_selected[[VariantToBeTested]] >= expandedAllele, "Expanded", "notExpanded")
-            calls_file_selected$expanded_allele_group <- factor(calls_file_selected$expanded_allele_group, c("notExpanded", "Expanded"))
-            formulax <- paste(phenotype, "expanded_allele_group", sep = "~")
-            AvgSize <- round(mean(as.numeric(selectedtable[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
-            Group2_AvgSize <- round(mean(as.numeric(group2[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
-            Group1_AvgSize <- round(mean(as.numeric(group1[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
-            Group2_Group1_absAvgSizeDiff <- round(abs(Group2_AvgSize - Group1_AvgSize), digits = 3)
-            Group2_N <- nrow(subset(group2, group2[[VariantToBeTested]] != "NaN"))
-            Group1_N <- nrow(subset(group1, group1[[VariantToBeTested]] != "NaN"))
-            binaryOrderInTable <- arg$binaryOrder
-        }
-        glm_result <- glm(formula = formulax, data = calls_file_selected, family = binomial(link = "logit"))
-        Predictors <- names(glm_result$coefficients)
-        VariantID <- names(glm_result$coefficients)[2]
-        OR <- round(as.numeric(exp(glm_result$coefficients)), digits = 3)
-        OR_L95 <- round(as.numeric(exp(confint.default(glm_result, level = 0.95)[, 1])), digits = 3)
-        OR_U95 <- round(as.numeric(exp(confint.default(glm_result, level = 0.95)[, 2])), digits = 3)
-        OR_stdErr <- round(as.numeric(coef(summary(glm_result))[, "Std. Error"]), digits = 3)
-        Pvalue <- as.numeric(coef(summary(glm_result))[, "Pr(>|z|)"])
-        N <- nobs(glm_result)
-        Group2_Group1_OR_for_absAvgSizeDiff <- round((exp(Group2_Group1_absAvgSizeDiff * log(OR))), digits = 3)
-        model <- as.character(glm_result$formula)[1]
-        tabular_result <- as.data.frame(cbind(Predictors, OR, OR_L95, OR_U95, OR_stdErr, Pvalue, N, Group1_N, Group2_N, AvgSize, Group1_AvgSize, Group2_AvgSize, Group2_Group1_absAvgSizeDiff, Group2_Group1_OR_for_absAvgSizeDiff, model, binaryOrderInTable))
-        tabular_result <- subset(tabular_result, Predictors == VariantID)
-        colnames(tabular_result) <- c("VariantID", "OR", "OR_L95", "OR_U95", "OR_stdErr", "Pvalue", "N", paste0(binaryOrder_prepared[1], "_N"), paste0(binaryOrder_prepared[2], "_N"), "AvgSize", paste0(binaryOrder_prepared[1], "_AvgSize"), paste0(binaryOrder_prepared[2], "_AvgSize"), paste0(binaryOrder_prepared[2], "_", binaryOrder_prepared[1], "_absAvgSizeDiff"), paste0(binaryOrder_prepared[2], "_", binaryOrder_prepared[1], "_OR_for_absAvgSizeDiff"), "model", "binaryOrder")
-        tabular_result$VariantID <- paste0(as.character(arg$single_variant), "_ExpandedAllele")
-        results_calls_file_selected <- rbind.data.frame(results_calls_file_selected, tabular_result)
-        svMisc::progress(i, init = TRUE, progress.bar = FALSE, console = TRUE, gui = FALSE)
-        if (i == ncol(calls_file_selected)) {
-            message("Done!")
-        }
-    }
-    results_calls_file_selected <- as.data.table(results_calls_file_selected[-1, ])
-    sorted_results_calls_file_selected <- results_calls_file_selected[order(as.numeric(results_calls_file_selected$Pvalue)), ]
-    write.table(sorted_results_calls_file_selected, arg$out, sep = "\t", col.names = TRUE, quote = F, row.names = F)
-}
-
-assoc_continuous_expandedAllele <- function(arg, calls_file, phenotype, no_cols, covariates, expandedAllele, missing_cutoff) {
-    expandedAllele <- as.numeric(arg$expandedAllele)
-    calls_file <- calls_file[, which(unlist(lapply(calls_file, function(x) !all(is.na(x))))), with = F]
-    calls_file <- data.table(data.frame(calls_file)[, which(colMeans(!is.na(data.frame(calls_file))) >= missing_cutoff)])
-    calls_file <- calls_file %>% select(where(~ n_distinct(., na.rm = TRUE) > 1))
-    results_calls_file <- as.data.frame(matrix(0, 1, 19))
-    colnames(results_calls_file) <- c("VariantID", "Beta", "Beta_L95", "Beta_U95", "Beta_stdErr", "Pvalue", "N", "Group1_N", "Group2_N", "AvgSize", "Group1_AvgSize", "Group2_AvgSize", "Group2_Group1_absAvgSizeDiff", "Group2_Group1_Beta_for_absAvgSizeDiff", "MinSize", "MaxSize", "Max_Min_absSizeDiff", "Max_Min_Beta_for_absSizeDiff", "model")
-    if (!arg$quiet) {
-        message(paste0("Running association testing for ", (ncol(calls_file) - no_cols) + 1, " qualifying variants..."))
-    }
-    for (i in seq(no_cols, ncol(calls_file), 1)) {
-        VariantToBeTested <- as.character(colnames(calls_file)[i])
-        if (!is.na(covariates)) {
-            covlist <- gsub(",", " ", covariates)
-            covlist_prepared <- unlist(strsplit(covlist, split = " "))
-            selectedtable <- na.omit(as.data.table(cbind(as.character(calls_file_selected[[phenotype]]), as.numeric(calls_file_selected[[VariantToBeTested]]), calls_file_selected[, ..covlist_prepared])))
-            colnames(selectedtable)[1:2] <- c(phenotype, VariantToBeTested)
-            group2 <- subset(selectedtable, selectedtable[[VariantToBeTested]] >= expandedAllele)
-            group1 <- subset(selectedtable, selectedtable[[VariantToBeTested]] < expandedAllele)
-            calls_file_selected$expanded_allele_group <- ifelse(calls_file_selected[[VariantToBeTested]] >= expandedAllele, "Expanded", "notExpanded")
-            calls_file_selected$expanded_allele_group <- factor(calls_file_selected$expanded_allele_group, c("notExpanded", "Expanded"))
-            formulax <- paste(phenotype, paste(c("expanded_allele_group", covlist_prepared), collapse = "+"), sep = "~")
-            AvgSize <- round(mean(as.numeric(selectedtable[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
-            Group2_AvgSize <- round(mean(as.numeric(group2[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
-            Group1_AvgSize <- round(mean(as.numeric(group1[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
-            Group2_Group1_absAvgSizeDiff <- round(abs(Group2_AvgSize - Group1_AvgSize), digits = 3)
-            MaxSize <- round(max(as.numeric(selectedtable[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
-            MinSize <- round(min(as.numeric(selectedtable[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
-            Max_Min_absSizeDiff <- round(abs(max(as.numeric(selectedtable[[VariantToBeTested]]), na.rm = TRUE) - min(as.numeric(selectedtable[[VariantToBeTested]]), na.rm = TRUE)), digits = 3)
-        } else {
-            selectedtable <- as.data.table(cbind(as.character(calls_file_selected[[phenotype]]), as.numeric(calls_file_selected[[VariantToBeTested]])))
-            colnames(selectedtable) <- c(phenotype, VariantToBeTested)
-            group2 <- subset(selectedtable, selectedtable[[VariantToBeTested]] >= expandedAllele)
-            group1 <- subset(selectedtable, selectedtable[[VariantToBeTested]] < expandedAllele)
-            calls_file_selected$expanded_allele_group <- ifelse(calls_file_selected[[VariantToBeTested]] >= expandedAllele, "Expanded", "notExpanded")
-            calls_file_selected$expanded_allele_group <- factor(calls_file_selected$expanded_allele_group, c("notExpanded", "Expanded"))
-            formulax <- paste(phenotype, "expanded_allele_group", sep = "~")
-            AvgSize <- round(mean(as.numeric(selectedtable[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
-            Group2_AvgSize <- round(mean(as.numeric(group2[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
-            Group1_AvgSize <- round(mean(as.numeric(group1[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
-            Group2_Group1_absAvgSizeDiff <- round(abs(Group2_AvgSize - Group1_AvgSize), digits = 3)
-            MaxSize <- round(max(as.numeric(selectedtable[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
-            MinSize <- round(min(as.numeric(selectedtable[[VariantToBeTested]]), na.rm = TRUE), digits = 3)
-            Max_Min_absSizeDiff <- round(abs(max(as.numeric(selectedtable[[VariantToBeTested]]), na.rm = TRUE) - min(as.numeric(selectedtable[[VariantToBeTested]]), na.rm = TRUE)), digits = 3)
-        }
-        glm_result <- glm(formula = formulax, data = calls_file, family = gaussian(link = "identity"))
-        Predictors <- names(glm_result$coefficients)
-        VariantID <- names(glm_result$coefficients)[2]
-        Beta <- round(as.numeric(exp(glm_result$coefficients)), digits = 3)
-        Beta_L95 <- round(as.numeric(exp(confint.default(glm_result, level = 0.95)[, 1])), digits = 3)
-        Beta_U95 <- round(as.numeric(exp(confint.default(glm_result, level = 0.95)[, 2])), digits = 3)
-        Beta_stdErr <- round(as.numeric(coef(summary(glm_result))[, "Std. Error"]), digits = 3)
-        Pvalue <- as.numeric(coef(summary(glm_result))[, "Pr(>|t|)"])
-        N <- nobs(glm_result)
-        Group2_N <- nrow(subset(group2, !is.na(group2[[VariantToBeTested]])))
-        Group1_N <- nrow(subset(group1, !is.na(group1[[VariantToBeTested]])))
-        Group2_Group1_Beta_for_absAvgSizeDiff <- round((Group2_Group1_absAvgSizeDiff * Beta), digits = 3)
-        Max_Min_Beta_for_absSizeDiff <- round((Max_Min_absSizeDiff * Beta), digits = 3)
-        model <- as.character(glm_result$formula)[1]
-        tabular_result <- as.data.frame(cbind(Predictors, Beta, Beta_L95, Beta_U95, Beta_stdErr, Pvalue, N, Group1_N, Group2_N, AvgSize, Group1_AvgSize, Group2_AvgSize, Group2_Group1_absAvgSizeDiff, Group2_Group1_Beta_for_absAvgSizeDiff, MinSize, MaxSize, Max_Min_absSizeDiff, Max_Min_Beta_for_absSizeDiff, model))
-        tabular_result <- subset(tabular_result, Predictors == VariantID)
-        colnames(tabular_result)[1] <- "VariantID"
-        tabular_result$VariantID <- paste0(as.character(arg$single_variant), "_ExpandedAllele")
-        results_calls_file <- rbind.data.frame(results_calls_file, tabular_result)
-        svMisc::progress(i, init = TRUE, progress.bar = FALSE, console = TRUE, gui = FALSE)
-        if (i == ncol(calls_file)) {
-            message("Done!")
-        }
-    }
-    results_calls_file <- results_calls_file[-1, ]
-    sorted_results_calls_file <- results_calls_file[order(as.numeric(results_calls_file$Pvalue)), ]
-    write.table(sorted_results_calls_file, arg$out, sep = "\t", col.names = TRUE, quote = F, row.names = F)
-}
-
-prepare_phenotype <- function(sample_list, arg) {
-    if (!arg$quiet) {
-        message("Processing the phenotype file...")
-    }
-    phenocovar <- fread(arg$phenocovar, header = TRUE)
-    # check if phenotype is a column in phenocovar
-    if (!arg$phenotype %in% colnames(phenocovar)) {
-        stop(paste0("The phenotype variable you provided is not a column in the phenotype file you provided. Please check the column names in your phenotype file."))
-    }
-    colnames(sample_list) <- "individual"
-    return(list(
-        "sample_list" = left_join(sample_list, phenocovar, by = "individual"),
-        "phenotype" = arg$phenotype <- paste0(arg$phenotype, ""),
-        "no_cols" = ncol(phenocovar) + 1
-    ))
-}
-
-prepare_calls <- function(calls, sample_list_wPheno, arg) {
-    if (!arg$quiet) {
-        message("Processing the input file based on the STRmode chosen...")
-    }
-    if (arg$STRmode == "MEAN") {
-        calls_file <- transpose((pmax(calls$H1, calls$H2, na.rm = TRUE) + pmin(calls$H1, calls$H2, na.rm = TRUE)) / 2)
-    } else if (arg$STRmode == "MAX") {
-        calls_file <- transpose(pmax(calls$H1, calls$H2, na.rm = TRUE))
-    } else if (arg$STRmode == "MIN") {
-        calls_file <- transpose(pmin(calls$H1, calls$H2, na.rm = TRUE))
-    }
-    if (all(is.na(calls_file))) {
-        stop(paste0("The STRmode and run mode you chose resulted in all missing values. Aborting."))
-    }
-
-    colnames(calls_file) <- calls$strnames
-    calls_file <- cbind(sample_list_wPheno, calls_file)
-    calls_file <- calls_file[, which(unlist(lapply(calls_file, function(x) !all(is.na(x))))), with = FALSE]
-    calls_file <- data.table(data.frame(calls_file)[, which(colMeans(!is.na(data.frame(calls_file))) >= arg$missing_cutoff)])
-    calls_file <- calls_file %>% select(where(~ n_distinct(., na.rm = TRUE) > 1))
-    return(calls_file)
-}
+# Chunk-based parallel version of STR_regression.R that processes variants in parallel chunks
+# for improved memory efficiency and faster processing
 
 parse_arguments <- function() {
-    p <- argparser::arg_parser("Run association testing for STRs with different modes and options. Version 1.6, Feb 2025")
-    p <- argparser::add_argument(p, "--input", help = "inquiSTR input STR file with a header, first 3 columns are chromosome, begin, end, and rest are sample ids with H1 & H2 STR lengths", type = "character", nargs = 1)
+    p <- argparser::arg_parser("Run association testing for STRs with parallel chunk-based approach. Version 2.1, Dec 2025")
+    p <- argparser::add_argument(p, "--input", help = "inquiSTR input STR file with header", type = "character", nargs = 1)
     p <- argparser::add_argument(p, "--phenocovar", help = "Phenotype and covariate file with header, first column is individual", type = "character", nargs = 1)
-    p <- argparser::add_argument(p, "--covnames", help = "Covariate names you want to use (optional), separated by comma", type = "character", nargs = "*")
-    p <- argparser::add_argument(p, "--phenotype", help = "Column name of your phenotype of interest variable in the --phenocovar file", type = "character", nargs = 1)
+    p <- argparser::add_argument(p, "--covnames", help = "Covariate names, comma separated (optional)", type = "character", nargs = "*")
+    p <- argparser::add_argument(p, "--phenotype", help = "Column name of phenotype in --phenocovar file", type = "character", nargs = 1)
     p <- argparser::add_argument(p, "--out", help = "Output file name", type = "character", nargs = 1)
-    p <- argparser::add_argument(p, "--STRmode", help = "Choose a STRmode from following: MEAN, MAX, MIN; meaning H1+H2 alleles divided by two, maximum of two, or minimum of two. Missing alleles are not considered.", type = "character", nargs = 1)
-    p <- argparser::add_argument(p, "--missing_cutoff", help = "Defines the call rate cutoff for variants, default is 0.80 meaning that keeping all variants present in at least 80% of individuals (importantly, both for the input file and for the subset groups you selected to include in association testing). Might mean different things in each of the MEAN, MAX, MIN modes, use carefully.", type = "numeric", default = "0.80")
-    p <- argparser::add_argument(p, "--outcometype", help = "Select a outcome variable type: binary or continuous", type = "character", nargs = 1)
-    p <- argparser::add_argument(p, "--binaryOrder", help = "Give the binary phenotype order, comma separated, e.g. Control, Patient will code Control as 0/Group1 and Patient as 1/Group2. This will also be used to further filter your data to only two groups (if you had more than >2 groups for your categorical data)", type = "character", nargs = "*")
-    p <- argparser::add_argument(p, "--run", help = "Run mode, select among: full (entire file will be analyzed), chromosome (chromosome indicated by --chr will be analyzed), chr_interval (intervals between chr:begin-end defined by --chr --begin --end will be analyzed), bed_interval (an intersection with a bed file defined by --bed will be analyzed), single_variant (a single variant defined by --single_variant will be analyzed; should be combined with --expandedAllele)", type = "character", nargs = 1)
-    p <- argparser::add_argument(p, "--chr", help = "Indicate chromosome number to be analyzed (with chr prefix). Optional if bed file is provided.", type = "character", nargs = "?")
-    p <- argparser::add_argument(p, "--chr_begin", help = "Define a begin position (inclusive) for a region of interest (optional, and should be combined with --chr_end)", type = "integer", nargs = "?")
-    p <- argparser::add_argument(p, "--chr_end", help = "Define a end position (inclusive) for a region of interest (optional, and should be combined with --chr_begin)", type = "integer", nargs = "?")
-    p <- argparser::add_argument(p, "--bed", help = "A bed file (without a header) with three columns: chromosome (with chr prefix), begin, and end positions for region(s) of interest (optional). valr Rpackage is required - can be installed with mamba install r-valr on conda environment", type = "character", nargs = "?")
-    p <- argparser::add_argument(p, "--single_variant", help = "A single variant to be analyzed, indicated as chr_begin_end OR chr:begin-end, based on a cut-off value provided by the argument --expandedAllele", type = "character", nargs = "?")
-    p <- argparser::add_argument(p, "--expandedAllele", help = "A cut-off number (integer or decimal) to define 2 groups with and without expanded allele. STR_length >= expandedAllele is Group 2, STR_length < expandedAllele is Group 1.", type = "integer", nargs = "?")
+    p <- argparser::add_argument(p, "--STRmode", help = "MEAN, MAX, or MIN for H1/H2 combination", type = "character", nargs = 1)
+    p <- argparser::add_argument(p, "--missing_cutoff", help = "Call rate cutoff for variants (default 0.80)", type = "numeric", default = "0.80")
+    p <- argparser::add_argument(p, "--minimal_length", help = "Minimum maximum STR length across samples for variant to be included", type = "numeric", nargs = "?")
+    p <- argparser::add_argument(p, "--threads", help = "Number of threads for parallel processing (default 1)", type = "integer", default = 1)
+    p <- argparser::add_argument(p, "--chunk_size", help = "Number of variants to process in each chunk (default 1000)", type = "integer", default = 1000)
+    p <- argparser::add_argument(p, "--outcometype", help = "binary or continuous", type = "character", nargs = 1)
+    p <- argparser::add_argument(p, "--binaryOrder", help = "Binary phenotype order, comma separated (e.g., Control,Patient)", type = "character", nargs = "*")
     p <- argparser::add_argument(p, "--quiet", help = "Do not print progress messages", flag = TRUE)
+    
     arg <- argparser::parse_args(p)
-    if (!arg$quiet) {
-        Version <- "inquiSTR - STR_regression Rscript Version 1.6, Feb 2025"
-        message(Version)
+    
+    # Validation
+    if (is.na(arg$input) || is.na(arg$phenocovar) || is.na(arg$phenotype) || 
+        is.na(arg$out) || is.na(arg$STRmode) || is.na(arg$outcometype)) {
+        stop("Error: Missing required arguments")
     }
-    # argument checks
-    if (is.na(arg$input) || is.na(arg$phenocovar) || is.na(arg$phenotype) || is.na(arg$out) || is.na(arg$STRmode) || is.na(arg$outcometype) || is.na(arg$run)) {
-        stop("Error: exiting because at least one of the following required arguments is missing: --input, --phenocovar, --phenotype, --out, --STRmode, --outcometype, --run")
+    
+    if (arg$outcometype == "binary" && is.na(arg$binaryOrder)) {
+        stop("Error: --binaryOrder required for binary outcomes")
     }
-
-    if ((arg$outcometype == "binary") && is.na(arg$binaryOrder)) {
-        stop("Error: exiting because --binaryOrder argument is missing, please provide it when you use --outcometype binary")
+    
+    if (!arg$STRmode %in% c("MEAN", "MAX", "MIN")) {
+        stop("Error: STRmode must be MEAN, MAX, or MIN")
     }
-
-    if ((arg$run == "chromosome") && is.na(arg$chr)) {
-        stop("Error: exiting because --chr argument is missing, please provide it when you use --run chromosome")
+    
+    if (!arg$outcometype %in% c("binary", "continuous")) {
+        stop("Error: outcometype must be binary or continuous")
     }
-
-    if ((arg$run == "chr_interval") && ((is.na(arg$chr)) || (is.na(arg$chr_begin)) || (is.na(arg$chr_end)))) {
-        stop("Error: exiting because At least one of the --chr, --chr_begin, or --chr_end arguments is missing, please provide these when you use --run chr_interval")
+    
+    # Validate file existence
+    if (!file.exists(arg$input)) {
+        stop("Error: Input file does not exist: ", arg$input)
     }
-
-    if ((arg$run == "bed_interval") && is.na(arg$bed)) {
-        stop("Error: exiting because --bed argument, therefore input bed file, is missing; please provide it when you use --run bed_interval")
+    
+    if (!file.exists(arg$phenocovar)) {
+        stop("Error: Phenotype file does not exist: ", arg$phenocovar)
     }
-
-    if ((arg$run == "single_variant") && is.na(arg$expandedAllele)) {
-        stop("Error: exiting because At least one of the two following aruguments is missing: --single_variant --expandedAllele; please provide these when you use --run single_variant")
+    
+    # Validate numeric arguments
+    if (arg$missing_cutoff < 0 || arg$missing_cutoff > 1) {
+        stop("Error: missing_cutoff must be between 0 and 1")
     }
+    
+    if (!is.na(arg$minimal_length) && arg$minimal_length < 0) {
+        stop("Error: minimal_length must be non-negative")
+    }
+    
+    if (arg$threads < 1) {
+        stop("Error: threads must be >= 1")
+    }
+    
+    if (arg$chunk_size < 1) {
+        stop("Error: chunk_size must be >= 1")
+    }
+    
     return(arg)
 }
 
-arg <- parse_arguments()
-# for interactive debugging:
-# arg <- list(input = "all.inq.gz", out="test.tsv", chr = "chr22", run="chromosome", phenocovar = "sample_info_with_haplotype.tsv", phenotype = "fus", binaryOrder = "N,Y", covnames="Sex", STRmode = 'MAX', missing_cutoff = 0.8, quiet=FALSE)
-
-
-
-# calls is a list with H1, H2 and strnames attributes
-if (!arg$quiet) {
-    message("Loading and processing the input file...")
+# Prepare phenotype data for analysis
+prepare_phenotype_data <- function(phenocovar_file, phenotype_col, covariates_str, binaryOrder = NULL, quiet = FALSE) {
+    # Read with explicit header=TRUE to ensure first row is used as column names
+    pheno_data <- fread(phenocovar_file, header = TRUE)
+    
+    # Clean column names (remove any hidden characters)
+    names(pheno_data) <- trimws(gsub("[\r\n\t]", "", names(pheno_data)))
+    
+    # Parse covariates
+    covariates <- if(!is.na(covariates_str) && covariates_str != "") {
+        trimws(unlist(strsplit(covariates_str, ",")))
+    } else {
+        character(0)
+    }
+    
+    # Check required columns exist
+    required_cols <- c(names(pheno_data)[1], phenotype_col, covariates)  # First column is sample ID
+    missing_cols <- setdiff(required_cols, names(pheno_data))
+    if(length(missing_cols) > 0) {
+        stop("Missing columns in phenotype file: ", paste(missing_cols, collapse = ", "))
+    }
+    
+    # Set sample ID column name
+    sample_id_col <- names(pheno_data)[1]
+    
+    # Filter for binary outcomes if needed
+    if(!is.null(binaryOrder)) {
+        binary_levels <- trimws(unlist(strsplit(binaryOrder, ",")))
+        pheno_data <- pheno_data[get(phenotype_col) %in% binary_levels]
+        pheno_data[[phenotype_col]] <- factor(pheno_data[[phenotype_col]], levels = binary_levels)
+        if(!quiet) {
+            cat("Filtered to", nrow(pheno_data), "samples with binary phenotype levels:", 
+                paste(binary_levels, collapse = ", "), "\n")
+        }
+        
+        # Validate that we have samples in each binary group
+        if(nrow(pheno_data) == 0) {
+            stop("Error: No samples found with the specified binary phenotype levels: ", 
+                 paste(binary_levels, collapse = ", "), 
+                 ". Check your --binaryOrder specification and phenotype file.")
+        }
+        
+        # Check that we have at least one sample in each binary group
+        level_counts <- table(pheno_data[[phenotype_col]])
+        missing_levels <- binary_levels[!binary_levels %in% names(level_counts)]
+        if(length(missing_levels) > 0) {
+            stop("Error: No samples found for binary phenotype level(s): ", 
+                 paste(missing_levels, collapse = ", "), 
+                 ". Available levels in data: ", 
+                 paste(unique(pheno_data[[phenotype_col]]), collapse = ", "))
+        }
+        
+        # Check minimum sample count per group
+        min_samples_per_group <- 2  # Minimum for statistical analysis
+        low_count_levels <- names(level_counts)[level_counts < min_samples_per_group]
+        if(length(low_count_levels) > 0) {
+            stop("Error: Insufficient samples in binary phenotype level(s): ", 
+                 paste(paste(low_count_levels, " (n=", level_counts[low_count_levels], ")", sep=""), collapse = ", "),
+                 ". Need at least ", min_samples_per_group, " samples per group for analysis.")
+        }
+        
+        if(!quiet) {
+            cat("Sample counts per group: ", paste(paste(names(level_counts), "=", level_counts), collapse = ", "), "\n")
+        }
+    }
+    
+    # Remove samples with missing phenotype
+    pheno_data <- pheno_data[!is.na(get(phenotype_col))]
+    
+    # Final validation: ensure we have enough samples for analysis
+    min_total_samples <- 10  # Minimum for meaningful statistical analysis
+    if(nrow(pheno_data) < min_total_samples) {
+        stop("Error: Insufficient samples for analysis. Found ", nrow(pheno_data), 
+             " samples with valid phenotype data, but need at least ", min_total_samples, 
+             " for meaningful statistical analysis.")
+    }
+    
+    return(list(
+        data = pheno_data,
+        sample_id_col = sample_id_col,
+        phenotype_col = phenotype_col,
+        covariates = covariates,
+        binary_levels = if(!is.null(binaryOrder)) trimws(unlist(strsplit(binaryOrder, ","))) else NULL
+    ))
 }
-calls_file <- fread(arg$input, header = TRUE)
-if (arg$run == "chr_interval") {
-    calls_file <- subset(calls_file, ((chromosome == arg$chr) & (begin >= arg$chr_begin) & (end <= arg$chr_end)))
-    if (!arg$quiet) {
-        message("chr_interval run mode is selected")
+
+# Parse a single variant line and extract H1/H2 data
+parse_variant_line <- function(line_data, sample_names, str_mode) {
+    # Extract variant info (first 3 columns: chr, start, end)
+    variant_info <- list(
+        chrom = line_data[1],
+        start = as.numeric(line_data[2]),
+        end = as.numeric(line_data[3])
+    )
+    
+    # Calculate number of samples
+    n_samples <- length(sample_names)
+    
+    # Extract H1 and H2 data (columns 4 onwards, alternating H1/H2)
+    h1_indices <- seq(4, 3 + 2*n_samples, by = 2)
+    h2_indices <- seq(5, 4 + 2*n_samples, by = 2)
+    
+    h1_data <- as.numeric(line_data[h1_indices])
+    h2_data <- as.numeric(line_data[h2_indices])
+    
+    names(h1_data) <- sample_names
+    names(h2_data) <- sample_names
+    
+    # Apply STR mode
+    if(str_mode == "MEAN") {
+        str_values <- (h1_data + h2_data) / 2
+    } else if(str_mode == "MAX") {
+        str_values <- pmax(h1_data, h2_data, na.rm = FALSE)
+    } else if(str_mode == "MIN") {
+        str_values <- pmin(h1_data, h2_data, na.rm = FALSE)
     }
-} else if (arg$run == "bed_interval") {
-    bedfile <- fread(arg$bed, header = FALSE)
-    colnames(bedfile) <- c("chrom", "start", "end")
-    colnames(calls_file)[2] <- "start"
-    calls_file <- as.data.table(bed_intersect(calls_file, bedfile, suffix = c("", ".y")))
-    calls_file <- intersecttable[, 1:(length(intersecttable) - 3)]
-    calls_file <- subset(intersecttable, !is.na(chrom))
-    colnames(calls_file)[2] <- "begin"
-    if (!arg$quiet) {
-        message("bed_interval run mode is selected")
+    
+    return(list(
+        variant_info = variant_info,
+        str_values = str_values,
+        h1_data = h1_data,
+        h2_data = h2_data
+    ))
+}
+
+# Process a single variant through GLM analysis
+process_single_variant <- function(variant_data, pheno_info, missing_cutoff, minimal_length, outcometype, quiet = FALSE) {
+    str_values <- variant_data$str_values
+    variant_info <- variant_data$variant_info
+    
+    # Check missingness for this variant
+    non_missing_rate <- sum(!is.na(str_values)) / length(str_values)
+    if(non_missing_rate < missing_cutoff) {
+        return(NULL)  # Skip this variant due to high missingness
     }
-} else if (arg$run == "chromosome") {
-    calls_file <- subset(calls_file, chromosome == arg$chr)
-    if (!arg$quiet) {
-        message("chromosome run mode is selected")
+    
+    # Check minimal length filter if specified
+    if(!is.na(minimal_length)) {
+        max_length <- max(str_values, na.rm = TRUE)
+        if(is.na(max_length) || max_length <= minimal_length) {
+            return(NULL)  # Skip this variant due to insufficient length
+        }
     }
-} else if (arg$run == "full") {
-    if (!arg$quiet) {
-        message("full run mode is selected")
+    
+    # Create data frame for this variant
+    variant_df <- data.frame(
+        sample_id = names(str_values),
+        variant_value = as.numeric(str_values),
+        stringsAsFactors = FALSE
+    )
+    names(variant_df)[1] <- pheno_info$sample_id_col
+    
+    # Join with phenotype data
+    analysis_data <- merge(variant_df, pheno_info$data, by = pheno_info$sample_id_col)
+    
+    # Remove samples with missing variant data
+    analysis_data <- analysis_data[!is.na(analysis_data$variant_value), ]
+    
+    if(nrow(analysis_data) < 10) {
+        return(NULL)  # Skip if too few samples
     }
-} else if (arg$run == "single_variant") {
-    single_variant_toAnalyze <- unlist(strsplit(arg$single_variant, split = "_"))
-    single_variant_toAnalyze <- unlist(strsplit(unlist(strsplit(single_variant_toAnalyze, split = "-")), ":"))
-    calls_file <- subset(calls_file, ((chrom == single_variant_toAnalyze[1]) & (begin == single_variant_toAnalyze[2]) & (end == single_variant_toAnalyze[3])))
-    if (!arg$quiet) {
-        message("single_variant run mode is selected (with expandedAllele)")
+    
+    # Build formula
+    formula_str <- paste(pheno_info$phenotype_col, "~ variant_value")
+    if(length(pheno_info$covariates) > 0) {
+        formula_str <- paste(formula_str, "+", paste(pheno_info$covariates, collapse = " + "))
+    }
+    
+    # Run GLM
+    tryCatch({
+        if(outcometype == "binary") {
+            model <- glm(as.formula(formula_str), data = analysis_data, family = binomial(link = "logit"))
+            coef_summary <- summary(model)$coefficients
+            variant_coef <- coef_summary["variant_value", ]
+            
+            # Calculate OR and confidence intervals
+            or <- exp(variant_coef["Estimate"])
+            ci <- exp(confint.default(model)["variant_value", ])
+            
+            # Calculate group statistics if binary
+            group_stats <- NULL
+            if(!is.null(pheno_info$binary_levels)) {
+                for(i in 1:length(pheno_info$binary_levels)) {
+                    level <- pheno_info$binary_levels[i]
+                    group_data <- analysis_data[analysis_data[[pheno_info$phenotype_col]] == level, ]
+                    group_name <- paste0("Group", LETTERS[i])  # GroupA, GroupB, etc.
+                    group_stats[[paste0(group_name, "_N")]] <- nrow(group_data)
+                    group_stats[[paste0(group_name, "_AvgSize")]] <- round(mean(group_data$variant_value, na.rm = TRUE), 3)
+                }
+            }
+            
+            result <- data.frame(
+                VariantID = paste(variant_info$chrom, variant_info$start, variant_info$end, sep = "_"),
+                OR = round(or, 3),
+                OR_L95 = round(ci[1], 3),
+                OR_U95 = round(ci[2], 3),
+                OR_stdErr = round(variant_coef["Std. Error"], 3),
+                Pvalue = variant_coef["Pr(>|z|)"],
+                N = nrow(analysis_data),
+                AvgSize = round(mean(analysis_data$variant_value, na.rm = TRUE), 3),
+                stringsAsFactors = FALSE
+            )
+            
+            # Add group statistics if available
+            if(!is.null(group_stats)) {
+                for(name in names(group_stats)) {
+                    result[[name]] <- group_stats[[name]]
+                }
+            }
+            
+        } else { # continuous
+            model <- glm(as.formula(formula_str), data = analysis_data, family = gaussian())
+            coef_summary <- summary(model)$coefficients
+            variant_coef <- coef_summary["variant_value", ]
+            
+            # Calculate confidence intervals
+            ci <- confint.default(model)["variant_value", ]
+            
+            result <- data.frame(
+                VariantID = paste(variant_info$chrom, variant_info$start, variant_info$end, sep = "_"),
+                Beta = round(variant_coef["Estimate"], 3),
+                Beta_L95 = round(ci[1], 3),
+                Beta_U95 = round(ci[2], 3),
+                Beta_stdErr = round(variant_coef["Std. Error"], 3),
+                Pvalue = variant_coef["Pr(>|t|)"],
+                N = nrow(analysis_data),
+                AvgSize = round(mean(analysis_data$variant_value, na.rm = TRUE), 3),
+                MinSize = round(min(analysis_data$variant_value, na.rm = TRUE), 3),
+                MaxSize = round(max(analysis_data$variant_value, na.rm = TRUE), 3),
+                stringsAsFactors = FALSE
+            )
+        }
+        
+        return(result)
+        
+    }, error = function(e) {
+        if(!quiet) {
+            cat("Error processing variant", variant_info$chrom, variant_info$start, ":", e$message, "\n", file = stderr())
+        }
+        return(NULL)
+    })
+}
+
+# Process a chunk of variants in parallel
+process_variant_chunk <- function(variant_lines, sample_names, str_mode, pheno_info, missing_cutoff, minimal_length, outcometype, quiet = FALSE) {
+    results <- list()
+    
+    for(i in 1:length(variant_lines)) {
+        line_data <- strsplit(variant_lines[i], "\t")[[1]]
+        
+        # Parse variant data
+        variant_data <- parse_variant_line(line_data, sample_names, str_mode)
+        
+        # Process the variant
+        result <- process_single_variant(
+            variant_data, 
+            pheno_info, 
+            missing_cutoff,
+            minimal_length,
+            outcometype,
+            quiet
+        )
+        
+        if(!is.null(result)) {
+            results[[length(results) + 1]] <- result
+        }
+    }
+    
+    return(results)
+}
+
+# Main streaming analysis function
+run_streaming_analysis <- function(arg) {
+    if(!arg$quiet) {
+        cat("Starting streaming STR association analysis\n")
+        cat("STR mode:", arg$STRmode, "\n")
+        cat("Outcome type:", arg$outcometype, "\n")
+        cat("Missing cutoff:", arg$missing_cutoff, "\n")
+        if(!is.na(arg$minimal_length)) {
+            cat("Minimal length filter:", arg$minimal_length, "\n")
+        }
+    }
+    
+    # Prepare phenotype data
+    pheno_info <- prepare_phenotype_data(
+        arg$phenocovar, 
+        arg$phenotype, 
+        arg$covnames,
+        if(arg$outcometype == "binary") arg$binaryOrder else NULL,
+        arg$quiet
+    )
+    
+    if(!arg$quiet) {
+        cat("Loaded", nrow(pheno_info$data), "samples with phenotype data\n")
+    }
+    
+    # Open input file for streaming
+    con <- file(arg$input, "r")
+    
+    # Read header to get sample names
+    header_line <- readLines(con, n = 1)
+    header_cols <- strsplit(header_line, "\t")[[1]]
+    
+    # Extract sample names from header (every other column starting from 4th, removing _H1 suffix)
+    h1_cols <- header_cols[seq(4, length(header_cols), by = 2)]
+    sample_names <- gsub("_H1$", "", h1_cols)
+    
+    if(!arg$quiet) {
+        cat("Found", length(sample_names), "samples in input file\n")
+        cat("Starting variant processing...\n")
+    }
+    
+    # Write output header
+    if(arg$outcometype == "binary") {
+        if(!is.null(pheno_info$binary_levels)) {
+            output_header <- "VariantID\tOR\tOR_L95\tOR_U95\tOR_stdErr\tPvalue\tN\tAvgSize\tGroupA_N\tGroupB_N\tGroupA_AvgSize\tGroupB_AvgSize"
+        } else {
+            output_header <- "VariantID\tOR\tOR_L95\tOR_U95\tOR_stdErr\tPvalue\tN\tAvgSize"
+        }
+    } else {
+        output_header <- "VariantID\tBeta\tBeta_L95\tBeta_U95\tBeta_stdErr\tPvalue\tN\tAvgSize\tMinSize\tMaxSize"
+    }
+    
+    writeLines(output_header, arg$out)
+    
+    # Set up parallel processing
+    num_cores <- min(arg$threads, detectCores())
+    if(!arg$quiet) {
+        cat("Using", num_cores, "cores for parallel processing\n")
+    }
+    
+    # Process variants in chunks
+    variants_processed <- 0
+    variants_written <- 0
+    chunk_lines <- character(0)
+    
+    if(!arg$quiet) {
+        cat("Reading and processing variants in chunks of", arg$chunk_size, "...\n")
+    }
+    
+    while(length(line <- readLines(con, n = 1)) > 0) {
+        chunk_lines <- c(chunk_lines, line)
+        variants_processed <- variants_processed + 1
+        
+        # Process chunk when it reaches chunk_size or end of file
+        if(length(chunk_lines) >= arg$chunk_size) {
+            # Split chunk into sub-chunks for parallel processing
+            if(num_cores > 1) {
+                # Split chunk_lines into smaller sub-chunks for each core
+                sub_chunk_size <- ceiling(length(chunk_lines) / num_cores)
+                sub_chunks <- split(chunk_lines, ceiling(seq_along(chunk_lines) / sub_chunk_size))
+                
+                # Process sub-chunks in parallel
+                chunk_results <- mclapply(sub_chunks, function(sub_chunk) {
+                    process_variant_chunk(
+                        sub_chunk, 
+                        sample_names, 
+                        arg$STRmode, 
+                        pheno_info, 
+                        arg$missing_cutoff, 
+                        arg$minimal_length, 
+                        arg$outcometype, 
+                        arg$quiet
+                    )
+                }, mc.cores = num_cores)
+                
+                # Flatten results
+                all_results <- unlist(chunk_results, recursive = FALSE)
+            } else {
+                # Single-threaded processing
+                all_results <- process_variant_chunk(
+                    chunk_lines, 
+                    sample_names, 
+                    arg$STRmode, 
+                    pheno_info, 
+                    arg$missing_cutoff, 
+                    arg$minimal_length, 
+                    arg$outcometype, 
+                    arg$quiet
+                )
+            }
+            
+            # Write results
+            if(length(all_results) > 0) {
+                result_lines <- character(length(all_results))
+                for(i in 1:length(all_results)) {
+                    result_values <- as.character(unlist(all_results[[i]]))
+                    result_lines[i] <- paste(result_values, collapse = "\t")
+                }
+                write(paste(result_lines, collapse = "\n"), file = arg$out, append = TRUE)
+                variants_written <- variants_written + length(all_results)
+            }
+            
+            # Progress reporting
+            if(!arg$quiet) {
+                pass_rate <- if(variants_processed > 0) round(variants_written / variants_processed * 100, 1) else 0
+                cat("Processed", variants_processed, "variants,", variants_written, "passed filters")
+                cat(" (", pass_rate, "% pass rate)\n")
+            }
+            
+            # Reset chunk
+            chunk_lines <- character(0)
+        }
+    }
+    
+    # Process any remaining variants in the last incomplete chunk
+    if(length(chunk_lines) > 0) {
+        if(num_cores > 1 && length(chunk_lines) >= num_cores) {
+            # Split remaining chunk for parallel processing
+            sub_chunk_size <- ceiling(length(chunk_lines) / num_cores)
+            sub_chunks <- split(chunk_lines, ceiling(seq_along(chunk_lines) / sub_chunk_size))
+            
+            chunk_results <- mclapply(sub_chunks, function(sub_chunk) {
+                process_variant_chunk(
+                    sub_chunk, 
+                    sample_names, 
+                    arg$STRmode, 
+                    pheno_info, 
+                    arg$missing_cutoff, 
+                    arg$minimal_length, 
+                    arg$outcometype, 
+                    arg$quiet
+                )
+            }, mc.cores = num_cores)
+            
+            all_results <- unlist(chunk_results, recursive = FALSE)
+        } else {
+            # Process remaining variants sequentially
+            all_results <- process_variant_chunk(
+                chunk_lines, 
+                sample_names, 
+                arg$STRmode, 
+                pheno_info, 
+                arg$missing_cutoff, 
+                arg$minimal_length, 
+                arg$outcometype, 
+                arg$quiet
+            )
+        }
+        
+        # Write final results
+        if(length(all_results) > 0) {
+            result_lines <- character(length(all_results))
+            for(i in 1:length(all_results)) {
+                result_values <- as.character(unlist(all_results[[i]]))
+                result_lines[i] <- paste(result_values, collapse = "\t")
+            }
+            write(paste(result_lines, collapse = "\n"), file = arg$out, append = TRUE)
+            variants_written <- variants_written + length(all_results)
+        }
+    }
+    
+    close(con)
+    
+    # Calculate summary statistics
+    pass_rate <- if(variants_processed > 0) round(variants_written / variants_processed * 100, 1) else 0
+    
+    if(!arg$quiet) {
+        cat("Analysis complete!\n")
+        cat("Total variants processed:", variants_processed, "\n")
+        cat("Total variants written:", variants_written, "\n")
+        cat("Pass rate:", pass_rate, "%\n")
+        cat("Results written to:", arg$out, "\n")
+        
+        # Report filtering statistics
+        cat("\nFiltering summary:\n")
+        cat("- Variants failing missing cutoff:", variants_processed - variants_written, "\n")
+        if(!is.na(arg$minimal_length)) {
+            cat("- Minimal length filter:", arg$minimal_length, "\n")
+        }
     }
 }
-strnames <- paste(paste(calls_file$chr, calls_file$begin, sep = ":"), calls_file$end, sep = "_")
-rest <- calls_file[, -c(1:3)]
-col_index <- seq_len(ncol(rest))
-inqH1 <- as.data.table(rest %>% select(col_index[col_index %% 2 != 0]))
-inqH2 <- as.data.table(rest %>% select(col_index[col_index %% 2 == 0]))
-colnames(inqH1) <- gsub("_H1$", "", colnames(inqH1))
-colnames(inqH2) <- gsub("_H2$", "", colnames(inqH2))
-calls <- list("H1" = inqH1, "H2" = inqH2, "strnames" = strnames)
 
-# pheno_info is a list with sample_list, phenotype and no_cols attributes
-pheno_info <- prepare_phenotype(
-    sample_list = as.data.table(colnames(calls$H1)),
-    arg = arg
-)
-
-
-calls_file <- prepare_calls(
-    calls = calls,
-    sample_list_wPheno = pheno_info$sample_list,
-    arg = arg
-)
-
-if (arg$outcometype == "binary" && arg$run != "single_variant") {
-    assoc_binary(
-        arg = arg,
-        calls_file = calls_file,
-        phenotype = pheno_info$phenotype,
-        no_cols = pheno_info$no_cols,
-        covariates = arg$covnames,
-        missing_cutoff = arg$missing_cutoff
-    )
-} else if (arg$outcometype == "continuous" && arg$run != "single_variant") {
-    assoc_continuous(
-        arg = arg,
-        calls_file = calls_file,
-        phenotype = pheno_info$phenotype,
-        no_cols = pheno_info$no_cols,
-        covariates = arg$covnames,
-        missing_cutoff = arg$missing_cutoff
-    )
-} else if (arg$outcometype == "binary" && arg$run == "single_variant") {
-    assoc_binary_expandedAllele(
-        arg = arg,
-        calls_file = calls_file,
-        phenotype = pheno_info$phenotype,
-        no_cols = pheno_info$no_cols,
-        covariates = arg$covnames,
-        expandedAllele = arg$expandedAllele,
-        missing_cutoff = arg$missing_cutoff
-    )
-} else if (arg$outcometype == "continuous" && arg$run == "single_variant") {
-    assoc_continuous_expandedAllele(
-        arg = arg,
-        calls_file = calls_file,
-        phenotype = pheno_info$phenotype,
-        no_cols = pheno_info$no_cols,
-        covariates = arg$covnames,
-        expandedAllele = arg$expandedAllele,
-        missing_cutoff = arg$missing_cutoff
-    )
+# Main execution
+main <- function() {
+    arg <- parse_arguments()
+    
+    if(!arg$quiet) {
+        cat("inquiSTR - STR_regression Parallel Version 2.1, Dec 2025\n")
+    }
+    
+    run_streaming_analysis(arg)
 }
+
+# Run main function
+main()
