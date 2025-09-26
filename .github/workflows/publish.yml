@@ -36,12 +36,10 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
-    - uses: actions-rs/toolchain@v1
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@1.84.0
       with:
-        profile: minimal
-        toolchain: stable
-        target: ${{ matrix.target }}
-        override: true
+        targets: ${{ matrix.target }}
 
     - name: Install Cross
       if: matrix.use_cross
@@ -51,10 +49,7 @@ jobs:
     # Standard build for non-musl targets
     - name: Build (Standard)
       if: '!matrix.use_cross'
-      uses: actions-rs/cargo@v1
-      with:
-        command: build
-        args: --release ${{ matrix.target && format('--target {0}', matrix.target) || '' }} --locked
+      run: cargo build --release ${{ matrix.target && format('--target {0}', matrix.target) || '' }} --locked
 
     # Cross build for musl target
     - name: Build (Cross)

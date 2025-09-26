@@ -17,10 +17,9 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     
-    - uses: actions-rs/toolchain@v1
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@1.84.0
       with:
-        toolchain: stable
-        override: true
         components: rustfmt, clippy
 
     - name: Install cargo-audit
