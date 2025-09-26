@@ -6,24 +6,24 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-clap = { version = "4.5.27", features = ["derive"] }
-rust-htslib = "0.49.0"
-log = "0.4.25"
-env_logger = "0.11.6"
-bio = "2.0.3"
-rayon = "1.5.3"
+clap = { version = "4.5.48", features = ["derive"] }
+rust-htslib = "0.50.0"
+log = "0.4.28"
+env_logger = "0.11.8"
+bio = "3.0.0"
+rayon = "1.11.0"
 human-sort = "0.2.2"
-flate2 = "1.0.35"
+flate2 = "1.1.2"
 histo_fp = "0.2.1"
-indicatif = { version = "0.17.11", features = ["rayon"] }
+indicatif = { version = "0.18.0", features = ["rayon"] }
 itertools = "0.14.0"
-plotly = "0.9.0"
+plotly = "0.13.5"
 linfa-clustering = "0.7.1"
 linfa = "0.7.1"
 ndarray = "0.16.1"
 niffler = "2.5.0"
 dbscan = "0.3.1"
-url = "2.5.4"
+url = "2.5.7"
 hts-sys = "2.2.0"
 
 [dev-dependencies]
