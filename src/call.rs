@@ -399,7 +399,7 @@ impl PhasedCalls {
             0 => self.unphased.push(call),
             1 => self.phase1.push(call),
             2 => self.phase2.push(call),
-            _ => panic!("Invalid phase: {}", phase),
+            _ => panic!("Invalid phase: {phase}"),
         }
     }
 }
@@ -758,7 +758,7 @@ fn test_is_accidental_2d() {
             break;
         }
     }
-    println!("Found {} 2D reads out of {} reads", count, all_reads);
+    println!("Found {count} 2D reads out of {all_reads} reads");
     assert_eq!(count, all_reads);
 }
 
@@ -911,7 +911,7 @@ fn process_batch(
                         }
                     }
 
-                    println!("{}", genotype);
+                    println!("{genotype}");
                 }
                 Err(e) => {
                     warn!(
@@ -924,7 +924,7 @@ fn process_batch(
             pb.inc(1);
         }
     } else {
-        warn!("Chromosome {} not found in BAM header", chrom);
+        warn!("Chromosome {chrom} not found in BAM header");
     }
 }
 
@@ -1064,7 +1064,7 @@ fn process_target_from_read_info(
 
         let total_reads = calls.phase1.len() + calls.phase2.len() + calls.unphased.len();
         if total_reads < support {
-            return Err(format!("Insufficient support: {} < {}", total_reads, support));
+            return Err(format!("Insufficient support: {total_reads} < {support}"));
         }
 
         calls.phase1.sort_unstable_by_key(|call| call.value());
