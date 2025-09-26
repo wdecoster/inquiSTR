@@ -31,7 +31,8 @@ impl RepeatIntervalIterator {
         let mut reader = bed::Reader::from_file(region_file).expect("Problem reading bed file!");
         let mut data = Vec::new();
         for record in reader.records() {
-            let rec = record.expect("Error reading bed record. Is the file valid and tab-delimited?");
+            let rec =
+                record.expect("Error reading bed record. Is the file valid and tab-delimited?");
             let repeat = RepeatInterval::from_bed(&rec, &chrom_lengths);
             if let Some(repeat) = repeat {
                 data.push(repeat);
@@ -90,7 +91,7 @@ impl RepeatInterval {
         let chrom = rec.chrom().to_string();
         let start = rec.start().try_into().unwrap();
         let end = rec.end().try_into().unwrap();
-        RepeatInterval::new_interval(chrom, start, end, &chrom_lengths)
+        RepeatInterval::new_interval(chrom, start, end, chrom_lengths)
     }
 
     fn new_interval(

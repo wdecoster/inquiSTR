@@ -90,11 +90,11 @@ enum Commands {
         method: outlier::Method,
 
         /// sample to consider
-        #[clap(short='s', long, value_parser)]
+        #[clap(short = 's', long, value_parser)]
         sample: Option<String>,
 
         /// file with subset of samples to consider
-        #[clap(short='S', long, value_parser)]
+        #[clap(short = 'S', long, value_parser)]
         subset: Option<PathBuf>,
     },
     /// Lookup genotypes and display
@@ -210,20 +210,17 @@ fn main() {
             if !combined.exists() {
                 panic!("Combined file does not exist!");
             }
-            let subset = match(sample, subset) {
+            let subset = match (sample, subset) {
                 (Some(_), Some(_)) => {
                     panic!("Cannot use both -s and -S arguments");
                 }
-                (Some(sample), None) => {
-                    Some(vec![sample])
-                }
+                (Some(sample), None) => Some(vec![sample]),
                 (None, Some(subset)) => {
-                    let file = crate::utils::reader(&subset.into_os_string().into_string().unwrap());
+                    let file =
+                        crate::utils::reader(&subset.into_os_string().into_string().unwrap());
                     Some(file.lines().map(|line| line.unwrap()).collect())
                 }
-                (None, None) => {
-                    None
-                }
+                (None, None) => None,
             };
             outlier::outlier(combined, minsize, zscore, method, subset);
         }

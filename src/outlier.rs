@@ -30,7 +30,13 @@ fn std_deviation_and_mean(data: &[f32]) -> (f32, f32) {
     (data_mean, variance.sqrt())
 }
 
-pub fn outlier(combined: PathBuf, minsize: u32, zscore_cutoff: f32, method: Method, subset: Option<Vec<String>>) {
+pub fn outlier(
+    combined: PathBuf,
+    minsize: u32,
+    zscore_cutoff: f32,
+    method: Method,
+    subset: Option<Vec<String>>,
+) {
     let file = crate::utils::reader(&combined.into_os_string().into_string().unwrap());
     let mut lines = file.lines();
     let line = lines.next().unwrap().unwrap();
@@ -57,7 +63,10 @@ pub fn outlier(combined: PathBuf, minsize: u32, zscore_cutoff: f32, method: Meth
                 );
                 // if subset is some, only print the line if at least one of the expanded samples is in the subset
                 if let Some(subset) = &subset {
-                    if expanded.iter().any(|sample| subset.contains(&sample.to_string())) {
+                    if expanded
+                        .iter()
+                        .any(|sample| subset.contains(&sample.to_string()))
+                    {
                         let expanded = expanded.join(",");
                         println!("{chrom}\t{begin}\t{end}\t{expanded}")
                     }
