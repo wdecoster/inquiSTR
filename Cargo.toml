@@ -2,6 +2,26 @@
 name = "inquiSTR"
 version = "0.15.0"
 edition = "2021"
+rust-version = "1.70.0"
+authors = ["Wouter De Coster <wouter.decoster@gmail.com>"]
+description = "A toolset to genotype and analyze STRs from long read sequencing data"
+documentation = "https://github.com/wdecoster/inquiSTR"
+homepage = "https://github.com/wdecoster/inquiSTR"
+repository = "https://github.com/wdecoster/inquiSTR"
+license = "MIT"
+keywords = ["genomics", "str", "long-reads", "nanopore", "bioinformatics"]
+categories = ["science", "command-line-utilities"]
+include = [
+    "src/**/*",
+    "test-data/**/*",
+    "Cargo.toml",
+    "README.md",
+    "LICENSE"
+]
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -28,3 +48,19 @@ hts-sys = "2.2.0"
 
 [dev-dependencies]
 ctor = "*"
+
+# Optimization profiles
+[profile.release]
+lto = true              # Link-time optimization
+codegen-units = 1       # Better optimization
+panic = "abort"         # Smaller binaries, faster panic handling
+strip = true            # Remove symbols for smaller binaries
+
+[profile.dev]
+# Faster builds in development
+incremental = true
+
+[profile.test]
+# Inherit from dev but with optimizations for faster test runs
+inherits = "dev"
+opt-level = 1
