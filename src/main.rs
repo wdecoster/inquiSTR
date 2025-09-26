@@ -1,3 +1,25 @@
+//! # inquiSTR
+//!
+//! A high-performance toolkit for genotyping and analyzing Short Tandem Repeats (STRs)
+//! from long-read sequencing data. Optimized for Oxford Nanopore Technologies (ONT) data
+//! with support for phased and unphased analysis.
+//!
+//! ## Features
+//!
+//! - **Fast STR genotyping** with memory-efficient batch processing
+//! - **Phased analysis** using HP tags from phased BAM files  
+//! - **Multi-sample analysis** with outlier detection
+//! - **Multiple output formats** including TSV and plots
+//! - **Quality control** with comprehensive validation
+//!
+//! ## Performance
+//!
+//! inquiSTR uses several optimizations for processing millions of STR targets:
+//! - Region batching to minimize I/O operations
+//! - Memory-efficient read processing
+//! - Parallel processing for multi-sample workflows
+//! - Optimized data structures for STR call storage
+
 use clap::{Parser, Subcommand};
 use log::info;
 use std::{io::BufRead, path::PathBuf};
@@ -199,14 +221,7 @@ fn main() {
         Commands::Scan {} => {
             unimplemented!();
         }
-        Commands::Outlier {
-            combined,
-            minsize,
-            zscore,
-            method,
-            sample,
-            subset,
-        } => {
+        Commands::Outlier { combined, minsize, zscore, method, sample, subset } => {
             if !combined.exists() {
                 panic!("Combined file does not exist!");
             }
@@ -247,13 +262,9 @@ fn main() {
         //         covariates,
         //     );
         // }
-        Commands::Plot {
-            combined,
-            metadata,
-            condition,
-            region,
-            output,
-        } => plot::plot(combined, metadata, condition, region, output),
+        Commands::Plot { combined, metadata, condition, region, output } => {
+            plot::plot(combined, metadata, condition, region, output)
+        }
     }
 }
 

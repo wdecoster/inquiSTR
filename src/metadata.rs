@@ -30,11 +30,7 @@ pub fn parse_phenotypes(
         .map(|(index, _)| index)
         .next()
         .unwrap_or_else(|| {
-            panic!(
-                "Could not find column {} in {}",
-                pheno_column,
-                metadata.display()
-            )
+            panic!("Could not find column {} in {}", pheno_column, metadata.display())
         });
     let mut samples_of_interest: Vec<Individual> = vec![];
     for line in lines {

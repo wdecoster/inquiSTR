@@ -5,10 +5,9 @@ use std::io::{BufReader, Read};
 /// Read normal or compressed files seamlessly
 /// Uses the presence of a `.gz` extension to decide
 pub fn reader(filename: &str) -> BufReader<Box<dyn Read>> {
-    let (reader, _) = niffler::get_reader(Box::new(
-        File::open(filename).expect("Problem opening file"),
-    ))
-    .expect("Problem reading file");
+    let (reader, _) =
+        niffler::get_reader(Box::new(File::open(filename).expect("Problem opening file")))
+            .expect("Problem reading file");
     BufReader::new(reader)
 }
 

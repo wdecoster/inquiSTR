@@ -438,10 +438,7 @@ fn genotype_repeat_phased(
             }
 
             let call = call_from_cigar(r, minlen, start_ext, end_ext);
-            calls.push(
-                phase.expect("Couldn't get phase - this shouldn't happen"),
-                call,
-            );
+            calls.push(phase.expect("Couldn't get phase - this shouldn't happen"), call);
         }
         info!(
             "Found {}[H1]+{}[H2] reads for genotyping",
@@ -869,10 +866,7 @@ fn process_batch(
     // Fetch the entire batch region once
     if let Some(tid) = bam.header().tid(chrom.as_bytes()) {
         if let Err(e) = bam.fetch((tid, batch_start, batch_end)) {
-            warn!(
-                "Failed to fetch batch region {}:{}-{}: {}",
-                chrom, batch_start, batch_end, e
-            );
+            warn!("Failed to fetch batch region {}:{}-{}: {}", chrom, batch_start, batch_end, e);
             return;
         }
 
@@ -1030,11 +1024,7 @@ fn process_target_from_read_info(
         }
 
         if calls.len() < support {
-            return Err(format!(
-                "Insufficient support: {} < {}",
-                calls.len(),
-                support
-            ));
+            return Err(format!("Insufficient support: {} < {}", calls.len(), support));
         }
 
         calls.sort_unstable_by_key(|call| call.value());
@@ -1074,10 +1064,7 @@ fn process_target_from_read_info(
 
         let total_reads = calls.phase1.len() + calls.phase2.len() + calls.unphased.len();
         if total_reads < support {
-            return Err(format!(
-                "Insufficient support: {} < {}",
-                total_reads, support
-            ));
+            return Err(format!("Insufficient support: {} < {}", total_reads, support));
         }
 
         calls.phase1.sort_unstable_by_key(|call| call.value());

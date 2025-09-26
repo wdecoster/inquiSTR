@@ -21,11 +21,7 @@ impl RepeatIntervalIterator {
             .unwrap();
         let repeat = RepeatInterval::new_interval(chrom, start, end, &chrom_lengths)
             .expect("Failed to create repeat interval");
-        RepeatIntervalIterator {
-            current_index: 0,
-            data: vec![repeat],
-            num_intervals: 1,
-        }
+        RepeatIntervalIterator { current_index: 0, data: vec![repeat], num_intervals: 1 }
     }
     pub fn from_bed(region_file: &String, chrom_lengths: HashMap<String, u64>) -> Self {
         let mut reader = bed::Reader::from_file(region_file).expect("Problem reading bed file!");
@@ -38,21 +34,13 @@ impl RepeatIntervalIterator {
                 data.push(repeat);
             }
         }
-        RepeatIntervalIterator {
-            current_index: 0,
-            data: data.clone(),
-            num_intervals: data.len(),
-        }
+        RepeatIntervalIterator { current_index: 0, data: data.clone(), num_intervals: data.len() }
     }
 }
 
 impl Clone for RepeatInterval {
     fn clone(&self) -> Self {
-        RepeatInterval {
-            chrom: self.chrom.clone(),
-            start: self.start,
-            end: self.end,
-        }
+        RepeatInterval { chrom: self.chrom.clone(), start: self.start, end: self.end }
     }
 }
 
@@ -115,10 +103,6 @@ impl RepeatInterval {
         );
     }
     pub fn new(chrom: &str, start: u32, end: u32) -> Self {
-        Self {
-            chrom: chrom.to_string(),
-            start,
-            end,
-        }
+        Self { chrom: chrom.to_string(), start, end }
     }
 }
