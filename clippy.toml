@@ -11,7 +11,7 @@ too-many-arguments-threshold = 10
 max-include-file-size = 1000000
 
 # The minimum rust version supporting the following configuration
-msrv = "1.70.0"
+msrv = "1.88.0"
 
 # Lint level for cognitive complexity
 cognitive-complexity-threshold = 30

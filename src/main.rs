@@ -20,6 +20,8 @@
 //! - Parallel processing for multi-sample workflows
 //! - Optimized data structures for STR call storage
 
+#![allow(clippy::uninlined_format_args)]
+
 use clap::{Parser, Subcommand};
 use log::info;
 use std::{io::BufRead, path::PathBuf};

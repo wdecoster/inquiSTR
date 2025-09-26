@@ -10,8 +10,7 @@ allow = [
     "BSD-2-Clause",
     "BSD-3-Clause", 
     "ISC",
-    "Unicode-DFS-2016",
-    "MPL-2.0",
+    "Unicode-3.0",  # Unicode License v3 - used by ICU/Unicode crates
 ]
 
 # Confidence threshold for detecting licenses
@@ -25,9 +24,37 @@ wildcards = "warn"
 
 # Skip certain crates for multiple version checks
 skip = [
-    # Common crates that often have multiple versions
-    { name = "bitflags" },
-    { name = "syn" },
+    # Common crates that often have multiple versions due to ecosystem splits
+    { name = "syn", reason = "Used by many proc macros, version 1.0 vs 2.0 ecosystem split" },
+    { name = "quote", reason = "Proc macro ecosystem, version 0.6 vs 1.0 ecosystem split" },
+    { name = "proc-macro2", reason = "Proc macro ecosystem, version 0.4 vs 1.0 ecosystem split" },
+    { name = "rand", reason = "Machine learning crates require different rand versions" },
+    { name = "rand_core", reason = "Part of rand ecosystem version splits" },
+    { name = "rand_chacha", reason = "Part of rand ecosystem version splits" },
+    { name = "thiserror", reason = "Error handling, v1 vs v2 ecosystem split" },
+    { name = "thiserror-impl", reason = "Part of thiserror ecosystem" },
+    { name = "rustc-hash", reason = "Bindgen vs other crates use different versions" },
+    { name = "wasi", reason = "WASI versions for different platform targets" },
+    { name = "getrandom", reason = "Random number generation, version compatibility" },
+    { name = "approx", reason = "Math libraries use different approximation versions" },
+    { name = "derive-new", reason = "Derive macro versions for different ecosystems" },
+    { name = "hashbrown", reason = "HashMap implementation versions" },
+    { name = "indexmap", reason = "Ordered map versions for different ecosystems" },
+    { name = "itertools", reason = "Iterator utilities, ecosystem compatibility" },
+    { name = "ndarray", reason = "Linear algebra, version compatibility" },
+    { name = "noisy_float", reason = "Floating point handling versions" },
+    # Windows platform support
+    { name = "windows-sys", reason = "Windows API versions for different features" },
+    { name = "windows-targets", reason = "Windows target specifications" },
+    { name = "windows-link", reason = "Windows linking support" },
+    { name = "windows_aarch64_gnullvm", reason = "Windows ARM64 target support" },
+    { name = "windows_aarch64_msvc", reason = "Windows ARM64 MSVC target" },
+    { name = "windows_i686_gnu", reason = "Windows 32-bit GNU target" },
+    { name = "windows_i686_gnullvm", reason = "Windows 32-bit GNU LLVM target" },
+    { name = "windows_i686_msvc", reason = "Windows 32-bit MSVC target" },
+    { name = "windows_x86_64_gnu", reason = "Windows 64-bit GNU target" },
+    { name = "windows_x86_64_gnullvm", reason = "Windows 64-bit GNU LLVM target" },
+    { name = "windows_x86_64_msvc", reason = "Windows 64-bit MSVC target" },
 ]
 
 [advisories]
@@ -35,12 +62,14 @@ skip = [
 db-path = "~/.cargo/advisory-db"
 # The url(s) of the advisory databases to use
 db-urls = ["https://github.com/rustsec/advisory-db"]
-# The lint level for security vulnerabilities
-vulnerability = "deny"
-# The lint level for unmaintained crates
-unmaintained = "warn"
-# The lint level for crates with security notices
-notice = "warn"
+
+# Handle known unmaintained crates that are still widely used
+ignore = [
+    # Bio crate dependencies that are unmaintained but still functional
+    "RUSTSEC-2025-0058",  # custom_derive - widely used in bio ecosystem
+    "RUSTSEC-2025-0057",  # fxhash - used by bio, has replacement but not critical
+    "RUSTSEC-2024-0436",  # paste - used by nalgebra/simba, archived but stable
+]
 
 [sources]
 # Lint level for what to happen when a crate from a git repository is encountered

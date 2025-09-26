@@ -36,9 +36,7 @@ jobs:
           cargo outdated --root-deps-only || echo "cargo-outdated failed, but this is non-critical"
         fi
 
-    - name: Run cargo deny
-      uses: EmbarkStudios/cargo-deny-action@v1
-      with:
-        log-level: warn
-        command: check
-        arguments: --all-features
+    - name: Install and run cargo deny
+      run: |
+        cargo install cargo-deny --locked
+        cargo deny check

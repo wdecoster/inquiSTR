@@ -46,7 +46,7 @@ url = "2.5.7"
 hts-sys = "2.2.0"
 
 [dev-dependencies]
-ctor = "*"
+ctor = "0.2.8"
 
 # Optimization profiles
 [profile.release]
