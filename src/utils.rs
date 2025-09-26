@@ -1,13 +1,16 @@
-use niffler;
+use flate2::read::GzDecoder;
 use std::fs::File;
 use std::io::{BufReader, Read};
 
 /// Read normal or compressed files seamlessly
 /// Uses the presence of a `.gz` extension to decide
 pub fn reader(filename: &str) -> BufReader<Box<dyn Read>> {
-    let (reader, _) =
-        niffler::get_reader(Box::new(File::open(filename).expect("Problem opening file")))
-            .expect("Problem reading file");
+    let file = File::open(filename).expect("Problem opening file");
+    let reader: Box<dyn Read> = if filename.ends_with(".gz") {
+        Box::new(GzDecoder::new(file))
+    } else {
+        Box::new(file)
+    };
     BufReader::new(reader)
 }
 
