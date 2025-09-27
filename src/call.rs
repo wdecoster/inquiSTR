@@ -1016,7 +1016,7 @@ fn process_target_from_read_info(
 
         for read_info in read_infos {
             // Check if this read overlaps with our target region
-            if start_ext < read_info.start || read_info.end < end_ext {
+            if read_info.start > end_ext || read_info.end < start_ext {
                 continue;
             }
 
@@ -1045,7 +1045,7 @@ fn process_target_from_read_info(
 
         for read_info in read_infos {
             // Check if this read overlaps with our target region
-            if start_ext < read_info.start || read_info.end < end_ext {
+            if read_info.start > end_ext || read_info.end < start_ext {
                 continue;
             }
 
