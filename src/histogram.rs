@@ -1,38 +1,30 @@
 use histo_fp::Histogram;
-use std::io::BufRead;
 use std::path::PathBuf;
+use crate::locus_search::{LocusSearchConfig, find_locus, OverlapStrategy};
 
 pub fn histogram(combined: PathBuf, region: String) {
     if !combined.exists() {
         panic!("Combined file does not exist!");
     }
-    let file = crate::utils::reader(&combined.into_os_string().into_string().unwrap());
-    let lines = file.lines();
 
-    let (chrom, reg_start, reg_end) = crate::utils::process_region(region).unwrap();
-    // Add a tab character to the chromosome so we can search for this with starts_with below (to make sure chr1 does not match chr15)
-    let reg_chrom = format!("{chrom}\t");
-
-    for line in lines {
-        let line = line.unwrap();
-        if line.starts_with(&reg_chrom) {
-            let splitline = line.split('\t').collect::<Vec<&str>>();
-            let begin: u32 = splitline[1].parse().expect("Failed parsing interval");
-            let end: u32 = splitline[2].parse().expect("Failed parsing interval");
-            if reg_start <= begin && end <= reg_end {
-                let mut histogram = Histogram::with_buckets(100, Some(2));
-                for value in splitline
-                    .iter()
-                    .skip(3)
-                    .map(|number| number.parse::<f64>().expect("Failed parsing lengths"))
-                {
-                    if !value.is_nan() {
-                        histogram.add(value);
-                    }
-                }
-                println!("{histogram}");
-                break;
+    // Use the new locus search utility with containment strategy (original behavior)
+    let config = LocusSearchConfig {
+        combined_file: combined,
+        target_region: region,
+        overlap_strategy: OverlapStrategy::Containment,
+    };
+    
+    if let Some(locus_match) = find_locus(config) {
+        let mut histogram = Histogram::with_buckets(100, Some(2));
+        
+        for value in locus_match.values {
+            if !value.is_nan() {
+                histogram.add(value);
             }
         }
+        
+        println!("{histogram}");
+    } else {
+        eprintln!("No matching interval found");
     }
 }

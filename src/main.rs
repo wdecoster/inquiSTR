@@ -29,6 +29,7 @@ use std::{io::BufRead, path::PathBuf};
 pub mod call;
 pub mod combine;
 pub mod histogram;
+pub mod locus_search;
 pub mod metadata;
 pub mod outlier;
 pub mod pca;
