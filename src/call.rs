@@ -875,8 +875,8 @@ fn process_batch(
         for record_result in bam.rc_records() {
             match record_result {
                 Ok(record) => {
-                    // Extract only the essential information, not full BAM records
-                    let read_info = ReadInfo::from_record(&record, minlen);
+                    // Extract only the essential information, but keep the record for region-specific analysis
+                    let read_info = ReadInfo::from_record((*record).clone(), minlen);
                     if read_info.mapq > 10 {
                         batch_reads.push(read_info);
                     }
@@ -890,7 +890,7 @@ fn process_batch(
 
         // Process each target in the batch using the lightweight read info
         for repeat in batch {
-            let result = process_target_from_read_info(&batch_reads, repeat, support, unphased);
+            let result = process_target_from_read_info(&batch_reads, repeat, minlen, support, unphased);
 
             match result {
                 Ok((genotype, had_hp_tags)) => {
@@ -935,11 +935,11 @@ struct ReadInfo {
     end: u32,
     mapq: u8,
     hp_tag: Option<u8>,
-    str_call: Call,
+    record: rust_htslib::bam::Record, // We need the full record for region-specific CIGAR analysis
 }
 
 impl ReadInfo {
-    fn from_record(record: &rust_htslib::bam::Record, minlen: u32) -> Self {
+    fn from_record(record: rust_htslib::bam::Record, _minlen: u32) -> Self {
         // Extract HP tag if present
         let hp_tag = record.aux(b"HP").ok().and_then(|aux| match aux {
             rust_htslib::bam::record::Aux::U8(val) => Some(val),
@@ -947,57 +947,59 @@ impl ReadInfo {
             _ => None,
         });
 
-        // Calculate STR call from CIGAR without storing the full record
-        let str_call = calculate_str_call_inline(record, minlen);
-
         ReadInfo {
             start: record.reference_start() as u32,
             end: record.reference_end() as u32,
             mapq: record.mapq(),
             hp_tag,
-            str_call,
+            record,
         }
     }
-}
+    
+    /// Calculate region-specific STR call for this read
+    fn calculate_str_call_for_region(&self, minlen: u32, start: u32, end: u32) -> Call {
+        let mut call: i64 = 0;
+        let mut reference_position = (self.record.reference_start() + 1) as u32;
+        let mut clipped = false;
 
-/// Calculate STR call directly from record without cloning
-fn calculate_str_call_inline(record: &rust_htslib::bam::Record, minlen: u32) -> Call {
-    let mut call: i64 = 0;
-    let mut _reference_position = (record.reference_start() + 1) as u32; // Track position but not needed for STR calc
-    let mut clipped = false;
-
-    for entry in record.cigar().iter() {
-        match entry {
-            rust_htslib::bam::record::Cigar::Match(len)
-            | rust_htslib::bam::record::Cigar::Equal(len)
-            | rust_htslib::bam::record::Cigar::Diff(len) => {
-                _reference_position += *len;
-            }
-            rust_htslib::bam::record::Cigar::Del(len) => {
-                if *len > minlen {
-                    call -= i64::from(*len);
+        for entry in self.record.cigar().iter() {
+            match entry {
+                rust_htslib::bam::record::Cigar::Match(len) 
+                | rust_htslib::bam::record::Cigar::Equal(len) 
+                | rust_htslib::bam::record::Cigar::Diff(len) => {
+                    reference_position += *len;
                 }
-                _reference_position += *len;
-            }
-            rust_htslib::bam::record::Cigar::Ins(len) => {
-                if *len > minlen {
-                    call += i64::from(*len);
+                rust_htslib::bam::record::Cigar::Del(len) => {
+                    if *len > minlen && start < reference_position && reference_position < end {
+                        call -= i64::from(*len);
+                    }
+                    reference_position += *len;
                 }
-            }
-            rust_htslib::bam::record::Cigar::SoftClip(len) => {
-                if *len > minlen {
-                    clipped = true;
+                rust_htslib::bam::record::Cigar::SoftClip(len) => {
+                    if !is_accidental_2d(&self.record)
+                        && *len > minlen
+                        && start < reference_position
+                        && reference_position < end
+                    {
+                        call += i64::from(*len);
+                        clipped = true;
+                    }
                 }
+                rust_htslib::bam::record::Cigar::Ins(len) => {
+                    if *len > minlen && start < reference_position && reference_position < end {
+                        call += i64::from(*len);
+                    }
+                }
+                rust_htslib::bam::record::Cigar::RefSkip(len) => reference_position += *len,
+                _ => (),
             }
-            rust_htslib::bam::record::Cigar::RefSkip(len) => _reference_position += *len,
-            _ => (),
         }
-    }
-
-    if clipped {
-        Call::Clip(call)
-    } else {
-        Call::Span(call)
+        
+        if clipped {
+            Call::Clip(call)
+        } else {
+            Call::Span(call)
+        }
     }
 }
 
@@ -1005,6 +1007,7 @@ fn calculate_str_call_inline(record: &rust_htslib::bam::Record, minlen: u32) -> 
 fn process_target_from_read_info(
     read_infos: &[ReadInfo],
     repeat: &RepeatInterval,
+    minlen: u32,
     support: usize,
     unphased: bool,
 ) -> Result<(Genotype, bool), String> {
@@ -1020,7 +1023,9 @@ fn process_target_from_read_info(
                 continue;
             }
 
-            calls.push(read_info.str_call);
+            // Calculate region-specific STR call
+            let str_call = read_info.calculate_str_call_for_region(minlen, start_ext, end_ext);
+            calls.push(str_call);
         }
 
         if calls.len() < support {
@@ -1052,13 +1057,19 @@ fn process_target_from_read_info(
             // Check for phasing information
             if let Some(hp_tag) = read_info.hp_tag {
                 found_hp_tags = true;
+                
+                // Calculate region-specific STR call
+                let str_call = read_info.calculate_str_call_for_region(minlen, start_ext, end_ext);
+                
                 match hp_tag {
-                    1 => calls.phase1.push(read_info.str_call),
-                    2 => calls.phase2.push(read_info.str_call),
-                    _ => calls.unphased.push(read_info.str_call),
+                    1 => calls.phase1.push(str_call),
+                    2 => calls.phase2.push(str_call),
+                    _ => calls.unphased.push(str_call),
                 }
             } else {
-                calls.unphased.push(read_info.str_call);
+                // Calculate region-specific STR call
+                let str_call = read_info.calculate_str_call_for_region(minlen, start_ext, end_ext);
+                calls.unphased.push(str_call);
             }
         }
 
