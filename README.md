@@ -99,6 +99,7 @@ Options:
   -u, --unphased                   If reads have to be considered unphased
       --sample-name <SAMPLE_NAME>  sample name to use in output
       --reference <REFERENCE>      reference fasta for cram decoding
+      --max-locus <MAX_LOCUS>      maximum locus size to consider (intervals larger than this will be filtered out)
   -h, --help                       Print help
 ```
 
@@ -110,6 +111,9 @@ inquiSTR call sample.bam -r chr1:1000-1100
 
 # Multiple regions from BED file
 inquiSTR call sample.bam -R regions.bed
+
+# Filter out large intervals (>10kb) that may span problematic regions
+inquiSTR call sample.bam -R regions.bed --max-locus 10000
 
 # Multithreaded processing with custom parameters
 inquiSTR call sample.bam -R regions.bed --threads 8 --minlen 10 --support 5
