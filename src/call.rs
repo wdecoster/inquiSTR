@@ -111,65 +111,70 @@ pub fn genotype_repeats(
     let file_header = format!("chromosome\tbegin\tend\t{sample}_H1\t{sample}_H2");
     let repeats = get_targets(region, region_file, &bamp, max_locus);
     if threads > 1 {
+        // Hybrid approach: Process chromosomes in parallel with batched I/O per chromosome
+        // This limits IndexedReaders to thread count while maintaining I/O efficiency
+        
+        // Collect and group all repeats by chromosome
+        let all_repeats: Vec<RepeatInterval> = repeats.collect();
+        let mut by_chromosome: std::collections::HashMap<String, Vec<RepeatInterval>> = 
+            std::collections::HashMap::new();
+        
+        for repeat in all_repeats {
+            by_chromosome.entry(repeat.chrom.clone()).or_default().push(repeat);
+        }
+        
+        // Sort repeats within each chromosome for optimal batching
+        for chrom_repeats in by_chromosome.values_mut() {
+            chrom_repeats.sort_by(|a, b| a.start.cmp(&b.start));
+        }
+        
+        // Convert to ordered vector for processing
+        let chromosomes: Vec<(String, Vec<RepeatInterval>)> = by_chromosome.into_iter().collect();
+        let total_loci = chromosomes.iter().map(|(_, repeats)| repeats.len()).sum::<usize>();
+        
+        // Setup progress bar and shared state
+        let pb = indicatif::ProgressBar::new(total_loci as u64);
+        pb.set_style(
+            indicatif::ProgressStyle::default_bar()
+                .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} loci ({eta})")
+                .expect("Failed to set progress bar template")
+        );
+        
+        let genotypes = Mutex::new(Vec::new());
+        let chrom_reported = Mutex::new(Vec::new());
+        let unphased_loci_count = Mutex::new(0usize);
+        let phased_loci_seen = Mutex::new(false);
+        
+        // Process chromosomes in parallel, limited by thread count
         rayon::ThreadPoolBuilder::new()
             .num_threads(threads)
             .build()
             .expect("Failed to build thread pool");
-        // chrom_reported and genotypes are vectors that are used by multiple threads to add findings, therefore as a Mutex
-        // chrom_reported contains those chromosomes for which an error (absence in the bam) was already reported
-        // to avoid reporting the same error multiple times
-        let chrom_reported = Mutex::new(Vec::new());
-        // genotypes contains the output of the genotyping, a struct instance
-        let genotypes = Mutex::new(Vec::new());
-        // Track loci with no phased reads and whether we've seen any phased loci in multithreaded mode
-        let unphased_loci_count = Mutex::new(0usize);
-        let phased_loci_seen = Mutex::new(false);
-        let num_intervals = repeats.num_intervals;
-        repeats
-            .par_bridge()
-            .progress_count(num_intervals as u64)
-            .for_each(|repeat| {
-                match genotype_repeat_multithreaded(
-                    &bamp,
-                    repeat.clone(),
+            
+        chromosomes
+            .into_par_iter()
+            .for_each(|(chrom, chrom_repeats)| {
+                // Each thread processes one chromosome with batched I/O
+                let mut bam = get_bam_reader(&bamp, &reference);
+                
+                // Process this chromosome using batched approach
+                genotype_chromosome_batched(
+                    &mut bam,
+                    chrom_repeats,
                     minlen,
                     support,
                     unphased,
-                    &reference,
-                ) {
-                    Ok(output) => {
-                        // Check if this locus had phased reads when running in phased mode
-                        if !unphased {
-                            if output.phase1.is_nan() && output.phase2.is_nan() {
-                                let mut unphased_count = unphased_loci_count
-                                    .lock()
-                                    .expect("Failed to lock unphased_loci_count");
-                                *unphased_count += 1;
-                            } else if !output.phase1.is_nan() || !output.phase2.is_nan() {
-                                // We found at least one locus with phased reads
-                                let mut phased_seen = phased_loci_seen
-                                    .lock()
-                                    .expect("Failed to lock phased_loci_seen");
-                                *phased_seen = true;
-                            }
-                        }
+                    &genotypes,
+                    &chrom_reported,
+                    &unphased_loci_count,
+                    &phased_loci_seen,
+                    &pb,
+                );
 
                         let mut geno = genotypes.lock().expect("Failed to lock genotypes");
-                        geno.push(output);
-                    }
-                    Err(locus) => {
-                        // For now the Err is only used for when a chromosome or (extended) interval from the bed file does not appear in the bam file
-                        // this error is reported once per locus
-                        let mut chroms_reported = chrom_reported
-                            .lock()
-                            .expect("Failed to lock chrom_reported");
-                        if !chroms_reported.contains(&locus) {
-                            warn!("{locus} not found in bam file");
-                            chroms_reported.push(locus);
-                        }
-                    }
-                };
             });
+        
+        pb.finish_with_message("Completed chromosome-parallel processing");
         let mut genotypes_vec = genotypes.lock().expect("Failed to lock genotypes");
         // Check the proportion of unphased loci in multithreaded mode, but only if no phased loci were seen
         if !unphased && !genotypes_vec.is_empty() {
@@ -269,6 +274,209 @@ fn get_targets(
         _ => {
             eprintln!("ERROR: Specify a region string (-r) or a region_file (-R)!\n");
             std::process::exit(1);
+        }
+    }
+}
+
+/// Process a single chromosome using batched I/O for efficient parallel processing
+/// This combines the memory efficiency of batching with chromosome-level parallelism
+fn genotype_chromosome_batched(
+    bam: &mut bam::IndexedReader,
+    chrom_repeats: Vec<RepeatInterval>,
+    minlen: u32,
+    support: usize,
+    unphased: bool,
+    genotypes: &Mutex<Vec<Genotype>>,
+    chrom_reported: &Mutex<Vec<String>>,
+    unphased_loci_count: &Mutex<usize>,
+    phased_loci_seen: &Mutex<bool>,
+    pb: &indicatif::ProgressBar,
+) {
+    if chrom_repeats.is_empty() {
+        return;
+    }
+    
+    let chrom = chrom_repeats[0].chrom.clone();
+    let mut consecutive_unphased_loci = 0usize;
+    let mut has_seen_phased_locus = false;
+    
+    // Process repeats in batches within this chromosome
+    let mut current_batch = Vec::new();
+    let mut current_end = 0u32;
+    
+    for repeat in chrom_repeats.into_iter() {
+        // Check if this repeat should be added to current batch or start a new batch
+        const BATCH_DISTANCE_THRESHOLD: u32 = 50000; // Batch targets within 50kb
+        let should_batch = !current_batch.is_empty() 
+            && repeat.start <= current_end + BATCH_DISTANCE_THRESHOLD;
+            
+        if should_batch {
+            // Add to current batch and extend the region
+            current_end = std::cmp::max(current_end, repeat.end.saturating_add(10));
+            current_batch.push(repeat);
+        } else {
+            // Process the current batch if it exists
+            if !current_batch.is_empty() {
+                process_chromosome_batch(
+                    bam,
+                    &current_batch,
+                    &chrom,
+                    current_end,
+                    minlen,
+                    support,
+                    unphased,
+                    &mut consecutive_unphased_loci,
+                    &mut has_seen_phased_locus,
+                    genotypes,
+                    chrom_reported,
+                    unphased_loci_count,
+                    phased_loci_seen,
+                    pb,
+                );
+            }
+            
+            // Start new batch
+            current_end = repeat.end.saturating_add(10);
+            current_batch = vec![repeat];
+        }
+    }
+    
+    // Process the final batch
+    if !current_batch.is_empty() {
+        process_chromosome_batch(
+            bam,
+            &current_batch,
+            &chrom,
+            current_end,
+            minlen,
+            support,
+            unphased,
+            &mut consecutive_unphased_loci,
+            &mut has_seen_phased_locus,
+            genotypes,
+            chrom_reported,
+            unphased_loci_count,
+            phased_loci_seen,
+            pb,
+        );
+    }
+}
+
+/// Process a batch of repeats within a chromosome for the parallel chromosome approach
+#[allow(clippy::too_many_arguments)]
+fn process_chromosome_batch(
+    bam: &mut bam::IndexedReader,
+    batch: &[RepeatInterval],
+    chrom: &str,
+    batch_end: u32,
+    minlen: u32,
+    support: usize,
+    unphased: bool,
+    consecutive_unphased_loci: &mut usize,
+    has_seen_phased_locus: &mut bool,
+    genotypes: &Mutex<Vec<Genotype>>,
+    chrom_reported: &Mutex<Vec<String>>,
+    unphased_loci_count: &Mutex<usize>,
+    phased_loci_seen: &Mutex<bool>,
+    pb: &indicatif::ProgressBar,
+) {
+    if batch.is_empty() {
+        return;
+    }
+
+    let batch_start = batch.first().unwrap().start.saturating_sub(10);
+
+    // Fetch the entire batch region once
+    if let Some(tid) = bam.header().tid(chrom.as_bytes()) {
+        if let Err(e) = bam.fetch((tid, batch_start, batch_end)) {
+            warn!("Failed to fetch batch region {}:{}-{}: {}", chrom, batch_start, batch_end, e);
+            return;
+        }
+
+        // Use the same efficient batched processing as single-threaded mode
+        let target_intervals_with_idx: Vec<(u32, u32, usize)> = batch.iter().enumerate()
+            .map(|(idx, repeat)| (repeat.start.saturating_sub(100), repeat.end + 100, idx))
+            .collect();
+        
+        let mut batch_reads = Vec::new();
+        let mut total_reads_fetched = 0;
+        let mut overlapping_reads = 0;
+        
+        for record_result in bam.rc_records() {
+            match record_result {
+                Ok(record) => {
+                    total_reads_fetched += 1;
+                    let read_start = record.reference_start() as u32;
+                    let read_end = record.reference_end() as u32;
+                    let mapq = record.mapq();
+                    
+                    if mapq <= 10 {
+                        continue;
+                    }
+                    
+                    let overlapping_targets: Vec<_> = target_intervals_with_idx.iter()
+                        .filter(|&&(target_start, target_end, _)| {
+                            !(read_end < target_start || read_start > target_end)
+                        })
+                        .collect();
+                    
+                    if !overlapping_targets.is_empty() {
+                        overlapping_reads += 1;
+                        let overlapping_targets_slice: Vec<(u32, u32, usize)> = overlapping_targets.into_iter().copied().collect();
+                        let read_info = ReadInfo::from_record_with_targets((*record).clone(), minlen, &overlapping_targets_slice, batch);
+                        batch_reads.push(read_info);
+                    }
+                }
+                Err(e) => {
+                    warn!("Error reading BAM record in batch {}: {}", chrom, e);
+                    continue;
+                }
+            }
+        }
+        
+        // Process each target in the batch using the lightweight read info
+        for repeat in batch {
+            let result = process_target_from_read_info(&batch_reads, repeat, minlen, support, unphased);
+
+            match result {
+                Ok((genotype, had_hp_tags)) => {
+                    if !unphased {
+                        if had_hp_tags {
+                            *has_seen_phased_locus = true;
+                            *consecutive_unphased_loci = 0;
+                        } else {
+                            *consecutive_unphased_loci += 1;
+                            if *consecutive_unphased_loci >= 20 && !*has_seen_phased_locus {
+                                error!("Validation failed: 20+ consecutive loci without HP tags and no phased loci seen");
+                                error!("This suggests the BAM file lacks phasing information (HP tags)");
+                                error!("Consider using --unphased flag or check if your data is phased");
+                                std::process::exit(1);
+                            }
+                        }
+                        
+                        // Update global counters
+                        if genotype.phase1.is_nan() && genotype.phase2.is_nan() {
+                            let mut unphased_count = unphased_loci_count.lock().expect("Failed to lock unphased_loci_count");
+                            *unphased_count += 1;
+                        } else if !genotype.phase1.is_nan() || !genotype.phase2.is_nan() {
+                            let mut phased_seen = phased_loci_seen.lock().expect("Failed to lock phased_loci_seen");
+                            *phased_seen = true;
+                        }
+                    }
+
+                    let mut geno = genotypes.lock().expect("Failed to lock genotypes");
+                    geno.push(genotype);
+                }
+                Err(locus) => {
+                    let mut chroms_reported = chrom_reported.lock().expect("Failed to lock chrom_reported");
+                    if !chroms_reported.contains(&locus) {
+                        warn!("{locus} not found in bam file");
+                        chroms_reported.push(locus);
+                    }
+                }
+            }
+            
+            pb.inc(1);
         }
     }
 }
@@ -422,6 +630,7 @@ fn genotype_repeat_phased(
     minlen: u32,
     support: usize,
 ) -> Result<Genotype, String> {
+    // use max to ensure the start does not become negative
     let start_ext = max(repeat.start - 10, 0);
     let end_ext = repeat.end.saturating_add(10);
     if let Some(tid) = bam.header().tid(repeat.chrom.as_bytes()) {
