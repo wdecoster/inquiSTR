@@ -914,10 +914,19 @@ fn process_batch(
                     println!("{genotype}");
                 }
                 Err(e) => {
+                    // Output NaN genotype for failed targets (matches original behavior)
                     warn!(
                         "Failed to process target {}:{}-{}: {}",
                         repeat.chrom, repeat.start, repeat.end, e
                     );
+                    
+                    let failed_genotype = Genotype {
+                        repeat: repeat.clone(),
+                        phase1: f64::NAN,
+                        phase2: f64::NAN,
+                    };
+                    
+                    println!("{failed_genotype}");
                 }
             }
 
