@@ -1,11 +1,11 @@
 use hts_sys;
 use human_sort::compare as human_compare;
-use indicatif::ParallelProgressIterator;
+
 use log::debug;
-use log::{error, info, warn};
+use log::{error, warn};
 use rayon::prelude::*;
 use rust_htslib::bam::ext::BamRecordExtensions;
-use rust_htslib::bam::record::{Aux, Cigar};
+use rust_htslib::bam::record::Aux;
 use rust_htslib::{bam, bam::Read};
 use std::cmp::max;
 use std::cmp::Ordering;
@@ -14,7 +14,7 @@ use std::env;
 use std::fmt;
 use std::io::{self, Write};
 use std::path::PathBuf;
-use std::rc::Rc;
+
 use std::sync::Mutex;
 use url::Url;
 
@@ -153,7 +153,7 @@ pub fn genotype_repeats(
             
         chromosomes
             .into_par_iter()
-            .for_each(|(chrom, chrom_repeats)| {
+            .for_each(|(_chrom, chrom_repeats)| {
                 // Each thread processes one chromosome with batched I/O
                 let mut bam = get_bam_reader(&bamp, &reference);
                 
@@ -170,8 +170,6 @@ pub fn genotype_repeats(
                     &phased_loci_seen,
                     &pb,
                 );
-
-                        let mut geno = genotypes.lock().expect("Failed to lock genotypes");
             });
         
         pb.finish_with_message("Completed chromosome-parallel processing");
@@ -399,13 +397,10 @@ fn process_chromosome_batch(
             .collect();
         
         let mut batch_reads = Vec::new();
-        let mut total_reads_fetched = 0;
-        let mut overlapping_reads = 0;
         
         for record_result in bam.rc_records() {
             match record_result {
                 Ok(record) => {
-                    total_reads_fetched += 1;
                     let read_start = record.reference_start() as u32;
                     let read_end = record.reference_end() as u32;
                     let mapq = record.mapq();
@@ -421,7 +416,6 @@ fn process_chromosome_batch(
                         .collect();
                     
                     if !overlapping_targets.is_empty() {
-                        overlapping_reads += 1;
                         let overlapping_targets_slice: Vec<(u32, u32, usize)> = overlapping_targets.into_iter().copied().collect();
                         let read_info = ReadInfo::from_record_with_targets((*record).clone(), minlen, &overlapping_targets_slice, batch);
                         batch_reads.push(read_info);
@@ -481,27 +475,7 @@ fn process_chromosome_batch(
     }
 }
 
-/// This function genotypes a particular repeat defined by chrom, start and end in the specified bam file
-/// All indel cigar operations longer than minlen are considered
-/// The bam file is expected to be phased using the HP tag
-/// This function is specific to multithreaded use, as it takes a String for the bam rather than the Reader
-/// The function below is the single threaded version
-fn genotype_repeat_multithreaded(
-    bamf: &String,
-    repeat: RepeatInterval,
-    minlen: u32,
-    support: usize,
-    unphased: bool,
-    reference: &Option<String>,
-) -> Result<Genotype, String> {
-    let mut bam = get_bam_reader(bamf, reference);
-    info!("Checks passed, genotyping repeat");
-    if unphased {
-        genotype_repeat_unphased(&mut bam, repeat, minlen, support)
-    } else {
-        genotype_repeat_phased(&mut bam, repeat, minlen, support)
-    }
-}
+
 
 fn get_bam_reader(bamp: &String, reference: &Option<String>) -> bam::IndexedReader {
     let mut bam = if bamp.starts_with("s3") || bamp.starts_with("https://") {
@@ -546,188 +520,13 @@ fn get_bam_reader(bamp: &String, reference: &Option<String>) -> bam::IndexedRead
     bam
 }
 
-fn genotype_repeat_unphased(
-    bam: &mut bam::IndexedReader,
-    repeat: RepeatInterval,
-    minlen: u32,
-    support: usize,
-) -> Result<Genotype, String> {
-    let start_ext = max(repeat.start - 10, 0);
-    let end_ext = repeat.end.saturating_add(10);
-    if let Some(tid) = bam.header().tid(repeat.chrom.as_bytes()) {
-        bam.fetch((tid, start_ext, end_ext))
-            .expect("Failed to fetch region");
-        // Per haplotype the difference with the reference genome is kept in a dictionary
-        // If there is no difference, a 0 is added to the vector
-        // Pre-allocate with expected capacity based on typical coverage
-        let mut calls = Vec::with_capacity(50); // Estimate based on typical long-read coverage
 
-        // CIGAR operations are assessed per read
-        for r in bam.rc_records() {
-            let r = r.unwrap_or_else(|err| {
-                error!("Error reading BAM file in region {}:{}-{}: {}", repeat.chrom, start_ext, end_ext, err);
-                std::process::exit(1);
-            });
-            // reads with either end inside the window are ignored or if mapping quality is low
-            if start_ext < (r.reference_start() as u32)
-                || (r.reference_end() as u32) < end_ext
-                || r.mapq() <= 10
-            {
-                continue;
-            }
-            let call = call_from_cigar(r, minlen, start_ext, end_ext);
-            calls.push(call);
-        }
-        info!("Found {} reads for genotyping", calls.len());
-        // sort the vec of calls based on the value - use our optimized helper
-        calls.sort_unstable_by_key(|call| call.value());
-        // split both haplotypes with median split, split_at divides one slice into two at an index.
-        let (h1, h2) = calls.split_at(calls.len() / 2);
 
-        // unphased is set to 0 if those are to be ignored and vice versa
-        // just taking the median of unphased reads is not optimal
-        let output = Genotype {
-            repeat,
-            phase1: median_str_length(h1, support),
-            phase2: median_str_length(h2, support),
-        };
-        Ok(output)
-    } else {
-        Err(repeat.chrom)
-    }
-}
 
-// Optimized struct for phase-based call storage
-struct PhasedCalls {
-    unphased: Vec<Call>, // phase 0
-    phase1: Vec<Call>,   // phase 1
-    phase2: Vec<Call>,   // phase 2
-}
 
-impl PhasedCalls {
-    fn new_with_capacity(expected_reads: usize) -> Self {
-        let capacity_per_phase = expected_reads / 2 + 10; // rough estimate with buffer
-        Self {
-            unphased: Vec::with_capacity(capacity_per_phase / 5), // fewer unphased reads expected
-            phase1: Vec::with_capacity(capacity_per_phase),
-            phase2: Vec::with_capacity(capacity_per_phase),
-        }
-    }
 
-    fn push(&mut self, phase: u8, call: Call) {
-        match phase {
-            0 => self.unphased.push(call),
-            1 => self.phase1.push(call),
-            2 => self.phase2.push(call),
-            _ => panic!("Invalid phase: {phase}"),
-        }
-    }
-}
 
-fn genotype_repeat_phased(
-    bam: &mut bam::IndexedReader,
-    repeat: RepeatInterval,
-    minlen: u32,
-    support: usize,
-) -> Result<Genotype, String> {
-    // use max to ensure the start does not become negative
-    let start_ext = max(repeat.start - 10, 0);
-    let end_ext = repeat.end.saturating_add(10);
-    if let Some(tid) = bam.header().tid(repeat.chrom.as_bytes()) {
-        bam.fetch((tid, start_ext, end_ext))
-            .expect("Failed to fetch region");
 
-        // Per haplotype the difference with the reference genome is kept in optimized structure
-        let mut calls = PhasedCalls::new_with_capacity(50); // estimate based on typical coverage
-        debug!("Reading records in region {tid}[tid]:{start_ext}-{end_ext}.");
-        // CIGAR operations are assessed per read
-        for r in bam.rc_records() {
-            let r = r.unwrap_or_else(|err| {
-                error!(
-                    "Error reading BAM file in region {}:{}-{}: {}",
-                    repeat.chrom, repeat.start, repeat.end, err
-                );
-                std::process::exit(1);
-            });
-            // reads with both ends inside the window are ignored or if mapping quality is low
-            // since the bam is supposed to be phased, ignore all unphased reads
-            let phase = get_phase(&r);
-            if phase.is_none()
-                || start_ext < (r.reference_start() as u32) && (r.reference_end() as u32) < end_ext
-                || r.mapq() <= 10
-            {
-                continue;
-            }
-
-            let call = call_from_cigar(r, minlen, start_ext, end_ext);
-            calls.push(phase.expect("Couldn't get phase - this shouldn't happen"), call);
-        }
-        info!(
-            "Found {}[H1]+{}[H2] reads for genotyping",
-            calls.phase1.len(),
-            calls.phase2.len()
-        );
-
-        // Log a warning if no phased reads were found for this locus
-        if calls.phase1.is_empty() && calls.phase2.is_empty() {
-            debug!(
-                "No phased reads found for locus {}:{}-{} (all reads were unphased or filtered out)",
-                repeat.chrom, repeat.start, repeat.end
-            );
-        }
-
-        let output = Genotype {
-            repeat,
-            phase1: median_str_length(&calls.phase1, support),
-            phase2: median_str_length(&calls.phase2, support),
-        };
-        Ok(output)
-    } else {
-        Err(repeat.chrom)
-    }
-}
-
-fn call_from_cigar(r: Rc<bam::Record>, minlen: u32, start: u32, end: u32) -> Call {
-    let mut call: i64 = 0;
-    // move the cursor for the reference position for all cigar operations that consume the reference
-    let mut reference_position = (r.reference_start() + 1) as u32;
-    let mut clipped = false;
-    for entry in r.cigar().iter() {
-        match entry {
-            Cigar::Match(len) | Cigar::Equal(len) | Cigar::Diff(len) => {
-                reference_position = reference_position.saturating_add(*len);
-            }
-            Cigar::Del(len) => {
-                if *len > minlen && start < reference_position && reference_position < end {
-                    call = call.saturating_sub(i64::from(*len));
-                }
-                reference_position = reference_position.saturating_add(*len);
-            }
-            Cigar::SoftClip(len) => {
-                if !is_accidental_2d(&r)
-                    && *len > minlen
-                    && start < reference_position
-                    && reference_position < end
-                {
-                    call = call.saturating_add(i64::from(*len));
-                    clipped = true
-                }
-            }
-            Cigar::Ins(len) => {
-                if *len > minlen && start < reference_position && reference_position < end {
-                    call = call.saturating_add(i64::from(*len));
-                }
-            }
-            Cigar::RefSkip(len) => reference_position = reference_position.saturating_add(*len),
-            _ => (),
-        }
-    }
-    if clipped {
-        Call::Clip(call)
-    } else {
-        Call::Span(call)
-    }
-}
 
 fn is_accidental_2d(record: &bam::Record) -> bool {
     // this function will determine if a read is an accidental 2D read
@@ -814,29 +613,7 @@ fn cigar_to_rlen(cigar: &str) -> i64 {
     rlen
 }
 
-/// Get the phase of a read by parsing the HP tag
-/// The outcome should always be a u8
-/// If the tag is absent '0' is returned, indicating unphased
-fn get_phase(record: &bam::Record) -> Option<u8> {
-    match record.aux(b"HP") {
-        Ok(value) => match value {
-            Aux::U8(v) => Some(v),
-            Aux::I32(v) => {
-                if (0..=255).contains(&v) {
-                    Some(v as u8)
-                } else {
-                    error!("HP tag value out of u8 range: {}", v);
-                    std::process::exit(1);
-                }
-            }
-            _ => {
-                error!("Unexpected type of HP auxiliary tag: {value:?}");
-                std::process::exit(1);
-            }
-        },
-        Err(_e) => None,
-    }
-}
+
 
 /// Take the median of the lengths of the STRs, relative to the reference genome
 /// If the vector has fewer than <support> calls then return NAN
@@ -1439,7 +1216,9 @@ fn process_target_from_read_info(
         )) // unphased mode never has HP tags
     } else {
         // Phased processing
-        let mut calls = PhasedCalls::new_with_capacity(50);
+        let mut phase1_calls = Vec::with_capacity(25);
+        let mut phase2_calls = Vec::with_capacity(25);
+        let mut unphased_calls = Vec::with_capacity(10);
         let mut found_hp_tags = false;
 
         for read_info in read_infos {
@@ -1455,42 +1234,42 @@ fn process_target_from_read_info(
                 // Get pre-computed STR call for this target region
                 if let Some(str_call) = read_info.get_str_call_for_region(start_ext, end_ext) {
                     match hp_tag {
-                        1 => calls.phase1.push(str_call),
-                        2 => calls.phase2.push(str_call),
-                        _ => calls.unphased.push(str_call),
+                        1 => phase1_calls.push(str_call),
+                        2 => phase2_calls.push(str_call),
+                        _ => unphased_calls.push(str_call),
                     }
                 }
             } else {
                 // Get pre-computed STR call for this target region
                 if let Some(str_call) = read_info.get_str_call_for_region(start_ext, end_ext) {
-                    calls.unphased.push(str_call);
+                    unphased_calls.push(str_call);
                 }
             }
         }
 
-        let total_reads = calls.phase1.len() + calls.phase2.len() + calls.unphased.len();
+        let total_reads = phase1_calls.len() + phase2_calls.len() + unphased_calls.len();
         if total_reads < support {
             return Err(format!("Insufficient support: {total_reads} < {support}"));
         }
 
-        calls.phase1.sort_unstable_by_key(|call| call.value());
-        calls.phase2.sort_unstable_by_key(|call| call.value());
-        calls.unphased.sort_unstable_by_key(|call| call.value());
+        phase1_calls.sort_unstable_by_key(|call| call.value());
+        phase2_calls.sort_unstable_by_key(|call| call.value());
+        unphased_calls.sort_unstable_by_key(|call| call.value());
 
-        let is_phased = !calls.phase1.is_empty() && !calls.phase2.is_empty();
+        let is_phased = !phase1_calls.is_empty() && !phase2_calls.is_empty();
 
         if is_phased {
             Ok((
                 Genotype {
                     repeat: repeat.clone(),
-                    phase1: median_str_length(&calls.phase1, support),
-                    phase2: median_str_length(&calls.phase2, support),
+                    phase1: median_str_length(&phase1_calls, support),
+                    phase2: median_str_length(&phase2_calls, support),
                 },
                 found_hp_tags,
             ))
         } else {
             // If no phased reads found, should return NaN (not split unphased reads)
-            if calls.phase1.is_empty() && calls.phase2.is_empty() {
+            if phase1_calls.is_empty() && phase2_calls.is_empty() {
                 Ok((
                     Genotype {
                         repeat: repeat.clone(),
@@ -1501,9 +1280,9 @@ fn process_target_from_read_info(
                 ))
             } else {
                 // Fall back to unphased processing only if we have some phased reads but insufficient in one phase
-                let mut all_calls = calls.phase1;
-                all_calls.extend(calls.phase2);
-                all_calls.extend(calls.unphased);
+                let mut all_calls = phase1_calls;
+                all_calls.extend(phase2_calls);
+                all_calls.extend(unphased_calls);
                 all_calls.sort_unstable_by_key(|call| call.value());
 
                 let (hap1, hap2) = all_calls.split_at(all_calls.len() / 2);
