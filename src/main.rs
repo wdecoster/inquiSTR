@@ -86,6 +86,10 @@ enum Commands {
         /// reference fasta for cram decoding
         #[clap(long, value_parser)]
         reference: Option<String>,
+
+        /// maximum locus size to consider (intervals larger than this will be filtered out)
+        #[clap(long, value_parser)]
+        max_locus: Option<u32>,
     },
     /// Combine lengths from multiple bams to a TSV
     Combine {
@@ -221,6 +225,7 @@ fn main() {
             unphased,
             sample_name,
             reference,
+            max_locus,
         } => call::genotype_repeats(
             bam,
             region,
@@ -231,6 +236,7 @@ fn main() {
             unphased,
             sample_name,
             reference,
+            max_locus,
         ),
         Commands::Combine { calls } => {
             combine::combine(calls);

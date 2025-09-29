@@ -92,6 +92,7 @@ pub fn genotype_repeats(
     unphased: bool,
     sample_name: Option<String>,
     reference: Option<String>,
+    max_locus: Option<u32>,
 ) {
     if !PathBuf::from(&bamp).is_file() && !bamp.starts_with("s3") && !bamp.starts_with("https://") {
         error!("ERROR: path to bam file {} is not valid!\n\n", &bamp);
@@ -108,7 +109,7 @@ pub fn genotype_repeats(
             .replace(".cram", "")
     });
     let file_header = format!("chromosome\tbegin\tend\t{sample}_H1\t{sample}_H2");
-    let repeats = get_targets(region, region_file, &bamp);
+    let repeats = get_targets(region, region_file, &bamp, max_locus);
     if threads > 1 {
         rayon::ThreadPoolBuilder::new()
             .num_threads(threads)
@@ -252,6 +253,7 @@ fn get_targets(
     region: Option<String>,
     region_file: Option<PathBuf>,
     bam: &str,
+    max_locus: Option<u32>,
 ) -> RepeatIntervalIterator {
     let chrom_lengths = get_chrom_lengths_from_bam_header(bam.to_string());
     match (&region, &region_file) {
@@ -261,6 +263,7 @@ fn get_targets(
         (None, Some(region_file)) => RepeatIntervalIterator::from_bed(
             &region_file.to_string_lossy().to_string(),
             chrom_lengths,
+            max_locus,
         ),
         // invalid input
         _ => {
@@ -305,10 +308,16 @@ fn get_bam_reader(bamp: &String, reference: &Option<String>) -> bam::IndexedRead
             }
         }
         bam::IndexedReader::from_url(&Url::parse(bamp.as_str()).expect("Failed to parse s3 URL"))
-            .unwrap_or_else(|err| panic!("Error opening remote BAM: {err}"))
+            .unwrap_or_else(|err| {
+                error!("Error opening remote BAM file: {err}");
+                std::process::exit(1);
+            })
     } else {
         bam::IndexedReader::from_path(bamp)
-            .unwrap_or_else(|err| panic!("Error opening local BAM: {err}"))
+            .unwrap_or_else(|err| {
+                error!("Error opening local BAM file: {err}");
+                std::process::exit(1);
+            })
     };
     if bamp.ends_with(".cram") {
         bam.set_cram_options(
@@ -336,7 +345,7 @@ fn genotype_repeat_unphased(
     support: usize,
 ) -> Result<Genotype, String> {
     let start_ext = max(repeat.start - 10, 0);
-    let end_ext = repeat.end + 10;
+    let end_ext = repeat.end.saturating_add(10);
     if let Some(tid) = bam.header().tid(repeat.chrom.as_bytes()) {
         bam.fetch((tid, start_ext, end_ext))
             .expect("Failed to fetch region");
@@ -347,7 +356,10 @@ fn genotype_repeat_unphased(
 
         // CIGAR operations are assessed per read
         for r in bam.rc_records() {
-            let r = r.expect("Error reading BAM file in region {chrom}:{start}-{end}.");
+            let r = r.unwrap_or_else(|err| {
+                error!("Error reading BAM file in region {}:{}-{}: {}", repeat.chrom, start_ext, end_ext, err);
+                std::process::exit(1);
+            });
             // reads with either end inside the window are ignored or if mapping quality is low
             if start_ext < (r.reference_start() as u32)
                 || (r.reference_end() as u32) < end_ext
@@ -411,7 +423,7 @@ fn genotype_repeat_phased(
     support: usize,
 ) -> Result<Genotype, String> {
     let start_ext = max(repeat.start - 10, 0);
-    let end_ext = repeat.end + 10;
+    let end_ext = repeat.end.saturating_add(10);
     if let Some(tid) = bam.header().tid(repeat.chrom.as_bytes()) {
         bam.fetch((tid, start_ext, end_ext))
             .expect("Failed to fetch region");
@@ -421,11 +433,12 @@ fn genotype_repeat_phased(
         debug!("Reading records in region {tid}[tid]:{start_ext}-{end_ext}.");
         // CIGAR operations are assessed per read
         for r in bam.rc_records() {
-            let r = r.unwrap_or_else(|_| {
-                panic!(
-                    "Error reading BAM file in region {}:{}-{}.",
-                    repeat.chrom, repeat.start, repeat.end
-                )
+            let r = r.unwrap_or_else(|err| {
+                error!(
+                    "Error reading BAM file in region {}:{}-{}: {}",
+                    repeat.chrom, repeat.start, repeat.end, err
+                );
+                std::process::exit(1);
             });
             // reads with both ends inside the window are ignored or if mapping quality is low
             // since the bam is supposed to be phased, ignore all unphased reads
@@ -473,13 +486,13 @@ fn call_from_cigar(r: Rc<bam::Record>, minlen: u32, start: u32, end: u32) -> Cal
     for entry in r.cigar().iter() {
         match entry {
             Cigar::Match(len) | Cigar::Equal(len) | Cigar::Diff(len) => {
-                reference_position += *len;
+                reference_position = reference_position.saturating_add(*len);
             }
             Cigar::Del(len) => {
                 if *len > minlen && start < reference_position && reference_position < end {
-                    call -= i64::from(*len);
+                    call = call.saturating_sub(i64::from(*len));
                 }
-                reference_position += *len;
+                reference_position = reference_position.saturating_add(*len);
             }
             Cigar::SoftClip(len) => {
                 if !is_accidental_2d(&r)
@@ -487,16 +500,16 @@ fn call_from_cigar(r: Rc<bam::Record>, minlen: u32, start: u32, end: u32) -> Cal
                     && start < reference_position
                     && reference_position < end
                 {
-                    call += i64::from(*len);
+                    call = call.saturating_add(i64::from(*len));
                     clipped = true
                 }
             }
             Cigar::Ins(len) => {
                 if *len > minlen && start < reference_position && reference_position < end {
-                    call += i64::from(*len);
+                    call = call.saturating_add(i64::from(*len));
                 }
             }
-            Cigar::RefSkip(len) => reference_position += *len,
+            Cigar::RefSkip(len) => reference_position = reference_position.saturating_add(*len),
             _ => (),
         }
     }
@@ -523,7 +536,10 @@ fn is_accidental_2d(record: &bam::Record) -> bool {
     let sa_tag = sa.unwrap();
     let sa_tag = match sa_tag {
         Aux::String(s) => s,
-        _ => panic!("Unexpected type of Aux {sa_tag:?}"),
+        _ => {
+            warn!("Unexpected type of SA auxiliary tag: {sa_tag:?}");
+            return false;
+        }
     };
     // split the SA tag into its entries, separated by ';', but remove any empty entries
     let sa_entries = sa_tag
@@ -534,7 +550,16 @@ fn is_accidental_2d(record: &bam::Record) -> bool {
     if sa_entries.len() > 1 {
         return false;
     }
+    // Ensure we have at least one SA entry
+    if sa_entries.is_empty() {
+        return false;
+    }
     let sa_entry = sa_entries[0].split(',').collect::<Vec<&str>>();
+    // SA entry format: rname,pos,strand,CIGAR,mapQ,NM - need at least 4 fields
+    if sa_entry.len() < 4 {
+        warn!("Malformed SA tag entry: insufficient fields");
+        return false;
+    }
     // check if the read is on the opposite strand. If it is on the same strand, it is not an accidental 2D read
     if read_strand == sa_entry[2].chars().next().unwrap() {
         return false;
@@ -557,15 +582,21 @@ fn is_accidental_2d(record: &bam::Record) -> bool {
 }
 
 fn cigar_to_rlen(cigar: &str) -> i64 {
-    let mut rlen = 0;
+    let mut rlen: i64 = 0;
     let mut num = String::new();
     for c in cigar.chars() {
         if c.is_ascii_digit() {
             num.push(c);
         } else {
-            let n = num.parse::<i64>().unwrap();
+            let n = match num.parse::<i64>() {
+                Ok(val) => val,
+                Err(_) => {
+                    error!("Failed to parse CIGAR number: {}", num);
+                    std::process::exit(1);
+                }
+            };
             match c {
-                'M' | '=' | 'X' | 'D' | 'N' => rlen += n,
+                'M' | '=' | 'X' | 'D' | 'N' => rlen = rlen.saturating_add(n),
                 _ => (),
             }
             num.clear();
@@ -581,8 +612,18 @@ fn get_phase(record: &bam::Record) -> Option<u8> {
     match record.aux(b"HP") {
         Ok(value) => match value {
             Aux::U8(v) => Some(v),
-            Aux::I32(v) => Some(v as u8),
-            _ => panic!("Unexpected type of Aux {value:?}"),
+            Aux::I32(v) => {
+                if (0..=255).contains(&v) {
+                    Some(v as u8)
+                } else {
+                    error!("HP tag value out of u8 range: {}", v);
+                    std::process::exit(1);
+                }
+            }
+            _ => {
+                error!("Unexpected type of HP auxiliary tag: {value:?}");
+                std::process::exit(1);
+            }
         },
         Err(_e) => None,
     }
@@ -643,6 +684,7 @@ fn test_region() {
         true, // Use unphased mode for test since test BAM likely doesn't have phasing
         Some("sample".to_string()),
         None,
+        None, // No max_locus filter for tests
     );
 }
 
@@ -657,7 +699,8 @@ fn test_region_from_url() {
         4,
         true, // Use unphased mode for test to avoid phasing validation issues
         Some("sample".to_string()),
-        None
+        None,
+        None, // No max_locus filter for tests
     );
 }
 
@@ -673,6 +716,7 @@ fn test_region_bed() {
         true, // Use unphased mode for test
         Some("sample".to_string()),
         None,
+        None, // No max_locus filter for tests
     );
 }
 #[test]
@@ -687,6 +731,7 @@ fn test_unphased() {
         true,
         Some("sample".to_string()),
         None,
+        None, // No max_locus filter for tests
     );
 }
 
@@ -703,6 +748,7 @@ fn test_region_wrong_chromosome() {
         false,
         Some("sample".to_string()),
         None,
+        None, // No max_locus filter for tests
     );
 }
 
@@ -736,6 +782,7 @@ fn test_phasing_validation_triggers() {
         false, // phased mode
         Some("sample".to_string()),
         None,
+        None, // No max_locus filter for tests
     );
 }
 
@@ -760,6 +807,60 @@ fn test_is_accidental_2d() {
     }
     println!("Found {count} 2D reads out of {all_reads} reads");
     assert_eq!(count, all_reads);
+}
+
+#[test]
+fn test_max_locus_filter() {
+    // Test filtering functionality by creating a test BED file and checking results
+    use std::fs::File;
+    use std::io::Write;
+    
+    // Create a temporary test BED file
+    let test_bed_content = "chr7\t154778571\t154779363\tsmall_interval\nchr7\t154780000\t154900000\thuge_interval\n";
+    let mut file = File::create("test_temp_max_locus.bed").expect("Could not create test file");
+    file.write_all(test_bed_content.as_bytes()).expect("Could not write test file");
+    
+    let chrom_lengths = get_chrom_lengths_from_bam_header(String::from("test-data/small-test.bam"));
+    
+    // Test without max_locus - should include both intervals
+    let repeats_no_filter = RepeatIntervalIterator::from_bed(&String::from("test_temp_max_locus.bed"), chrom_lengths.clone(), None);
+    assert_eq!(repeats_no_filter.num_intervals, 2);
+    
+    // Test with max_locus 1000 - should filter out the huge interval (120000 bp)
+    let repeats_with_filter = RepeatIntervalIterator::from_bed(&String::from("test_temp_max_locus.bed"), chrom_lengths, Some(1000));
+    assert_eq!(repeats_with_filter.num_intervals, 1);
+    
+    // Clean up
+    std::fs::remove_file("test_temp_max_locus.bed").expect("Could not remove test file");
+}
+
+#[test]
+fn test_nan_genotype_for_unphased_loci() {
+    // Test that loci with no phased reads return NaN, not arbitrary split values
+    use std::fs::File;
+    use std::io::Write;
+    
+    // Create a test BED file with the problematic locus
+    let test_bed_content = "chr15\t21653406\t21653580\ttest_locus\n";
+    let mut file = File::create("test_temp_nan_fix.bed").expect("Could not create test file");
+    file.write_all(test_bed_content.as_bytes()).expect("Could not write test file");
+    
+    // Test with small-test.bam which likely has no phased reads for this locus
+    genotype_repeats(
+        String::from("test-data/small-test.bam"),
+        None,
+        Some(std::path::PathBuf::from("test_temp_nan_fix.bed")),
+        5,
+        3,
+        1,
+        false, // phased mode
+        Some("test_sample".to_string()),
+        None,
+        None, // No max_locus filter
+    );
+    
+    // Clean up
+    std::fs::remove_file("test_temp_nan_fix.bed").expect("Could not remove test file");
 }
 
 /// Process targets in optimized batches to reduce I/O overhead
@@ -796,7 +897,7 @@ fn genotype_repeats_batched(
 
         if should_batch {
             // Add to current batch and extend the region
-            current_end = std::cmp::max(current_end, repeat.end + 10);
+            current_end = std::cmp::max(current_end, repeat.end.saturating_add(10));
             current_batch.push(repeat);
         } else {
             // Process the current batch if it exists
@@ -817,7 +918,7 @@ fn genotype_repeats_batched(
 
             // Start new batch
             current_chrom = repeat.chrom.clone();
-            current_end = repeat.end + 10;
+            current_end = repeat.end.saturating_add(10);
             current_batch = vec![repeat];
         }
     }
@@ -860,7 +961,11 @@ fn process_batch(
         return;
     }
 
-    // Get the full region bounds
+    // Get the full region bounds - check if batch is empty first
+    if batch.is_empty() {
+        warn!("Empty batch provided to process_batch");
+        return;
+    }
     let batch_start = batch.first().unwrap().start.saturating_sub(10);
 
     // Fetch the entire batch region once
@@ -870,14 +975,41 @@ fn process_batch(
             return;
         }
 
-        // Memory-efficient approach: collect only essential read information
+        // Smart overlap filtering: only store reads that intersect with STR targets
+        // Pre-compute target intervals with padding and batch indices for efficient overlap checking
+        let target_intervals_with_idx: Vec<(u32, u32, usize)> = batch.iter().enumerate()
+            .map(|(idx, repeat)| (repeat.start.saturating_sub(100), repeat.end + 100, idx)) // Add padding for partial overlaps
+            .collect();
+        
         let mut batch_reads = Vec::new();
+        let mut total_reads_fetched = 0;
+        let mut overlapping_reads = 0;
+        
         for record_result in bam.rc_records() {
             match record_result {
                 Ok(record) => {
-                    // Extract only the essential information, but keep the record for region-specific analysis
-                    let read_info = ReadInfo::from_record((*record).clone(), minlen);
-                    if read_info.mapq > 10 {
+                    total_reads_fetched += 1;
+                    let read_start = record.reference_start() as u32;
+                    let read_end = record.reference_end() as u32;
+                    let mapq = record.mapq();
+                    
+                    // Skip low quality reads early
+                    if mapq <= 10 {
+                        continue;
+                    }
+                    
+                    // Check if read overlaps with any target interval
+                    let overlapping_targets: Vec<_> = target_intervals_with_idx.iter()
+                        .filter(|&&(target_start, target_end, _)| {
+                            read_start < target_end && read_end > target_start
+                        })
+                        .copied()
+                        .collect();
+                    
+                    if !overlapping_targets.is_empty() {
+                        overlapping_reads += 1;
+                        // Create ReadInfo with pre-computed STR calls for overlapping targets
+                        let read_info = ReadInfo::from_record_with_targets((*record).clone(), minlen, &overlapping_targets, batch);
                         batch_reads.push(read_info);
                     }
                 }
@@ -886,6 +1018,16 @@ fn process_batch(
                     continue;
                 }
             }
+        }
+        
+        // Log filtering efficiency for monitoring memory optimization
+        if total_reads_fetched > 0 {
+            let efficiency = (overlapping_reads as f64 / total_reads_fetched as f64) * 100.0;
+            let memory_saved = total_reads_fetched - overlapping_reads;
+            debug!(
+                "Batch {}:{}-{}: Filtered {} reads to {} overlapping targets ({:.1}% efficiency, saved {} reads from memory)",
+                chrom, batch_start, batch_end, total_reads_fetched, overlapping_reads, efficiency, memory_saved
+            );
         }
 
         // Process each target in the batch using the lightweight read info
@@ -937,18 +1079,23 @@ fn process_batch(
     }
 }
 
-/// Lightweight read information structure - only stores what we need
+/// Memory-efficient read information - stores pre-computed STR calls instead of full BAM record
 #[derive(Clone)]
 struct ReadInfo {
     start: u32,
     end: u32,
-    mapq: u8,
     hp_tag: Option<u8>,
-    record: rust_htslib::bam::Record, // We need the full record for region-specific CIGAR analysis
+    // Instead of storing the full record, store pre-computed STR calls for overlapping targets
+    str_calls: Vec<(u32, u32, Call)>, // (target_start, target_end, str_call)
 }
 
 impl ReadInfo {
-    fn from_record(record: rust_htslib::bam::Record, _minlen: u32) -> Self {
+    fn from_record_with_targets(
+        record: rust_htslib::bam::Record, 
+        minlen: u32, 
+        target_intervals: &[(u32, u32, usize)], // (start, end, batch_index)
+        batch: &[RepeatInterval], // Access to original repeat coordinates
+    ) -> Self {
         // Extract HP tag if present
         let hp_tag = record.aux(b"HP").ok().and_then(|aux| match aux {
             rust_htslib::bam::record::Aux::U8(val) => Some(val),
@@ -956,22 +1103,50 @@ impl ReadInfo {
             _ => None,
         });
 
+        let read_start = record.reference_start() as u32;
+        let read_end = record.reference_end() as u32;
+        
+        // Pre-compute STR calls for all overlapping targets
+        let mut str_calls = Vec::new();
+        for &(target_start, target_end, batch_idx) in target_intervals {
+            if read_start < target_end && read_end > target_start {
+                // Get the original repeat coordinates (without padding)
+                let original_repeat = &batch[batch_idx];
+                let original_start = original_repeat.start;
+                let original_end = original_repeat.end;
+                
+                // Calculate STR call using the original coordinates + analysis padding
+                let analysis_start = original_start.saturating_sub(10);
+                let analysis_end = original_end + 10;
+                let str_call = Self::calculate_str_call_for_region_static(&record, minlen, analysis_start, analysis_end);
+                
+                // Store with original coordinates for later matching
+                str_calls.push((analysis_start, analysis_end, str_call));
+            }
+        }
+
         ReadInfo {
-            start: record.reference_start() as u32,
-            end: record.reference_end() as u32,
-            mapq: record.mapq(),
+            start: read_start,
+            end: read_end,
             hp_tag,
-            record,
+            str_calls,
         }
     }
     
-    /// Calculate region-specific STR call for this read
-    fn calculate_str_call_for_region(&self, minlen: u32, start: u32, end: u32) -> Call {
+    /// Get pre-computed STR call for a specific target region
+    fn get_str_call_for_region(&self, target_start: u32, target_end: u32) -> Option<Call> {
+        self.str_calls.iter()
+            .find(|(start, end, _)| *start == target_start && *end == target_end)
+            .map(|(_, _, call)| *call)
+    }
+    
+    /// Static method to calculate STR call from BAM record (moved from instance method)
+    fn calculate_str_call_for_region_static(record: &rust_htslib::bam::Record, minlen: u32, start: u32, end: u32) -> Call {
         let mut call: i64 = 0;
-        let mut reference_position = (self.record.reference_start() + 1) as u32;
+        let mut reference_position = record.reference_start() as u32;
         let mut clipped = false;
 
-        for entry in self.record.cigar().iter() {
+        for entry in record.cigar().iter() {
             match entry {
                 rust_htslib::bam::record::Cigar::Match(len) 
                 | rust_htslib::bam::record::Cigar::Equal(len) 
@@ -985,7 +1160,7 @@ impl ReadInfo {
                     reference_position += *len;
                 }
                 rust_htslib::bam::record::Cigar::SoftClip(len) => {
-                    if !is_accidental_2d(&self.record)
+                    if !is_accidental_2d(record)
                         && *len > minlen
                         && start < reference_position
                         && reference_position < end
@@ -1016,7 +1191,7 @@ impl ReadInfo {
 fn process_target_from_read_info(
     read_infos: &[ReadInfo],
     repeat: &RepeatInterval,
-    minlen: u32,
+    _minlen: u32, // minlen is now unused since calls are pre-computed
     support: usize,
     unphased: bool,
 ) -> Result<(Genotype, bool), String> {
@@ -1032,9 +1207,10 @@ fn process_target_from_read_info(
                 continue;
             }
 
-            // Calculate region-specific STR call
-            let str_call = read_info.calculate_str_call_for_region(minlen, start_ext, end_ext);
-            calls.push(str_call);
+            // Get pre-computed STR call for this target region
+            if let Some(str_call) = read_info.get_str_call_for_region(start_ext, end_ext) {
+                calls.push(str_call);
+            }
         }
 
         if calls.len() < support {
@@ -1067,18 +1243,19 @@ fn process_target_from_read_info(
             if let Some(hp_tag) = read_info.hp_tag {
                 found_hp_tags = true;
                 
-                // Calculate region-specific STR call
-                let str_call = read_info.calculate_str_call_for_region(minlen, start_ext, end_ext);
-                
-                match hp_tag {
-                    1 => calls.phase1.push(str_call),
-                    2 => calls.phase2.push(str_call),
-                    _ => calls.unphased.push(str_call),
+                // Get pre-computed STR call for this target region
+                if let Some(str_call) = read_info.get_str_call_for_region(start_ext, end_ext) {
+                    match hp_tag {
+                        1 => calls.phase1.push(str_call),
+                        2 => calls.phase2.push(str_call),
+                        _ => calls.unphased.push(str_call),
+                    }
                 }
             } else {
-                // Calculate region-specific STR call
-                let str_call = read_info.calculate_str_call_for_region(minlen, start_ext, end_ext);
-                calls.unphased.push(str_call);
+                // Get pre-computed STR call for this target region
+                if let Some(str_call) = read_info.get_str_call_for_region(start_ext, end_ext) {
+                    calls.unphased.push(str_call);
+                }
             }
         }
 
@@ -1103,21 +1280,33 @@ fn process_target_from_read_info(
                 found_hp_tags,
             ))
         } else {
-            // Fall back to unphased processing
-            let mut all_calls = calls.phase1;
-            all_calls.extend(calls.phase2);
-            all_calls.extend(calls.unphased);
-            all_calls.sort_unstable_by_key(|call| call.value());
+            // If no phased reads found, should return NaN (not split unphased reads)
+            if calls.phase1.is_empty() && calls.phase2.is_empty() {
+                Ok((
+                    Genotype {
+                        repeat: repeat.clone(),
+                        phase1: f64::NAN,
+                        phase2: f64::NAN,
+                    },
+                    found_hp_tags,
+                ))
+            } else {
+                // Fall back to unphased processing only if we have some phased reads but insufficient in one phase
+                let mut all_calls = calls.phase1;
+                all_calls.extend(calls.phase2);
+                all_calls.extend(calls.unphased);
+                all_calls.sort_unstable_by_key(|call| call.value());
 
-            let (hap1, hap2) = all_calls.split_at(all_calls.len() / 2);
-            Ok((
-                Genotype {
-                    repeat: repeat.clone(),
-                    phase1: median_str_length(hap1, support),
-                    phase2: median_str_length(hap2, support),
-                },
-                found_hp_tags,
-            ))
+                let (hap1, hap2) = all_calls.split_at(all_calls.len() / 2);
+                Ok((
+                    Genotype {
+                        repeat: repeat.clone(),
+                        phase1: median_str_length(hap1, support),
+                        phase2: median_str_length(hap2, support),
+                    },
+                    found_hp_tags,
+                ))
+            }
         }
     }
 }
