@@ -23,7 +23,11 @@ impl RepeatIntervalIterator {
             .expect("Failed to create repeat interval");
         RepeatIntervalIterator { current_index: 0, data: vec![repeat], num_intervals: 1 }
     }
-    pub fn from_bed(region_file: &String, chrom_lengths: HashMap<String, u64>, max_locus: Option<u32>) -> Self {
+    pub fn from_bed(
+        region_file: &String,
+        chrom_lengths: HashMap<String, u64>,
+        max_locus: Option<u32>,
+    ) -> Self {
         let mut reader = bed::Reader::from_file(region_file).expect("Problem reading bed file!");
         let mut data = Vec::new();
         let mut filtered_count = 0;
@@ -44,7 +48,11 @@ impl RepeatIntervalIterator {
             }
         }
         if filtered_count > 0 {
-            eprintln!("INFO: Filtered out {} intervals larger than {} bp (max-locus limit)", filtered_count, max_locus.unwrap());
+            eprintln!(
+                "INFO: Filtered out {} intervals larger than {} bp (max-locus limit)",
+                filtered_count,
+                max_locus.unwrap()
+            );
         }
         RepeatIntervalIterator { current_index: 0, data: data.clone(), num_intervals: data.len() }
     }

@@ -1,6 +1,6 @@
+use crate::locus_search::{find_locus, LocusSearchConfig, OverlapStrategy};
 use histo_fp::Histogram;
 use std::path::PathBuf;
-use crate::locus_search::{LocusSearchConfig, find_locus, OverlapStrategy};
 
 pub fn histogram(combined: PathBuf, region: String) {
     if !combined.exists() {
@@ -13,16 +13,16 @@ pub fn histogram(combined: PathBuf, region: String) {
         target_region: region,
         overlap_strategy: OverlapStrategy::Containment,
     };
-    
+
     if let Some(locus_match) = find_locus(config) {
         let mut histogram = Histogram::with_buckets(100, Some(2));
-        
+
         for value in locus_match.values {
             if !value.is_nan() {
                 histogram.add(value);
             }
         }
-        
+
         println!("{histogram}");
     } else {
         eprintln!("No matching interval found");

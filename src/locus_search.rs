@@ -1,5 +1,5 @@
 //! # Locus Search Utilities
-//! 
+//!
 //! Common functionality for searching and extracting data from specific genomic loci
 //! in inquiSTR combined files. Used by query, plot, and histogram subcommands.
 
@@ -47,9 +47,9 @@ pub fn find_locus(config: LocusSearchConfig) -> Option<LocusMatch> {
         panic!("Combined file does not exist or path is incorrect!");
     }
 
-    let (target_chrom, target_start, target_end) = 
+    let (target_chrom, target_start, target_end) =
         crate::utils::process_region(config.target_region).unwrap();
-    
+
     let file = crate::utils::reader(&config.combined_file.to_string_lossy());
     let mut lines = file.lines();
     let reg_chrom = format!("{target_chrom}\t");
@@ -59,9 +59,12 @@ pub fn find_locus(config: LocusSearchConfig) -> Option<LocusMatch> {
         let first_line = first_line.unwrap();
         let first_cols = first_line.split('\t').count();
         if first_cols < 4 {
-            panic!("Invalid header line: expected at least 4 columns, got {}: '{}'", first_cols, first_line);
+            panic!(
+                "Invalid header line: expected at least 4 columns, got {}: '{}'",
+                first_cols, first_line
+            );
         }
-        
+
         // If this line matches our target chromosome, process it
         if first_line.starts_with(&reg_chrom) {
             let splitline: Vec<&str> = first_line.split('\t').collect();
@@ -73,9 +76,7 @@ pub fn find_locus(config: LocusSearchConfig) -> Option<LocusMatch> {
                 OverlapStrategy::Overlap => {
                     std::cmp::max(target_start, begin) < std::cmp::min(target_end, end)
                 }
-                OverlapStrategy::Containment => {
-                    target_start <= begin && end <= target_end
-                }
+                OverlapStrategy::Containment => target_start <= begin && end <= target_end,
             };
 
             if matches {
@@ -94,7 +95,7 @@ pub fn find_locus(config: LocusSearchConfig) -> Option<LocusMatch> {
                 });
             }
         }
-        
+
         first_cols
     } else {
         panic!("Combined file is empty!");
@@ -102,7 +103,7 @@ pub fn find_locus(config: LocusSearchConfig) -> Option<LocusMatch> {
 
     for (line_num, line_result) in lines.enumerate() {
         let line = line_result.unwrap();
-        
+
         // Skip lines that don't start with our target chromosome
         if !line.starts_with(&reg_chrom) {
             continue;
@@ -110,8 +111,13 @@ pub fn find_locus(config: LocusSearchConfig) -> Option<LocusMatch> {
 
         let splitline: Vec<&str> = line.split('\t').collect();
         if splitline.len() != expected_columns {
-            panic!("Malformed line {} in combined file: expected {} columns, got {}: '{}'", 
-                   line_num + 2, expected_columns, splitline.len(), line);
+            panic!(
+                "Malformed line {} in combined file: expected {} columns, got {}: '{}'",
+                line_num + 2,
+                expected_columns,
+                splitline.len(),
+                line
+            );
         }
 
         let begin: u32 = splitline[1].parse().expect("Failed parsing interval start");

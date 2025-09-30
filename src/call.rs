@@ -113,25 +113,31 @@ pub fn genotype_repeats(
     if threads > 1 {
         // Hybrid approach: Process chromosomes in parallel with batched I/O per chromosome
         // This limits IndexedReaders to thread count while maintaining I/O efficiency
-        
+
         // Collect and group all repeats by chromosome
         let all_repeats: Vec<RepeatInterval> = repeats.collect();
-        let mut by_chromosome: std::collections::HashMap<String, Vec<RepeatInterval>> = 
+        let mut by_chromosome: std::collections::HashMap<String, Vec<RepeatInterval>> =
             std::collections::HashMap::new();
-        
+
         for repeat in all_repeats {
-            by_chromosome.entry(repeat.chrom.clone()).or_default().push(repeat);
+            by_chromosome
+                .entry(repeat.chrom.clone())
+                .or_default()
+                .push(repeat);
         }
-        
+
         // Sort repeats within each chromosome for optimal batching
         for chrom_repeats in by_chromosome.values_mut() {
             chrom_repeats.sort_by(|a, b| a.start.cmp(&b.start));
         }
-        
+
         // Convert to ordered vector for processing
         let chromosomes: Vec<(String, Vec<RepeatInterval>)> = by_chromosome.into_iter().collect();
-        let total_loci = chromosomes.iter().map(|(_, repeats)| repeats.len()).sum::<usize>();
-        
+        let total_loci = chromosomes
+            .iter()
+            .map(|(_, repeats)| repeats.len())
+            .sum::<usize>();
+
         // Setup progress bar and shared state
         let pb = indicatif::ProgressBar::new(total_loci as u64);
         pb.set_style(
@@ -139,24 +145,24 @@ pub fn genotype_repeats(
                 .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} loci ({eta})")
                 .expect("Failed to set progress bar template")
         );
-        
+
         let genotypes = Mutex::new(Vec::new());
         let chrom_reported = Mutex::new(Vec::new());
         let unphased_loci_count = Mutex::new(0usize);
         let phased_loci_seen = Mutex::new(false);
-        
+
         // Process chromosomes in parallel, limited by thread count
         rayon::ThreadPoolBuilder::new()
             .num_threads(threads)
             .build()
             .expect("Failed to build thread pool");
-            
+
         chromosomes
             .into_par_iter()
             .for_each(|(_chrom, chrom_repeats)| {
                 // Each thread processes one chromosome with batched I/O
                 let mut bam = get_bam_reader(&bamp, &reference);
-                
+
                 // Process this chromosome using batched approach
                 genotype_chromosome_batched(
                     &mut bam,
@@ -171,7 +177,7 @@ pub fn genotype_repeats(
                     &pb,
                 );
             });
-        
+
         pb.finish_with_message("Completed chromosome-parallel processing");
         let mut genotypes_vec = genotypes.lock().expect("Failed to lock genotypes");
         // Check the proportion of unphased loci in multithreaded mode, but only if no phased loci were seen
@@ -293,21 +299,21 @@ fn genotype_chromosome_batched(
     if chrom_repeats.is_empty() {
         return;
     }
-    
+
     let chrom = chrom_repeats[0].chrom.clone();
     let mut consecutive_unphased_loci = 0usize;
     let mut has_seen_phased_locus = false;
-    
+
     // Process repeats in batches within this chromosome
     let mut current_batch = Vec::new();
     let mut current_end = 0u32;
-    
+
     for repeat in chrom_repeats.into_iter() {
         // Check if this repeat should be added to current batch or start a new batch
         const BATCH_DISTANCE_THRESHOLD: u32 = 50000; // Batch targets within 50kb
-        let should_batch = !current_batch.is_empty() 
-            && repeat.start <= current_end + BATCH_DISTANCE_THRESHOLD;
-            
+        let should_batch =
+            !current_batch.is_empty() && repeat.start <= current_end + BATCH_DISTANCE_THRESHOLD;
+
         if should_batch {
             // Add to current batch and extend the region
             current_end = std::cmp::max(current_end, repeat.end.saturating_add(10));
@@ -332,13 +338,13 @@ fn genotype_chromosome_batched(
                     pb,
                 );
             }
-            
+
             // Start new batch
             current_end = repeat.end.saturating_add(10);
             current_batch = vec![repeat];
         }
     }
-    
+
     // Process the final batch
     if !current_batch.is_empty() {
         process_chromosome_batch(
@@ -392,32 +398,41 @@ fn process_chromosome_batch(
         }
 
         // Use the same efficient batched processing as single-threaded mode
-        let target_intervals_with_idx: Vec<(u32, u32, usize)> = batch.iter().enumerate()
+        let target_intervals_with_idx: Vec<(u32, u32, usize)> = batch
+            .iter()
+            .enumerate()
             .map(|(idx, repeat)| (repeat.start.saturating_sub(100), repeat.end + 100, idx))
             .collect();
-        
+
         let mut batch_reads = Vec::new();
-        
+
         for record_result in bam.rc_records() {
             match record_result {
                 Ok(record) => {
                     let read_start = record.reference_start() as u32;
                     let read_end = record.reference_end() as u32;
                     let mapq = record.mapq();
-                    
+
                     if mapq <= 10 {
                         continue;
                     }
-                    
-                    let overlapping_targets: Vec<_> = target_intervals_with_idx.iter()
+
+                    let overlapping_targets: Vec<_> = target_intervals_with_idx
+                        .iter()
                         .filter(|&&(target_start, target_end, _)| {
                             !(read_end < target_start || read_start > target_end)
                         })
                         .collect();
-                    
+
                     if !overlapping_targets.is_empty() {
-                        let overlapping_targets_slice: Vec<(u32, u32, usize)> = overlapping_targets.into_iter().copied().collect();
-                        let read_info = ReadInfo::from_record_with_targets((*record).clone(), minlen, &overlapping_targets_slice, batch);
+                        let overlapping_targets_slice: Vec<(u32, u32, usize)> =
+                            overlapping_targets.into_iter().copied().collect();
+                        let read_info = ReadInfo::from_record_with_targets(
+                            (*record).clone(),
+                            minlen,
+                            &overlapping_targets_slice,
+                            batch,
+                        );
                         batch_reads.push(read_info);
                     }
                 }
@@ -427,10 +442,11 @@ fn process_chromosome_batch(
                 }
             }
         }
-        
+
         // Process each target in the batch using the lightweight read info
         for repeat in batch {
-            let result = process_target_from_read_info(&batch_reads, repeat, minlen, support, unphased);
+            let result =
+                process_target_from_read_info(&batch_reads, repeat, minlen, support, unphased);
 
             match result {
                 Ok((genotype, had_hp_tags)) => {
@@ -447,13 +463,17 @@ fn process_chromosome_batch(
                                 std::process::exit(1);
                             }
                         }
-                        
+
                         // Update global counters
                         if genotype.phase1.is_nan() && genotype.phase2.is_nan() {
-                            let mut unphased_count = unphased_loci_count.lock().expect("Failed to lock unphased_loci_count");
+                            let mut unphased_count = unphased_loci_count
+                                .lock()
+                                .expect("Failed to lock unphased_loci_count");
                             *unphased_count += 1;
                         } else if !genotype.phase1.is_nan() || !genotype.phase2.is_nan() {
-                            let mut phased_seen = phased_loci_seen.lock().expect("Failed to lock phased_loci_seen");
+                            let mut phased_seen = phased_loci_seen
+                                .lock()
+                                .expect("Failed to lock phased_loci_seen");
                             *phased_seen = true;
                         }
                     }
@@ -462,20 +482,20 @@ fn process_chromosome_batch(
                     geno.push(genotype);
                 }
                 Err(locus) => {
-                    let mut chroms_reported = chrom_reported.lock().expect("Failed to lock chrom_reported");
+                    let mut chroms_reported = chrom_reported
+                        .lock()
+                        .expect("Failed to lock chrom_reported");
                     if !chroms_reported.contains(&locus) {
                         warn!("{locus} not found in bam file");
                         chroms_reported.push(locus);
                     }
                 }
             }
-            
+
             pb.inc(1);
         }
     }
 }
-
-
 
 fn get_bam_reader(bamp: &String, reference: &Option<String>) -> bam::IndexedReader {
     let mut bam = if bamp.starts_with("s3") || bamp.starts_with("https://") {
@@ -495,11 +515,10 @@ fn get_bam_reader(bamp: &String, reference: &Option<String>) -> bam::IndexedRead
                 std::process::exit(1);
             })
     } else {
-        bam::IndexedReader::from_path(bamp)
-            .unwrap_or_else(|err| {
-                error!("Error opening local BAM file: {err}");
-                std::process::exit(1);
-            })
+        bam::IndexedReader::from_path(bamp).unwrap_or_else(|err| {
+            error!("Error opening local BAM file: {err}");
+            std::process::exit(1);
+        })
     };
     if bamp.ends_with(".cram") {
         bam.set_cram_options(
@@ -519,14 +538,6 @@ fn get_bam_reader(bamp: &String, reference: &Option<String>) -> bam::IndexedRead
 
     bam
 }
-
-
-
-
-
-
-
-
 
 fn is_accidental_2d(record: &bam::Record) -> bool {
     // this function will determine if a read is an accidental 2D read
@@ -612,8 +623,6 @@ fn cigar_to_rlen(cigar: &str) -> i64 {
     }
     rlen
 }
-
-
 
 /// Take the median of the lengths of the STRs, relative to the reference genome
 /// If the vector has fewer than <support> calls then return NAN
@@ -800,22 +809,32 @@ fn test_max_locus_filter() {
     // Test filtering functionality by creating a test BED file and checking results
     use std::fs::File;
     use std::io::Write;
-    
+
     // Create a temporary test BED file
-    let test_bed_content = "chr7\t154778571\t154779363\tsmall_interval\nchr7\t154780000\t154900000\thuge_interval\n";
+    let test_bed_content =
+        "chr7\t154778571\t154779363\tsmall_interval\nchr7\t154780000\t154900000\thuge_interval\n";
     let mut file = File::create("test_temp_max_locus.bed").expect("Could not create test file");
-    file.write_all(test_bed_content.as_bytes()).expect("Could not write test file");
-    
+    file.write_all(test_bed_content.as_bytes())
+        .expect("Could not write test file");
+
     let chrom_lengths = get_chrom_lengths_from_bam_header(String::from("test-data/small-test.bam"));
-    
+
     // Test without max_locus - should include both intervals
-    let repeats_no_filter = RepeatIntervalIterator::from_bed(&String::from("test_temp_max_locus.bed"), chrom_lengths.clone(), None);
+    let repeats_no_filter = RepeatIntervalIterator::from_bed(
+        &String::from("test_temp_max_locus.bed"),
+        chrom_lengths.clone(),
+        None,
+    );
     assert_eq!(repeats_no_filter.num_intervals, 2);
-    
+
     // Test with max_locus 1000 - should filter out the huge interval (120000 bp)
-    let repeats_with_filter = RepeatIntervalIterator::from_bed(&String::from("test_temp_max_locus.bed"), chrom_lengths, Some(1000));
+    let repeats_with_filter = RepeatIntervalIterator::from_bed(
+        &String::from("test_temp_max_locus.bed"),
+        chrom_lengths,
+        Some(1000),
+    );
     assert_eq!(repeats_with_filter.num_intervals, 1);
-    
+
     // Clean up
     std::fs::remove_file("test_temp_max_locus.bed").expect("Could not remove test file");
 }
@@ -825,12 +844,13 @@ fn test_nan_genotype_for_unphased_loci() {
     // Test that loci with no phased reads return NaN, not arbitrary split values
     use std::fs::File;
     use std::io::Write;
-    
+
     // Create a test BED file with the problematic locus
     let test_bed_content = "chr15\t21653406\t21653580\ttest_locus\n";
     let mut file = File::create("test_temp_nan_fix.bed").expect("Could not create test file");
-    file.write_all(test_bed_content.as_bytes()).expect("Could not write test file");
-    
+    file.write_all(test_bed_content.as_bytes())
+        .expect("Could not write test file");
+
     // Test with small-test.bam which likely has no phased reads for this locus
     genotype_repeats(
         String::from("test-data/small-test.bam"),
@@ -844,7 +864,7 @@ fn test_nan_genotype_for_unphased_loci() {
         None,
         None, // No max_locus filter
     );
-    
+
     // Clean up
     std::fs::remove_file("test_temp_nan_fix.bed").expect("Could not remove test file");
 }
@@ -963,14 +983,16 @@ fn process_batch(
 
         // Smart overlap filtering: only store reads that intersect with STR targets
         // Pre-compute target intervals with padding and batch indices for efficient overlap checking
-        let target_intervals_with_idx: Vec<(u32, u32, usize)> = batch.iter().enumerate()
+        let target_intervals_with_idx: Vec<(u32, u32, usize)> = batch
+            .iter()
+            .enumerate()
             .map(|(idx, repeat)| (repeat.start.saturating_sub(100), repeat.end + 100, idx)) // Add padding for partial overlaps
             .collect();
-        
+
         let mut batch_reads = Vec::new();
         let mut total_reads_fetched = 0;
         let mut overlapping_reads = 0;
-        
+
         for record_result in bam.rc_records() {
             match record_result {
                 Ok(record) => {
@@ -978,24 +1000,30 @@ fn process_batch(
                     let read_start = record.reference_start() as u32;
                     let read_end = record.reference_end() as u32;
                     let mapq = record.mapq();
-                    
+
                     // Skip low quality reads early
                     if mapq <= 10 {
                         continue;
                     }
-                    
+
                     // Check if read overlaps with any target interval
-                    let overlapping_targets: Vec<_> = target_intervals_with_idx.iter()
+                    let overlapping_targets: Vec<_> = target_intervals_with_idx
+                        .iter()
                         .filter(|&&(target_start, target_end, _)| {
                             read_start < target_end && read_end > target_start
                         })
                         .copied()
                         .collect();
-                    
+
                     if !overlapping_targets.is_empty() {
                         overlapping_reads += 1;
                         // Create ReadInfo with pre-computed STR calls for overlapping targets
-                        let read_info = ReadInfo::from_record_with_targets((*record).clone(), minlen, &overlapping_targets, batch);
+                        let read_info = ReadInfo::from_record_with_targets(
+                            (*record).clone(),
+                            minlen,
+                            &overlapping_targets,
+                            batch,
+                        );
                         batch_reads.push(read_info);
                     }
                 }
@@ -1005,7 +1033,7 @@ fn process_batch(
                 }
             }
         }
-        
+
         // Log filtering efficiency for monitoring memory optimization
         if total_reads_fetched > 0 {
             let efficiency = (overlapping_reads as f64 / total_reads_fetched as f64) * 100.0;
@@ -1018,7 +1046,8 @@ fn process_batch(
 
         // Process each target in the batch using the lightweight read info
         for repeat in batch {
-            let result = process_target_from_read_info(&batch_reads, repeat, minlen, support, unphased);
+            let result =
+                process_target_from_read_info(&batch_reads, repeat, minlen, support, unphased);
 
             match result {
                 Ok((genotype, had_hp_tags)) => {
@@ -1047,13 +1076,10 @@ fn process_batch(
                         "Failed to process target {}:{}-{}: {}",
                         repeat.chrom, repeat.start, repeat.end, e
                     );
-                    
-                    let failed_genotype = Genotype {
-                        repeat: repeat.clone(),
-                        phase1: f64::NAN,
-                        phase2: f64::NAN,
-                    };
-                    
+
+                    let failed_genotype =
+                        Genotype { repeat: repeat.clone(), phase1: f64::NAN, phase2: f64::NAN };
+
                     println!("{failed_genotype}");
                 }
             }
@@ -1077,10 +1103,10 @@ struct ReadInfo {
 
 impl ReadInfo {
     fn from_record_with_targets(
-        record: rust_htslib::bam::Record, 
-        minlen: u32, 
+        record: rust_htslib::bam::Record,
+        minlen: u32,
         target_intervals: &[(u32, u32, usize)], // (start, end, batch_index)
-        batch: &[RepeatInterval], // Access to original repeat coordinates
+        batch: &[RepeatInterval],               // Access to original repeat coordinates
     ) -> Self {
         // Extract HP tag if present
         let hp_tag = record.aux(b"HP").ok().and_then(|aux| match aux {
@@ -1091,7 +1117,7 @@ impl ReadInfo {
 
         let read_start = record.reference_start() as u32;
         let read_end = record.reference_end() as u32;
-        
+
         // Pre-compute STR calls for all overlapping targets
         let mut str_calls = Vec::new();
         for &(target_start, target_end, batch_idx) in target_intervals {
@@ -1100,42 +1126,48 @@ impl ReadInfo {
                 let original_repeat = &batch[batch_idx];
                 let original_start = original_repeat.start;
                 let original_end = original_repeat.end;
-                
+
                 // Calculate STR call using the original coordinates + analysis padding
                 let analysis_start = original_start.saturating_sub(10);
                 let analysis_end = original_end + 10;
-                let str_call = Self::calculate_str_call_for_region_static(&record, minlen, analysis_start, analysis_end);
-                
+                let str_call = Self::calculate_str_call_for_region_static(
+                    &record,
+                    minlen,
+                    analysis_start,
+                    analysis_end,
+                );
+
                 // Store with original coordinates for later matching
                 str_calls.push((analysis_start, analysis_end, str_call));
             }
         }
 
-        ReadInfo {
-            start: read_start,
-            end: read_end,
-            hp_tag,
-            str_calls,
-        }
+        ReadInfo { start: read_start, end: read_end, hp_tag, str_calls }
     }
-    
+
     /// Get pre-computed STR call for a specific target region
     fn get_str_call_for_region(&self, target_start: u32, target_end: u32) -> Option<Call> {
-        self.str_calls.iter()
+        self.str_calls
+            .iter()
             .find(|(start, end, _)| *start == target_start && *end == target_end)
             .map(|(_, _, call)| *call)
     }
-    
+
     /// Static method to calculate STR call from BAM record (moved from instance method)
-    fn calculate_str_call_for_region_static(record: &rust_htslib::bam::Record, minlen: u32, start: u32, end: u32) -> Call {
+    fn calculate_str_call_for_region_static(
+        record: &rust_htslib::bam::Record,
+        minlen: u32,
+        start: u32,
+        end: u32,
+    ) -> Call {
         let mut call: i64 = 0;
         let mut reference_position = record.reference_start() as u32;
         let mut clipped = false;
 
         for entry in record.cigar().iter() {
             match entry {
-                rust_htslib::bam::record::Cigar::Match(len) 
-                | rust_htslib::bam::record::Cigar::Equal(len) 
+                rust_htslib::bam::record::Cigar::Match(len)
+                | rust_htslib::bam::record::Cigar::Equal(len)
                 | rust_htslib::bam::record::Cigar::Diff(len) => {
                     reference_position += *len;
                 }
@@ -1164,7 +1196,7 @@ impl ReadInfo {
                 _ => (),
             }
         }
-        
+
         if clipped {
             Call::Clip(call)
         } else {
@@ -1230,7 +1262,7 @@ fn process_target_from_read_info(
             // Check for phasing information
             if let Some(hp_tag) = read_info.hp_tag {
                 found_hp_tags = true;
-                
+
                 // Get pre-computed STR call for this target region
                 if let Some(str_call) = read_info.get_str_call_for_region(start_ext, end_ext) {
                     match hp_tag {
@@ -1271,11 +1303,7 @@ fn process_target_from_read_info(
             // If no phased reads found, should return NaN (not split unphased reads)
             if phase1_calls.is_empty() && phase2_calls.is_empty() {
                 Ok((
-                    Genotype {
-                        repeat: repeat.clone(),
-                        phase1: f64::NAN,
-                        phase2: f64::NAN,
-                    },
+                    Genotype { repeat: repeat.clone(), phase1: f64::NAN, phase2: f64::NAN },
                     found_hp_tags,
                 ))
             } else {

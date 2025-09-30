@@ -1,7 +1,9 @@
+use crate::locus_search::{
+    extract_clean_sample_names, find_locus, LocusSearchConfig, OverlapStrategy,
+};
 use plotly::{Histogram, Plot};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use crate::locus_search::{LocusSearchConfig, find_locus, extract_clean_sample_names, OverlapStrategy};
 
 pub fn plot(
     combined: PathBuf,
@@ -36,12 +38,12 @@ pub fn plot(
         target_region: region,
         overlap_strategy: OverlapStrategy::Containment,
     };
-    
+
     let locus_match = find_locus(config).expect("Specified interval not found!");
-    
+
     let mut lengths_for_plot: HashMap<String, Vec<f64>> = HashMap::new();
     let mut ids_for_plot: HashMap<String, Vec<&String>> = HashMap::new();
-    
+
     for (sample, length) in samples.iter().zip(locus_match.values) {
         if samples_map.contains_key(sample) {
             lengths_for_plot

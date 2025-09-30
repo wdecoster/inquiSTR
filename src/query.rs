@@ -1,8 +1,8 @@
+use crate::locus_search::{extract_sample_names, find_multiple_loci, OverlapStrategy};
 use log::debug;
 use std::collections::HashMap;
 use std::io::BufRead;
 use std::path::PathBuf;
-use crate::locus_search::{find_multiple_loci, extract_sample_names, OverlapStrategy};
 
 pub fn query(combined: PathBuf, region: String) {
     if !combined.exists() {
@@ -21,7 +21,7 @@ pub fn query(combined: PathBuf, region: String) {
 
     // Use the new locus search utility with overlap strategy (original behavior)
     let matches = find_multiple_loci(combined, region, OverlapStrategy::Overlap);
-    
+
     if matches.is_empty() {
         eprintln!("No matching intervals found in file");
         return;
@@ -33,8 +33,8 @@ pub fn query(combined: PathBuf, region: String) {
 
     for locus_match in matches {
         // Create interval name
-        let interval_name = format!("{}:{}-{}", 
-            locus_match.chromosome, locus_match.start, locus_match.end);
+        let interval_name =
+            format!("{}:{}-{}", locus_match.chromosome, locus_match.start, locus_match.end);
         matching_intervals.push(interval_name);
 
         // Collect values by sample
@@ -49,7 +49,7 @@ pub fn query(combined: PathBuf, region: String) {
         1 => {
             // Single interval: print sorted by value
             println!("name\t{}", matching_intervals[0]);
-            
+
             // Sort samples by their STR length (descending, NaN values last)
             let mut zipped: Vec<(String, Vec<f64>)> = lengths.into_iter().collect();
             zipped.sort_by_key(|(_, val)| {
@@ -67,11 +67,9 @@ pub fn query(combined: PathBuf, region: String) {
         _ => {
             // Multiple intervals: print as table
             println!("name\t{}", matching_intervals.join("\t"));
-            
+
             for (name, val) in lengths {
-                let length_strings: Vec<String> = val.iter()
-                    .map(|x| x.to_string())
-                    .collect();
+                let length_strings: Vec<String> = val.iter().map(|x| x.to_string()).collect();
                 println!("{name}\t{length}", length = length_strings.join("\t"));
             }
         }
