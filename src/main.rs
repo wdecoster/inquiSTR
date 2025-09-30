@@ -26,6 +26,8 @@ use clap::{Parser, Subcommand};
 use log::info;
 use std::{io::BufRead, path::PathBuf};
 
+pub mod bam_utils;
+pub mod batch;
 pub mod call;
 pub mod combine;
 pub mod histogram;

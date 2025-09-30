@@ -1,5 +1,7 @@
 use bio::io::bed;
-use std::{collections::HashMap, fmt};
+use std::{collections::HashMap, fmt, path::PathBuf};
+
+use crate::bam_utils::get_chrom_lengths_from_bam_header;
 
 #[derive(Debug)]
 pub struct RepeatIntervalIterator {
@@ -124,5 +126,71 @@ impl RepeatInterval {
     }
     pub fn new(chrom: &str, start: u32, end: u32) -> Self {
         Self { chrom: chrom.to_string(), start, end }
+    }
+}
+
+/// Get targets from region string or region file
+pub fn get_targets(
+    region: Option<String>,
+    region_file: Option<PathBuf>,
+    bam: &str,
+    max_locus: Option<u32>,
+) -> RepeatIntervalIterator {
+    let chrom_lengths = get_chrom_lengths_from_bam_header(bam.to_string());
+    match (&region, &region_file) {
+        // a region string
+        (Some(region), None) => RepeatIntervalIterator::from_string(region, chrom_lengths),
+        // a region file
+        (None, Some(region_file)) => RepeatIntervalIterator::from_bed(
+            &region_file.to_string_lossy().to_string(),
+            chrom_lengths,
+            max_locus,
+        ),
+        // invalid input
+        _ => {
+            eprintln!("ERROR: Specify a region string (-r) or a region_file (-R)!\n");
+            std::process::exit(1);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::bam_utils::get_chrom_lengths_from_bam_header;
+    use std::fs::File;
+    use std::io::Write;
+
+    #[test]
+    fn test_max_locus_filter() {
+        // Test filtering functionality by creating a test BED file and checking results
+        
+        // Create a temporary test BED file
+        let test_bed_content =
+            "chr7\t154778571\t154779363\tsmall_interval\nchr7\t154780000\t154900000\thuge_interval\n";
+        let mut file = File::create("test_temp_max_locus.bed").expect("Could not create test file");
+        file.write_all(test_bed_content.as_bytes())
+            .expect("Could not write test file");
+
+        let chrom_lengths = get_chrom_lengths_from_bam_header(String::from("test-data/small-test.bam"));
+
+        // Test without max_locus - should include both intervals
+        let repeats_no_filter = RepeatIntervalIterator::from_bed(
+            &String::from("test_temp_max_locus.bed"),
+            chrom_lengths.clone(),
+            None,
+        );
+        assert_eq!(repeats_no_filter.num_intervals, 2);
+
+        // Test with max_locus 1000 - should filter out the huge interval (120000 bp)
+        let repeats_with_filter = RepeatIntervalIterator::from_bed(
+            &String::from("test_temp_max_locus.bed"),
+            chrom_lengths,
+            Some(1000),
+        );
+        assert_eq!(repeats_with_filter.num_intervals, 1);
+
+        // Clean up
+        std::fs::remove_file("test_temp_max_locus.bed").expect("Could not remove test file");
     }
 }

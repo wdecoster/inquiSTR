@@ -1,6 +1,6 @@
 [package]
 name = "inquiSTR"
-version = "0.15.7"
+version = "0.16.0"
 edition = "2021"
 rust-version = "1.88.0"
 authors = ["Wouter De Coster <wouter.decoster@gmail.com>"]
