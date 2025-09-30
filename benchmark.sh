@@ -1,20 +1,39 @@
 #!/bin/bash
 # Complete inquiSTR benchmarking script with optional Valgrind memory profiling
-# Usage: ./benchmark.sh [--skip-valgrind] [--help]
-# Environment: SKIP_VALGRIND=1 to disable Valgrind profiling
+# Usage: ./benchmark.sh --current <binary> [--prev <binary>] [--skip-valgrind] [--help]
 
 set -e  # Exit on any error
 
-# Parse command line arguments
+# Initialize variables
 SKIP_VALGRIND_ARG=false
+CURRENT_BINARY=""
+PREV_BINARY=""
+COMPARISON_MODE=false
+
+# Parse command line arguments
 while [[ $# -gt 0 ]]; do
     case $1 in
+        --current)
+            CURRENT_BINARY="$2"
+            shift 2
+            ;;
+        --prev)
+            PREV_BINARY="$2"
+            shift 2
+            ;;
         --skip-valgrind)
             SKIP_VALGRIND_ARG=true
             shift
             ;;
         --help|-h)
-            echo "Usage: $0 [OPTIONS]"
+            echo "Usage: $0 --current <binary> [--prev <binary>] [OPTIONS]"
+            echo ""
+            echo "REQUIRED:"
+            echo "  --current <path>   Path to current binary to benchmark"
+            echo ""
+            echo "OPTIONAL:"
+            echo "  --prev <path>      Path to previous binary for comparison"
+            echo "                     If provided, enables comparison mode"
             echo ""
             echo "OPTIONS:"
             echo "  --skip-valgrind    Disable Valgrind memory profiling (faster execution)"
@@ -24,9 +43,10 @@ while [[ $# -gt 0 ]]; do
             echo "  SKIP_VALGRIND=1    Alternative way to disable Valgrind profiling"
             echo ""
             echo "Examples:"
-            echo "  $0                           # Full benchmark with Valgrind"
-            echo "  $0 --skip-valgrind          # Fast benchmark, no Valgrind"
-            echo "  SKIP_VALGRIND=1 $0          # Fast benchmark using env var"
+            echo "  $0 --current ./target/release/inquiSTR"
+            echo "  $0 --current ./target/release/inquiSTR --prev ./inquiSTR_old"
+            echo "  $0 --current ./target/release/inquiSTR --skip-valgrind"
+            echo "  $0 --current ./target/release/inquiSTR --prev ./inquiSTR_old --skip-valgrind"
             exit 0
             ;;
         *)
@@ -37,15 +57,37 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# Validate required arguments
+if [[ -z "$CURRENT_BINARY" ]]; then
+    echo "ERROR: --current <binary> is required"
+    echo "Use --help for usage information"
+    exit 1
+fi
+
+# Check if comparison mode is enabled
+if [[ -n "$PREV_BINARY" ]]; then
+    COMPARISON_MODE=true
+fi
+
 # Determine if Valgrind should be skipped (command line arg takes precedence)
 if [[ "$SKIP_VALGRIND_ARG" == true || "$SKIP_VALGRIND" == "1" ]]; then
     SKIP_VALGRIND_ENABLED=true
-    echo "=== inquiSTR Fast Benchmarking Script ==="
-    echo "Comparing v0.14.0 vs v0.15.0 (Valgrind disabled for speed)"
+    if [[ "$COMPARISON_MODE" == true ]]; then
+        echo "=== inquiSTR Fast Benchmarking Script (Comparison Mode) ==="
+        echo "Comparing $(basename "$PREV_BINARY") vs $(basename "$CURRENT_BINARY") (Valgrind disabled for speed)"
+    else
+        echo "=== inquiSTR Fast Benchmarking Script (Single Binary) ==="
+        echo "Testing $(basename "$CURRENT_BINARY") (Valgrind disabled for speed)"
+    fi
 else
     SKIP_VALGRIND_ENABLED=false
-    echo "=== inquiSTR Performance Benchmarking Script ==="
-    echo "Comparing v0.14.0 vs v0.15.0 with Valgrind memory profiling"
+    if [[ "$COMPARISON_MODE" == true ]]; then
+        echo "=== inquiSTR Performance Benchmarking Script (Comparison Mode) ==="
+        echo "Comparing $(basename "$PREV_BINARY") vs $(basename "$CURRENT_BINARY") with Valgrind memory profiling"
+    else
+        echo "=== inquiSTR Performance Benchmarking Script (Single Binary) ==="
+        echo "Testing $(basename "$CURRENT_BINARY") with Valgrind memory profiling"
+    fi
 fi
 
 echo "Started at: $(date)"
@@ -83,18 +125,14 @@ calculate_speedup() {
     echo "scale=2; $old_sec / $new_sec" | bc -l
 }
 
-# Set up binary paths
-INQUISTR_014_PATH="./inquiSTR_014"
-INQUISTR_015_PATH="./inquiSTR_015"
-
-# Check if required files exist
-if [[ ! -f "$INQUISTR_014_PATH" ]]; then
-    echo "ERROR: inquiSTR_014 binary not found!"
+# Check if required binaries exist
+if [[ ! -f "$CURRENT_BINARY" ]]; then
+    echo "ERROR: Current binary not found: $CURRENT_BINARY"
     exit 1
 fi
 
-if [[ ! -f "$INQUISTR_015_PATH" ]]; then
-    echo "ERROR: inquiSTR_015 binary not found!"
+if [[ "$COMPARISON_MODE" == true && ! -f "$PREV_BINARY" ]]; then
+    echo "ERROR: Previous binary not found: $PREV_BINARY"
     exit 1
 fi
 
@@ -136,24 +174,29 @@ echo ""
 
 # Log binary versions for tracking
 echo "=== BINARY VERSION INFORMATION ==="
-echo "inquiSTR v0.14.0 version details:"
-"$INQUISTR_014_PATH" --version 2>/dev/null || echo "  Version information not available"
 
-echo ""
-echo "inquiSTR v0.15.x version details:"  
-"$INQUISTR_015_PATH" --version 2>/dev/null || echo "  Version information not available"
+if [[ "$COMPARISON_MODE" == true ]]; then
+    echo "Previous binary ($(basename "$PREV_BINARY")):"
+    "$PREV_BINARY" --version 2>/dev/null || echo "  Version information not available"
+    echo ""
+fi
+
+echo "Current binary ($(basename "$CURRENT_BINARY")):"
+"$CURRENT_BINARY" --version 2>/dev/null || echo "  Version information not available"
 
 echo ""
 echo "Build information:"
-echo "  inquiSTR_014 size: $(ls -lhL "$INQUISTR_014_PATH" | awk '{print $5}')"
-echo "  inquiSTR_015 size: $(ls -lhL "$INQUISTR_015_PATH" | awk '{print $5}')"
-echo "  inquiSTR_014 modified: $(stat -L -c %y "$INQUISTR_014_PATH" 2>/dev/null | cut -d. -f1 || echo "unknown")"
-echo "  inquiSTR_015 modified: $(stat -L -c %y "$INQUISTR_015_PATH" 2>/dev/null | cut -d. -f1 || echo "unknown")"
+if [[ "$COMPARISON_MODE" == true ]]; then
+    echo "  Previous binary size: $(ls -lhL "$PREV_BINARY" | awk '{print $5}')"
+    echo "  Previous binary modified: $(stat -L -c %y "$PREV_BINARY" 2>/dev/null | cut -d. -f1 || echo "unknown")"
+fi
+echo "  Current binary size: $(ls -lhL "$CURRENT_BINARY" | awk '{print $5}')"
+echo "  Current binary modified: $(stat -L -c %y "$CURRENT_BINARY" 2>/dev/null | cut -d. -f1 || echo "unknown")"
 echo ""
 
 # Clean previous results
 echo "Cleaning previous benchmark results..."
-rm -f output_014*.tsv output_015*.tsv benchmark_*.log memory_*.txt massif_*.out valgrind_*.log
+rm -f output_prev*.tsv output_current*.tsv benchmark_*.log memory_*.txt massif_*.out valgrind_*.log
 echo ""
 
 # =============================================================================
@@ -161,13 +204,15 @@ echo ""
 # =============================================================================
 echo "=== TIMING BENCHMARKS ==="
 
-echo "📊 Testing v0.14.0 (timing)..."
-/usr/bin/time -v "$INQUISTR_014_PATH" call alignment.cram --region-file benchmark_repeats.bed --threads 1 > output_014_time.tsv 2> benchmark_014_time.log
-echo "✓ v0.14.0 timing complete"
+if [[ "$COMPARISON_MODE" == true ]]; then
+    echo "📊 Testing previous binary ($(basename "$PREV_BINARY")) (timing)..."
+    /usr/bin/time -v "$PREV_BINARY" call alignment.cram --region-file benchmark_repeats.bed --threads 1 > output_prev_time.tsv 2> benchmark_prev_time.log
+    echo "✓ Previous binary timing complete"
+fi
 
-echo "📊 Testing v0.15.0 (timing)..."
-/usr/bin/time -v "$INQUISTR_015_PATH" call alignment.cram --region-file benchmark_repeats.bed --threads 1 > output_015_time.tsv 2> benchmark_015_time.log
-echo "✓ v0.15.0 timing complete"
+echo "📊 Testing current binary ($(basename "$CURRENT_BINARY")) (timing)..."
+/usr/bin/time -v "$CURRENT_BINARY" call alignment.cram --region-file benchmark_repeats.bed --threads 1 > output_current_time.tsv 2> benchmark_current_time.log
+echo "✓ Current binary timing complete"
 
 echo ""
 
@@ -177,55 +222,59 @@ echo ""
 if [[ "$VALGRIND_AVAILABLE" == true ]]; then
     echo "=== VALGRIND MEMORY PROFILING ==="
     
-    echo "🧠 Running v0.14.0 with Valgrind Massif (memory profiling)..."
+    if [[ "$COMPARISON_MODE" == true ]]; then
+        echo "🧠 Running previous binary ($(basename "$PREV_BINARY")) with Valgrind Massif (memory profiling)..."
+        echo "   This may take significantly longer than normal execution..."
+        valgrind --tool=massif \
+                 --massif-out-file=massif_prev.out \
+                 --time-unit=ms \
+                 --detailed-freq=1 \
+                 --max-snapshots=200 \
+                 "$PREV_BINARY" call alignment.cram --region-file benchmark_repeats.bed --threads 1 \
+                 > output_prev_valgrind.tsv 2> valgrind_prev.log
+        
+        # Generate memory report for previous binary
+        ms_print massif_prev.out > memory_report_prev.txt
+        echo "✓ Previous binary Valgrind profiling complete"
+    fi
+    
+    echo "🧠 Running current binary ($(basename "$CURRENT_BINARY")) with Valgrind Massif (memory profiling)..."
     echo "   This may take significantly longer than normal execution..."
     valgrind --tool=massif \
-             --massif-out-file=massif_014.out \
+             --massif-out-file=massif_current.out \
              --time-unit=ms \
              --detailed-freq=1 \
              --max-snapshots=200 \
-             "$INQUISTR_014_PATH" call alignment.cram --region-file benchmark_repeats.bed --threads 1 \
-             > output_014_valgrind.tsv 2> valgrind_014.log
+             "$CURRENT_BINARY" call alignment.cram --region-file benchmark_repeats.bed --threads 1 \
+             > output_current_valgrind.tsv 2> valgrind_current.log
     
-    # Generate memory report for v0.14.0
-    ms_print massif_014.out > memory_report_014.txt
-    echo "✓ v0.14.0 Valgrind profiling complete"
-    
-    echo "🧠 Running v0.15.0 with Valgrind Massif (memory profiling)..."
-    echo "   This may take significantly longer than normal execution..."
-    valgrind --tool=massif \
-             --massif-out-file=massif_015.out \
-             --time-unit=ms \
-             --detailed-freq=1 \
-             --max-snapshots=200 \
-             "$INQUISTR_015_PATH" call alignment.cram --region-file benchmark_repeats.bed --threads 1 \
-             > output_015_valgrind.tsv 2> valgrind_015.log
-    
-    # Generate memory report for v0.15.0
-    ms_print massif_015.out > memory_report_015.txt
-    echo "✓ v0.15.0 Valgrind profiling complete"
+    # Generate memory report for current binary
+    ms_print massif_current.out > memory_report_current.txt
+    echo "✓ Current binary Valgrind profiling complete"
     
     echo ""
     
     # Additional Valgrind checks for memory leaks
     echo "🔍 Running Valgrind Memcheck for memory leaks..."
     
-    echo "   Checking v0.14.0 for memory leaks..."
-    valgrind --tool=memcheck \
-             --leak-check=full \
-             --show-leak-kinds=all \
-             --track-origins=yes \
-             --log-file=memcheck_014.log \
-             "$INQUISTR_014_PATH" call alignment.cram --region-file benchmark_repeats.bed --threads 1 \
-             > /dev/null 2>&1
+    if [[ "$COMPARISON_MODE" == true ]]; then
+        echo "   Checking previous binary ($(basename "$PREV_BINARY")) for memory leaks..."
+        valgrind --tool=memcheck \
+                 --leak-check=full \
+                 --show-leak-kinds=all \
+                 --track-origins=yes \
+                 --log-file=memcheck_prev.log \
+                 "$PREV_BINARY" call alignment.cram --region-file benchmark_repeats.bed --threads 1 \
+                 > /dev/null 2>&1
+    fi
     
-    echo "   Checking v0.15.0 for memory leaks..."
+    echo "   Checking current binary ($(basename "$CURRENT_BINARY")) for memory leaks..."
     valgrind --tool=memcheck \
              --leak-check=full \
              --show-leak-kinds=all \
              --track-origins=yes \
-             --log-file=memcheck_015.log \
-             "$INQUISTR_015_PATH" call alignment.cram --region-file benchmark_repeats.bed --threads 1 \
+             --log-file=memcheck_current.log \
+             "$CURRENT_BINARY" call alignment.cram --region-file benchmark_repeats.bed --threads 1 \
              > /dev/null 2>&1
     
     echo "✓ Memory leak analysis complete"
@@ -245,11 +294,13 @@ for threads in 2 4 8; do
     if [[ $(nproc) -ge $threads ]]; then
         echo "🔄 Testing with $threads threads..."
         
-        echo "   v0.14.0 ($threads threads)..."
-        /usr/bin/time -v "$INQUISTR_014_PATH" call alignment.cram --region-file benchmark_repeats.bed --threads $threads > output_014_t${threads}.tsv 2> benchmark_014_t${threads}.log
+        if [[ "$COMPARISON_MODE" == true ]]; then
+            echo "   Previous binary ($threads threads)..."
+            /usr/bin/time -v "$PREV_BINARY" call alignment.cram --region-file benchmark_repeats.bed --threads $threads > output_prev_t${threads}.tsv 2> benchmark_prev_t${threads}.log
+        fi
         
-        echo "   v0.15.0 ($threads threads)..."
-        /usr/bin/time -v "$INQUISTR_015_PATH" call alignment.cram --region-file benchmark_repeats.bed --threads $threads > output_015_t${threads}.tsv 2> benchmark_015_t${threads}.log
+        echo "   Current binary ($threads threads)..."
+        /usr/bin/time -v "$CURRENT_BINARY" call alignment.cram --region-file benchmark_repeats.bed --threads $threads > output_current_t${threads}.tsv 2> benchmark_current_t${threads}.log
         
         echo "✓ $threads thread test complete"
     else
@@ -270,24 +321,27 @@ echo "============================" >> benchmark_summary.txt
 echo "Generated on: $(date)" >> benchmark_summary.txt
 echo "" >> benchmark_summary.txt
 
-# Version information for inquiSTR v0.14.0
+# Binary version information
 echo "📦 BINARY VERSION INFORMATION:" >> benchmark_summary.txt
 echo "==============================" >> benchmark_summary.txt
 echo "" >> benchmark_summary.txt
-echo "inquiSTR v0.14.0:" >> benchmark_summary.txt
-echo "  Location: $INQUISTR_014_PATH" >> benchmark_summary.txt
-echo "  File size: $(stat -L -f%z "$INQUISTR_014_PATH" 2>/dev/null || stat -L -c%s "$INQUISTR_014_PATH")B" >> benchmark_summary.txt
-echo "  Modified: $(stat -L -f%Sm -t%Y-%m-%d\ %H:%M:%S "$INQUISTR_014_PATH" 2>/dev/null || stat -L -c%y "$INQUISTR_014_PATH")" >> benchmark_summary.txt
-echo "  Version output:" >> benchmark_summary.txt
-"$INQUISTR_014_PATH" --version 2>&1 | sed 's/^/    /' >> benchmark_summary.txt
-echo "" >> benchmark_summary.txt
 
-echo "inquiSTR v0.15.0:" >> benchmark_summary.txt
-echo "  Location: $INQUISTR_015_PATH" >> benchmark_summary.txt
-echo "  File size: $(stat -L -f%z "$INQUISTR_015_PATH" 2>/dev/null || stat -L -c%s "$INQUISTR_015_PATH")B" >> benchmark_summary.txt
-echo "  Modified: $(stat -L -f%Sm -t%Y-%m-%d\ %H:%M:%S "$INQUISTR_015_PATH" 2>/dev/null || stat -L -c%y "$INQUISTR_015_PATH")" >> benchmark_summary.txt
+if [[ "$COMPARISON_MODE" == true ]]; then
+    echo "Previous Binary ($(basename "$PREV_BINARY")):" >> benchmark_summary.txt
+    echo "  Location: $PREV_BINARY" >> benchmark_summary.txt
+    echo "  File size: $(stat -L -f%z "$PREV_BINARY" 2>/dev/null || stat -L -c%s "$PREV_BINARY")B" >> benchmark_summary.txt
+    echo "  Modified: $(stat -L -f%Sm -t%Y-%m-%d\ %H:%M:%S "$PREV_BINARY" 2>/dev/null || stat -L -c%y "$PREV_BINARY")" >> benchmark_summary.txt
+    echo "  Version output:" >> benchmark_summary.txt
+    "$PREV_BINARY" --version 2>&1 | sed 's/^/    /' >> benchmark_summary.txt
+    echo "" >> benchmark_summary.txt
+fi
+
+echo "Current Binary ($(basename "$CURRENT_BINARY")):" >> benchmark_summary.txt
+echo "  Location: $CURRENT_BINARY" >> benchmark_summary.txt
+echo "  File size: $(stat -L -f%z "$CURRENT_BINARY" 2>/dev/null || stat -L -c%s "$CURRENT_BINARY")B" >> benchmark_summary.txt
+echo "  Modified: $(stat -L -f%Sm -t%Y-%m-%d\ %H:%M:%S "$CURRENT_BINARY" 2>/dev/null || stat -L -c%y "$CURRENT_BINARY")" >> benchmark_summary.txt
 echo "  Version output:" >> benchmark_summary.txt
-"$INQUISTR_015_PATH" --version 2>&1 | sed 's/^/    /' >> benchmark_summary.txt
+"$CURRENT_BINARY" --version 2>&1 | sed 's/^/    /' >> benchmark_summary.txt
 echo "" >> benchmark_summary.txt
 
 # Extract timing information
@@ -295,23 +349,27 @@ echo "📈 TIMING RESULTS:" >> benchmark_summary.txt
 echo "==================" >> benchmark_summary.txt
 echo "" >> benchmark_summary.txt
 
-echo "v0.14.0 (Single Thread):" >> benchmark_summary.txt
-grep -E "(Elapsed.*wall clock|Maximum resident set size)" benchmark_014_time.log >> benchmark_summary.txt
-echo "" >> benchmark_summary.txt
+if [[ "$COMPARISON_MODE" == true ]]; then
+    echo "Previous Binary (Single Thread):" >> benchmark_summary.txt
+    grep -E "(Elapsed.*wall clock|Maximum resident set size)" benchmark_prev_time.log >> benchmark_summary.txt
+    echo "" >> benchmark_summary.txt
+fi
 
-echo "v0.15.0 (Single Thread):" >> benchmark_summary.txt
-grep -E "(Elapsed.*wall clock|Maximum resident set size)" benchmark_015_time.log >> benchmark_summary.txt
+echo "Current Binary (Single Thread):" >> benchmark_summary.txt
+grep -E "(Elapsed.*wall clock|Maximum resident set size)" benchmark_current_time.log >> benchmark_summary.txt
 echo "" >> benchmark_summary.txt
 
 # Multithreaded results
 for threads in 2 4 8; do
-    if [[ -f "benchmark_014_t${threads}.log" ]]; then
-        echo "v0.14.0 ($threads threads):" >> benchmark_summary.txt
-        grep -E "(Elapsed.*wall clock|Maximum resident set size)" benchmark_014_t${threads}.log >> benchmark_summary.txt
+    if [[ "$COMPARISON_MODE" == true && -f "benchmark_prev_t${threads}.log" ]]; then
+        echo "Previous Binary ($threads threads):" >> benchmark_summary.txt
+        grep -E "(Elapsed.*wall clock|Maximum resident set size)" benchmark_prev_t${threads}.log >> benchmark_summary.txt
         echo "" >> benchmark_summary.txt
-        
-        echo "v0.15.0 ($threads threads):" >> benchmark_summary.txt
-        grep -E "(Elapsed.*wall clock|Maximum resident set size)" benchmark_015_t${threads}.log >> benchmark_summary.txt
+    fi
+    
+    if [[ -f "benchmark_current_t${threads}.log" ]]; then
+        echo "Current Binary ($threads threads):" >> benchmark_summary.txt
+        grep -E "(Elapsed.*wall clock|Maximum resident set size)" benchmark_current_t${threads}.log >> benchmark_summary.txt
         echo "" >> benchmark_summary.txt
     fi
 done
@@ -330,28 +388,30 @@ cut -f1 benchmark_repeats.bed | sort | uniq -c | sort -nr | head -10 | sed 's/^/
 echo "" >> benchmark_summary.txt
 
 # Extract timing data for analysis
-v014_1t=$(grep -E "Elapsed.*wall clock" benchmark_014_time.log | sed 's/.*time.*: //' || echo "N/A")
-v015_1t=$(grep -E "Elapsed.*wall clock" benchmark_015_time.log | sed 's/.*time.*: //' || echo "N/A")
+if [[ "$COMPARISON_MODE" == true ]]; then
+    prev_1t=$(grep -E "Elapsed.*wall clock" benchmark_prev_time.log | sed 's/.*time.*: //' || echo "N/A")
+fi
+current_1t=$(grep -E "Elapsed.*wall clock" benchmark_current_time.log | sed 's/.*time.*: //' || echo "N/A")
 
-if [[ "$v014_1t" != "N/A" && "$v015_1t" != "N/A" ]]; then
-    speedup=$(calculate_speedup "$v014_1t" "$v015_1t")
-    echo "Single Thread Speedup: ${speedup}x faster (${v014_1t} → ${v015_1t})" >> benchmark_summary.txt
+if [[ "$COMPARISON_MODE" == true && "$prev_1t" != "N/A" && "$current_1t" != "N/A" ]]; then
+    speedup=$(calculate_speedup "$prev_1t" "$current_1t")
+    echo "Single Thread Speedup: ${speedup}x faster (${prev_1t} → ${current_1t})" >> benchmark_summary.txt
 fi
 
 echo "" >> benchmark_summary.txt
 echo "Thread Scaling Analysis:" >> benchmark_summary.txt
 
-# Calculate v0.15.0 internal thread scaling
-if [[ "$BC_AVAILABLE" == true ]]; then
-    v015_1t_sec=$(time_to_seconds "$v015_1t" 2>/dev/null || echo "0")
-    echo "v0.15.0 Thread Scaling vs Single Thread:" >> benchmark_summary.txt
+# Calculate current binary internal thread scaling
+if [[ "$BC_AVAILABLE" == true && "$current_1t" != "N/A" ]]; then
+    current_1t_sec=$(time_to_seconds "$current_1t" 2>/dev/null || echo "0")
+    echo "Current Binary Thread Scaling vs Single Thread:" >> benchmark_summary.txt
     
     for threads in 2 4 8; do
-        if [[ -f "benchmark_015_t${threads}.log" ]]; then
-            v015_time=$(grep -E "Elapsed.*wall clock" benchmark_015_t${threads}.log | sed 's/.*time.*: //')
-            if [[ -n "$v015_time" && "$v015_1t_sec" != "0" ]]; then
-                v015_time_sec=$(time_to_seconds "$v015_time")
-                internal_speedup=$(echo "scale=2; $v015_1t_sec / $v015_time_sec" | bc -l)
+        if [[ -f "benchmark_current_t${threads}.log" ]]; then
+            current_time=$(grep -E "Elapsed.*wall clock" benchmark_current_t${threads}.log | sed 's/.*time.*: //')
+            if [[ -n "$current_time" && "$current_1t_sec" != "0" ]]; then
+                current_time_sec=$(time_to_seconds "$current_time")
+                internal_speedup=$(echo "scale=2; $current_1t_sec / $current_time_sec" | bc -l)
                 efficiency=$(echo "scale=1; ($internal_speedup / $threads) * 100" | bc -l)
                 echo "  $threads threads: ${internal_speedup}x speedup (${efficiency}% efficiency)" >> benchmark_summary.txt
             fi
@@ -360,39 +420,45 @@ if [[ "$BC_AVAILABLE" == true ]]; then
     echo "" >> benchmark_summary.txt
 fi
 
-echo "Cross-Version Thread Comparison:" >> benchmark_summary.txt
-for threads in 2 4 8; do
-    if [[ -f "benchmark_014_t${threads}.log" && -f "benchmark_015_t${threads}.log" ]]; then
-        v014_time=$(grep -E "Elapsed.*wall clock" benchmark_014_t${threads}.log | sed 's/.*time.*: //')
-        v015_time=$(grep -E "Elapsed.*wall clock" benchmark_015_t${threads}.log | sed 's/.*time.*: //')
-        
-        if [[ -n "$v014_time" && -n "$v015_time" ]]; then
-            ratio=$(calculate_speedup "$v014_time" "$v015_time")
-            if (( $(echo "$ratio > 1" | bc -l) )); then
-                echo "$threads threads: v0.15.0 is ${ratio}x faster" >> benchmark_summary.txt
-            else
-                inverse_ratio=$(calculate_speedup "$v015_time" "$v014_time")
-                echo "$threads threads: v0.14.0 is ${inverse_ratio}x faster" >> benchmark_summary.txt
+if [[ "$COMPARISON_MODE" == true ]]; then
+    echo "Cross-Binary Thread Comparison:" >> benchmark_summary.txt
+    for threads in 2 4 8; do
+        if [[ -f "benchmark_prev_t${threads}.log" && -f "benchmark_current_t${threads}.log" ]]; then
+            prev_time=$(grep -E "Elapsed.*wall clock" benchmark_prev_t${threads}.log | sed 's/.*time.*: //')
+            current_time=$(grep -E "Elapsed.*wall clock" benchmark_current_t${threads}.log | sed 's/.*time.*: //')
+            
+            if [[ -n "$prev_time" && -n "$current_time" ]]; then
+                ratio=$(calculate_speedup "$prev_time" "$current_time")
+                if (( $(echo "$ratio > 1" | bc -l) )); then
+                    echo "$threads threads: Current binary is ${ratio}x faster" >> benchmark_summary.txt
+                else
+                    inverse_ratio=$(calculate_speedup "$current_time" "$prev_time")
+                    echo "$threads threads: Previous binary is ${inverse_ratio}x faster" >> benchmark_summary.txt
+                fi
             fi
         fi
-    fi
-done
+    done
+fi
 
 echo "" >> benchmark_summary.txt
 
 # Memory usage comparison
 echo "Memory Usage Comparison:" >> benchmark_summary.txt
-v014_mem=$(grep -E "Maximum resident set size" benchmark_014_time.log | sed 's/.*: //' | sed 's/ .*//')
-v015_mem=$(grep -E "Maximum resident set size" benchmark_015_time.log | sed 's/.*: //' | sed 's/ .*//')
+if [[ "$COMPARISON_MODE" == true ]]; then
+    prev_mem=$(grep -E "Maximum resident set size" benchmark_prev_time.log | sed 's/.*: //' | sed 's/ .*//')
+fi
+current_mem=$(grep -E "Maximum resident set size" benchmark_current_time.log | sed 's/.*: //' | sed 's/ .*//')
 
-if [[ -n "$v014_mem" && -n "$v015_mem" ]]; then
-    mem_diff=$(echo "scale=1; ($v015_mem - $v014_mem) / 1024" | bc -l)
+if [[ "$COMPARISON_MODE" == true && -n "$prev_mem" && -n "$current_mem" ]]; then
+    mem_diff=$(echo "scale=1; ($current_mem - $prev_mem) / 1024" | bc -l)
     if (( $(echo "$mem_diff > 0" | bc -l) )); then
-        echo "v0.15.0 uses ${mem_diff}MB more memory (single thread)" >> benchmark_summary.txt
+        echo "Current binary uses ${mem_diff}MB more memory (single thread)" >> benchmark_summary.txt
     else
         mem_diff_abs=$(echo "$mem_diff * -1" | bc -l)
-        echo "v0.15.0 uses ${mem_diff_abs}MB less memory (single thread)" >> benchmark_summary.txt
+        echo "Current binary uses ${mem_diff_abs}MB less memory (single thread)" >> benchmark_summary.txt
     fi
+elif [[ "$COMPARISON_MODE" == false && -n "$current_mem" ]]; then
+    echo "Current binary memory usage: $(echo "scale=1; $current_mem / 1024" | bc -l)MB (single thread)" >> benchmark_summary.txt
 fi
 
 echo "" >> benchmark_summary.txt
@@ -408,19 +474,19 @@ if [[ "$VALGRIND_AVAILABLE" == true ]]; then
     
     # Debug: Check if memory report files exist
     echo "   [Debug] Memory report files:" >> benchmark_summary.txt
-    echo "   memory_report_014.txt: $([ -f "memory_report_014.txt" ] && echo "exists ($(wc -l < memory_report_014.txt) lines)" || echo "missing")" >> benchmark_summary.txt
-    echo "   memory_report_015.txt: $([ -f "memory_report_015.txt" ] && echo "exists ($(wc -l < memory_report_015.txt) lines)" || echo "missing")" >> benchmark_summary.txt
+    if [[ "$COMPARISON_MODE" == true ]]; then
+        echo "   memory_report_prev.txt: $([ -f "memory_report_prev.txt" ] && echo "exists ($(wc -l < memory_report_prev.txt) lines)" || echo "missing")" >> benchmark_summary.txt
+    fi
+    echo "   memory_report_current.txt: $([ -f "memory_report_current.txt" ] && echo "exists ($(wc -l < memory_report_current.txt) lines)" || echo "missing")" >> benchmark_summary.txt
     
     # Show sample lines for debugging
-    if [[ -f "memory_report_014.txt" ]]; then
-        echo "   [Debug] Sample from memory_report_014.txt:" >> benchmark_summary.txt
-        echo "   $(head -5 memory_report_014.txt | tail -1 | sed 's/^/   /')" >> benchmark_summary.txt
+    if [[ "$COMPARISON_MODE" == true && -f "memory_report_prev.txt" ]]; then
+        echo "   [Debug] Sample from memory_report_prev.txt:" >> benchmark_summary.txt
+        echo "   $(head -5 memory_report_prev.txt | tail -1 | sed 's/^/   /')" >> benchmark_summary.txt
     fi
     echo "" >> benchmark_summary.txt
     
     # Try multiple patterns to extract peak memory from ms_print output
-    v014_peak="N/A"
-    v015_peak="N/A"
     
     # Function to extract peak memory from ms_print output
     extract_peak_memory() {
@@ -457,27 +523,30 @@ if [[ "$VALGRIND_AVAILABLE" == true ]]; then
         echo "$peak"
     }
     
-    # Extract peak memory for both versions
-    v014_peak=$(extract_peak_memory "memory_report_014.txt")
-    v015_peak=$(extract_peak_memory "memory_report_015.txt")
+    # Extract peak memory for binaries
+    if [[ "$COMPARISON_MODE" == true ]]; then
+        prev_peak=$(extract_peak_memory "memory_report_prev.txt")
+        # Fallback: Extract directly from massif files if ms_print parsing failed
+        if [[ "$prev_peak" == "N/A" && -f "massif_prev.out" ]]; then
+            prev_peak=$(grep "^mem_heap_B=" massif_prev.out 2>/dev/null | sed 's/mem_heap_B=//' | sort -n | tail -1 || echo "N/A")
+        fi
+        echo "Previous binary: ${prev_peak} bytes" >> benchmark_summary.txt
+    fi
     
+    current_peak=$(extract_peak_memory "memory_report_current.txt")
     # Fallback: Extract directly from massif files if ms_print parsing failed
-    if [[ "$v014_peak" == "N/A" && -f "massif_014.out" ]]; then
-        v014_peak=$(grep "^mem_heap_B=" massif_014.out 2>/dev/null | sed 's/mem_heap_B=//' | sort -n | tail -1 || echo "N/A")
+    if [[ "$current_peak" == "N/A" && -f "massif_current.out" ]]; then
+        current_peak=$(grep "^mem_heap_B=" massif_current.out 2>/dev/null | sed 's/mem_heap_B=//' | sort -n | tail -1 || echo "N/A")
     fi
-    
-    if [[ "$v015_peak" == "N/A" && -f "massif_015.out" ]]; then
-        v015_peak=$(grep "^mem_heap_B=" massif_015.out 2>/dev/null | sed 's/mem_heap_B=//' | sort -n | tail -1 || echo "N/A")
-    fi
-    
-    echo "v0.14.0: ${v014_peak} bytes" >> benchmark_summary.txt
-    echo "v0.15.0: ${v015_peak} bytes" >> benchmark_summary.txt
+    echo "Current binary: ${current_peak} bytes" >> benchmark_summary.txt
     echo "" >> benchmark_summary.txt
     
     # Check for memory leaks
     echo "Memory Leak Analysis:" >> benchmark_summary.txt
-    echo "v0.14.0 leaks: $(grep -c "definitely lost\|possibly lost" memcheck_014.log || echo "0") issues" >> benchmark_summary.txt
-    echo "v0.15.0 leaks: $(grep -c "definitely lost\|possibly lost" memcheck_015.log || echo "0") issues" >> benchmark_summary.txt
+    if [[ "$COMPARISON_MODE" == true ]]; then
+        echo "Previous binary leaks: $(grep -c "definitely lost\|possibly lost" memcheck_prev.log || echo "0") issues" >> benchmark_summary.txt
+    fi
+    echo "Current binary leaks: $(grep -c "definitely lost\|possibly lost" memcheck_current.log || echo "0") issues" >> benchmark_summary.txt
     echo "" >> benchmark_summary.txt
 fi
 
@@ -485,20 +554,27 @@ fi
 echo "🔍 OUTPUT VERIFICATION:" >> benchmark_summary.txt
 echo "=======================" >> benchmark_summary.txt
 echo "" >> benchmark_summary.txt
-echo "v0.14.0 output lines: $(wc -l < output_014_time.tsv)" >> benchmark_summary.txt
-echo "v0.15.0 output lines: $(wc -l < output_015_time.tsv)" >> benchmark_summary.txt
 
-# Compare outputs for correctness
-sort output_014_time.tsv > output_014_sorted.tsv
-sort output_015_time.tsv > output_015_sorted.tsv
-diff --side-by-side --suppress-common-lines output_014_sorted.tsv output_015_sorted.tsv > output_diff.txt || true
-echo "Output differences: $(wc -l < output_diff.txt) lines" >> benchmark_summary.txt
+if [[ "$COMPARISON_MODE" == true ]]; then
+    echo "Previous binary output lines: $(wc -l < output_prev_time.tsv)" >> benchmark_summary.txt
+fi
+echo "Current binary output lines: $(wc -l < output_current_time.tsv)" >> benchmark_summary.txt
 
-if [[ $(wc -l < output_diff.txt) -eq 0 ]]; then
-    echo "✅ Outputs are identical (after sorting)" >> benchmark_summary.txt
+# Compare outputs for correctness if in comparison mode
+if [[ "$COMPARISON_MODE" == true ]]; then
+    sort output_prev_time.tsv > output_prev_sorted.tsv
+    sort output_current_time.tsv > output_current_sorted.tsv
+    diff --side-by-side --suppress-common-lines output_prev_sorted.tsv output_current_sorted.tsv > output_diff.txt || true
+    echo "Output differences: $(wc -l < output_diff.txt) lines" >> benchmark_summary.txt
+
+    if [[ $(wc -l < output_diff.txt) -eq 0 ]]; then
+        echo "✅ Outputs are identical (after sorting)" >> benchmark_summary.txt
+    else
+        echo "⚠️  Outputs differ - check output_diff.txt for details" >> benchmark_summary.txt
+        echo "   Use: diff --side-by-side --suppress-common-lines output_prev_sorted.tsv output_current_sorted.tsv" >> benchmark_summary.txt
+    fi
 else
-    echo "⚠️  Outputs differ - check output_diff.txt for details" >> benchmark_summary.txt
-    echo "   Use: diff --side-by-side --suppress-common-lines output_014_sorted.tsv output_015_sorted.tsv" >> benchmark_summary.txt
+    echo "✅ Single binary mode - no output comparison performed" >> benchmark_summary.txt
 fi
 
 echo "" >> benchmark_summary.txt
@@ -513,25 +589,32 @@ cat benchmark_summary.txt
 
 echo ""
 echo "📁 Generated Files:"
-echo "   • benchmark_summary.txt    - Complete results summary"
-echo "   • output_014_time.tsv      - v0.14.0 output (timing run)"
-echo "   • output_015_time.tsv      - v0.15.0 output (timing run)"
-echo "   • benchmark_014_time.log   - v0.14.0 detailed timing"
-echo "   • benchmark_015_time.log   - v0.15.0 detailed timing"
+echo "   • benchmark_summary.txt       - Complete results summary"
+
+if [[ "$COMPARISON_MODE" == true ]]; then
+    echo "   • output_prev_time.tsv        - Previous binary output (timing run)"
+    echo "   • benchmark_prev_time.log     - Previous binary detailed timing"
+fi
+echo "   • output_current_time.tsv     - Current binary output (timing run)"
+echo "   • benchmark_current_time.log  - Current binary detailed timing"
 
 if [[ "$VALGRIND_AVAILABLE" == true ]]; then
-    echo "   • memory_report_014.txt    - v0.14.0 memory profile"
-    echo "   • memory_report_015.txt    - v0.15.0 memory profile"
-    echo "   • massif_014.out          - v0.14.0 Massif data"
-    echo "   • massif_015.out          - v0.15.0 Massif data"
-    echo "   • memcheck_014.log        - v0.14.0 memory leak check"
-    echo "   • memcheck_015.log        - v0.15.0 memory leak check"
-    echo "   • valgrind_014.log        - v0.14.0 Valgrind output"
-    echo "   • valgrind_015.log        - v0.15.0 Valgrind output"
+    if [[ "$COMPARISON_MODE" == true ]]; then
+        echo "   • memory_report_prev.txt      - Previous binary memory profile"
+        echo "   • massif_prev.out            - Previous binary Massif data"
+        echo "   • memcheck_prev.log          - Previous binary memory leak check"
+        echo "   • valgrind_prev.log          - Previous binary Valgrind output"
+    fi
+    echo "   • memory_report_current.txt   - Current binary memory profile"
+    echo "   • massif_current.out         - Current binary Massif data"
+    echo "   • memcheck_current.log       - Current binary memory leak check"
+    echo "   • valgrind_current.log       - Current binary Valgrind output"
 fi
 
-echo "   • output_diff.txt          - Output comparison"
-echo "   • benchmark_*_t*.log       - Multithreaded results"
+if [[ "$COMPARISON_MODE" == true ]]; then
+    echo "   • output_diff.txt             - Output comparison"
+fi
+echo "   • benchmark_*_t*.log          - Multithreaded results"
 echo ""
 
 echo "Completed at: $(date)"
@@ -539,9 +622,16 @@ echo ""
 
 echo "💡 TIPS:"
 if [[ "$VALGRIND_AVAILABLE" == true ]]; then
-    echo "   📊 Visualize memory usage: massif-visualizer massif_014.out"
-    echo "   🚀 For faster runs on large datasets: $0 --skip-valgrind"
+    if [[ "$COMPARISON_MODE" == true ]]; then
+        echo "   📊 Visualize memory usage: massif-visualizer massif_prev.out massif_current.out"
+    else
+        echo "   📊 Visualize memory usage: massif-visualizer massif_current.out"
+    fi
+    echo "   🚀 For faster runs on large datasets: add --skip-valgrind"
 else
     echo "   🧠 For memory profiling: Install valgrind and re-run without --skip-valgrind"
     echo "   ⚡ Current mode optimized for speed on large datasets"
+fi
+if [[ "$COMPARISON_MODE" == false ]]; then
+    echo "   📊 For comparison benchmarks: use --prev <binary_path> --current <binary_path>"
 fi
