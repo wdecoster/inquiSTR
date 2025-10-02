@@ -164,7 +164,7 @@ mod tests {
     #[test]
     fn test_max_locus_filter() {
         // Test filtering functionality by creating a test BED file and checking results
-        
+
         // Create a temporary test BED file
         let test_bed_content =
             "chr7\t154778571\t154779363\tsmall_interval\nchr7\t154780000\t154900000\thuge_interval\n";
@@ -172,7 +172,8 @@ mod tests {
         file.write_all(test_bed_content.as_bytes())
             .expect("Could not write test file");
 
-        let chrom_lengths = get_chrom_lengths_from_bam_header(String::from("test-data/small-test.bam"));
+        let chrom_lengths =
+            get_chrom_lengths_from_bam_header(String::from("test-data/small-test.bam"));
 
         // Test without max_locus - should include both intervals
         let repeats_no_filter = RepeatIntervalIterator::from_bed(
