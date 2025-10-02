@@ -131,6 +131,10 @@ enum Commands {
         /// file with subset of samples to consider
         #[clap(short = 'S', long, value_parser)]
         subset: Option<PathBuf>,
+
+        /// Number of threads to use for parallel processing (0 = auto-detect)
+        #[clap(short = 't', long, value_parser, default_value_t = 0)]
+        threads: usize,
     },
     /// Lookup genotypes and display
     Query {
@@ -260,7 +264,7 @@ fn main() {
         Commands::Scan {} => {
             unimplemented!();
         }
-        Commands::Outlier { combined, minsize, zscore, method, sample, subset } => {
+        Commands::Outlier { combined, minsize, zscore, method, sample, subset, threads } => {
             if !combined.exists() {
                 panic!("Combined file does not exist!");
             }
@@ -276,7 +280,7 @@ fn main() {
                 }
                 (None, None) => None,
             };
-            outlier::outlier(combined, minsize, zscore, method, subset);
+            outlier::outlier(combined, minsize, zscore, method, subset, threads);
         }
         Commands::Query { combined, region } => {
             query::query(combined, region);

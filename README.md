@@ -6,21 +6,16 @@
 [![Documentation](https://docs.rs/inquiSTR/badge.svg)](https://docs.rs/inquiSTR)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-A high-performance toolset to genotype and analyze Short Tandem Repeats (STRs) from long-read sequencing data. Optimized for Oxford Nanopore Technologies (ONT) data with support for both phased and unphased analysis.
+A toolkit for genotyping and analyzing Short Tandem Repeats (STRs) from long-read sequencing data. Works with Oxford Nanopore Technologies (ONT) BAM/CRAM files and supports both phased and unphased analysis.
 
-## 🚀 Features
+## Features
 
-- **Fast STR length determination**: Memory-efficient batch processing for millions of targets
-- **Phased Analysis**: Support for HP-tagged BAM files with comprehensive validation
-- **Downstream Analysis**: Association testing and outlier detection across cohorts  
-- **Cross-platform**: Pre-built binaries for Linux (glibc/musl) and macOS
-
-## 📊 Performance
-
-inquiSTR is optimized for large-scale STR analysis:
-- **Region batching**: 10-100x reduction in I/O operations
-- **Memory efficiency**: ~99% reduction in memory usage vs. naive approaches
-- **Optimized data structures**: Custom STR call storage and processing
+- **STR length genotyping**: Determine repeat lengths at specific genomic loci
+- **Phased analysis**: Use HP tags from phased BAM files to analyze haplotypes separately
+- **Multi-sample analysis**: Combine results across samples for cohort studies
+- **Quality control**: Built-in filtering and validation
+- **Association testing**: R scripts for statistical analysis of STR variations
+- **Cross-platform**: Pre-built binaries for Linux and macOS
 
 ## 📦 Installation
 
@@ -73,6 +68,7 @@ Commands:
   query      Lookup genotypes and display
   histogram
   plot       Show a histogram with multiple groups for a specific repeat
+  pca        Perform Principal Component Analysis on combined STR data
   help       Print this message or the help of the given subcommand(s)
 
 Options:
@@ -100,6 +96,7 @@ Options:
       --sample-name <SAMPLE_NAME>  sample name to use in output
       --reference <REFERENCE>      reference fasta for cram decoding
       --max-locus <MAX_LOCUS>      maximum locus size to consider (intervals larger than this will be filtered out)
+      --batch-size <BATCH_SIZE>    batch size in KB for grouping nearby STR targets [default: 50]
   -h, --help                       Print help
 ```
 
@@ -123,6 +120,12 @@ inquiSTR call sample.cram --reference genome.fa -R regions.bed
 
 # Unphased analysis with custom sample name
 inquiSTR call sample.bam -R regions.bed --unphased --sample-name "Sample123"
+
+# Memory-constrained system (use smaller batch size)
+inquiSTR call sample.bam -R regions.bed --batch-size 30 --threads 4
+
+# High-performance system with ample RAM (use larger batch size)
+inquiSTR call sample.bam -R regions.bed --batch-size 100 --threads 16
 ```
 
 ### `inquiSTR combine` - Multi-sample Analysis
@@ -193,6 +196,7 @@ Options:
       --method <METHOD>    method to test for outliers [default: zscore] [possible values: zscore, dbscan]
   -s, --sample <SAMPLE>    sample to consider
   -S, --subset <SUBSET>    file with subset of samples to consider
+  -t, --threads <THREADS>  Number of threads to use for parallel processing (0 = auto-detect) [default: 0]
   -h, --help               Print help
 ```
 
@@ -216,7 +220,31 @@ inquiSTR outlier combined.tsv --subset sample_list.txt
 
 # Custom minimum expansion size
 inquiSTR outlier combined.tsv --minsize 15
+
+# Use 8 threads for parallel processing (for large datasets)
+inquiSTR outlier combined.tsv --threads 8
+
+# Auto-detect optimal number of threads (default behavior)
+inquiSTR outlier combined.tsv --threads 0
+
+# Combine thread control with other options
+inquiSTR outlier combined.tsv --method dbscan --threads 4 --zscore 2.5
 ```
+
+**Performance Optimization:**
+
+For large datasets (>100K loci), inquiSTR outlier uses parallel processing to improve performance:
+
+- **Automatic threading**: By default (`--threads 0`), uses all available CPU cores
+- **Thread control**: Use `--threads N` to limit CPU usage when running multiple analyses
+- **Memory efficiency**: Processes data in chunks to minimize memory usage
+- **Progress reporting**: Shows processing progress for large datasets
+
+**Threading Guidelines:**
+
+- Use fewer threads (`--threads 2-4`) when running multiple analyses simultaneously
+- Use more threads (`--threads 8+`) for single large-scale analyses on high-performance systems
+- For very large datasets (>1M loci), consider limiting threads to avoid memory pressure
 
 ### `inquiSTR histogram` - Data Visualization
 
@@ -275,6 +303,80 @@ inquiSTR plot combined.tsv metadata.tsv chr4:3074877-3074933 \
 inquiSTR plot combined.tsv metadata.tsv chr15:34419414-34419461 \
   --condition "status:case,control" --output "case_control_plot.html"
 ```
+
+### `inquiSTR pca` - Principal Component Analysis
+
+Perform Principal Component Analysis (PCA) on combined STR data to identify population structure and sample relationships. This is particularly useful for large-scale genomic analyses and quality control.
+
+```text
+Usage: inquiSTR pca [OPTIONS] <COMBINED>
+
+Arguments:
+  <COMBINED>  Combined file of STR calls from inquiSTR combine command
+
+Options:
+  -o, --output <OUTPUT>            HTML output file name for interactive PCA plot [default: pca_plot.html]
+  -c, --components <COMPONENTS>    Number of principal components to compute (currently only first 2 are plotted) [default: 10]
+  -t, --threads <THREADS>          Number of threads to use for parallel processing (0 = auto-detect) [default: 0]
+  -a, --aggregation <AGGREGATION>  Method for aggregating H1/H2 allele lengths: max (default), min, or sum [default: max]
+  -h, --help                       Print help
+```
+
+**Performance and Memory Optimization:**
+
+For large datasets (>100K loci), inquiSTR uses intelligent feature selection and parallel processing:
+
+- **Automatic feature selection**: Selects the most informative STR loci based on variance and completeness
+- **Streaming processing**: Processes data in chunks to minimize memory usage
+- **Parallel computing**: Utilizes multiple CPU cores for feature scoring and data loading
+- **Thread control**: Use `--threads` to limit CPU usage (0 = use all available cores)
+
+**Allele Aggregation Methods:**
+
+The `--aggregation` parameter controls how the two allele lengths (H1/H2) are combined for each sample:
+
+- **max**: Uses the longer allele length (default, good for detecting expansions)
+- **min**: Uses the shorter allele length (useful for identifying deletions)
+- **sum**: Uses the sum of both alleles (captures total repeat burden)
+
+**Examples:**
+
+```bash
+# Basic PCA analysis
+inquiSTR pca combined.tsv
+
+# Use maximum aggregation with 8 threads and custom output
+inquiSTR pca combined.tsv --aggregation max --threads 8 --output population_pca.html
+
+# Use minimum aggregation to focus on deletions
+inquiSTR pca combined.tsv --aggregation min --output deletion_pca.html
+
+# Use sum aggregation to capture total repeat burden
+inquiSTR pca combined.tsv --aggregation sum --threads 4 --output total_burden_pca.html
+
+# Compute more principal components (only first 2 are plotted)
+inquiSTR pca combined.tsv --components 20 --output detailed_pca.html
+```
+
+**Performance Tips:**
+
+- For very large datasets (>1M loci), consider using fewer threads to avoid memory pressure
+- The sum aggregation method may be more sensitive to technical artifacts
+- Max aggregation is recommended for most population genetics applications
+
+## Performance Tuning
+
+The `--batch-size` parameter controls how inquiSTR groups nearby STR targets for processing, affecting both memory usage and I/O efficiency:
+
+- **Default (50KB)**: Works well for most systems and datasets
+- **Smaller values (20-35KB)**: Use on memory-constrained systems or when processing many samples simultaneously
+- **Larger values (80-100KB)**: Optimal for high-performance systems with ample RAM, especially beneficial under heavy system load
+
+**Guidelines:**
+
+- Increase batch size if you have >32GB RAM and fast storage (SSD)
+- Decrease batch size if experiencing memory pressure or running many parallel jobs
+- Test different values with your specific data to find the optimal setting
 
 ## Usage for Association Testing
 
