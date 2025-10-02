@@ -103,6 +103,10 @@ enum Commands {
         // this validator gets applied to each element from the Vec separately
         #[clap(value_parser, required = true)]
         calls: Vec<PathBuf>,
+
+        /// Number of threads to use for parallel processing (0 = auto-detect)
+        #[clap(short = 't', long, value_parser, default_value_t = 0)]
+        threads: usize,
     },
     /// Search for regions potentially containing a polymorphic repeat
     Scan {},
@@ -258,8 +262,8 @@ fn main() {
             max_locus,
             batch_size,
         ),
-        Commands::Combine { calls } => {
-            combine::combine(calls);
+        Commands::Combine { calls, threads } => {
+            combine::combine(calls, threads);
         }
         Commands::Scan {} => {
             unimplemented!();

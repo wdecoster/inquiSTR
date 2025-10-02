@@ -133,14 +133,25 @@ inquiSTR call sample.bam -R regions.bed --batch-size 100 --threads 16
 Variants from multiple samples can be combined with `inquiSTR combine`.
 
 ```text
-Usage: inquiSTR combine <CALLS>...
+Usage: inquiSTR combine [OPTIONS] <CALLS>...
 
 Arguments:
   <CALLS>...  files from inquiSTR call
 
 Options:
-  -h, --help  Print help
+  -t, --threads <THREADS>  Number of threads to use for parallel processing (0 = auto-detect) [default: 0]
+  -h, --help               Print help
 ```
+
+**Performance and Validation Features:**
+
+For large-scale analyses, inquiSTR combine includes optimizations and validation:
+
+- **Parallel header processing**: Headers from multiple files are read in parallel
+- **Variant consistency checking**: Ensures all files have identical loci in the same order
+- **Progress reporting**: Shows processing progress for large datasets
+- **Thread control**: Use `--threads` to control CPU usage for concurrent analyses
+- **Memory efficiency**: Optimized string operations and pre-allocated buffers
 
 **Examples:**
 
@@ -150,7 +161,29 @@ inquiSTR combine sample1.inq sample2.inq sample3.inq > combined.tsv
 
 # Combine all .inq files in current directory
 inquiSTR combine *.inq > cohort_combined.tsv
+
+# Use 8 threads for large-scale combining (500+ files)
+inquiSTR combine *.inq --threads 8 > large_cohort.tsv
+
+# Use fewer threads when running multiple analyses simultaneously
+inquiSTR combine batch1/*.inq --threads 2 > batch1_combined.tsv
+
+# Auto-detect optimal number of threads (default behavior)
+inquiSTR combine *.inq --threads 0 > auto_combined.tsv
 ```
+
+**Validation and Error Handling:**
+
+- **Header validation**: Ensures all files have consistent header formats
+- **Variant coordinate validation**: Panics if files have different loci or different ordering
+- **File existence checking**: Validates all input files exist before processing
+- **Progress reporting**: Shows processing progress for datasets with millions of loci
+
+**Threading Guidelines:**
+
+- For 100+ files: Use `--threads 4-8` for optimal performance
+- For concurrent analyses: Use `--threads 2-4` to avoid system overload
+- For single large analysis: Use `--threads 0` (auto-detect) for maximum performance
 
 ### `inquiSTR query` - Genotype Lookup
 
