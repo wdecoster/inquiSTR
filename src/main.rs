@@ -217,6 +217,10 @@ enum Commands {
         /// Number of threads to use for parallel processing (0 = auto-detect)
         #[clap(short, long, value_parser, default_value_t = 0)]
         threads: usize,
+
+        /// Method for aggregating H1/H2 allele lengths: max (default), min, or sum
+        #[clap(short, long, value_parser, default_value_t = pca::AlleleAggregation::Max)]
+        aggregation: pca::AlleleAggregation,
     },
 }
 
@@ -300,11 +304,11 @@ fn main() {
         Commands::Plot { combined, metadata, condition, region, output } => {
             plot::plot(combined, metadata, condition, region, output)
         }
-        Commands::Pca { combined, output, components, threads } => {
+        Commands::Pca { combined, output, components, threads, aggregation } => {
             if !combined.exists() {
                 panic!("Combined file does not exist!");
             }
-            pca::pca(combined, output, components, threads);
+            pca::pca(combined, output, components, threads, aggregation);
         }
     }
 }
