@@ -1,11 +1,11 @@
 use human_sort::compare as human_compare;
 use log::warn;
 use rust_htslib::bam::ext::BamRecordExtensions;
-use rust_htslib::{bam::Read};
+use rust_htslib::bam::Read;
 use std::collections::HashMap;
 
 use crate::bam_utils::{get_bam_reader, is_accidental_2d};
-use crate::call::{Call, Genotype, median_str_length};
+use crate::call::{median_str_length, Call, Genotype};
 use crate::repeats::RepeatInterval;
 
 /// Represents a batch of nearby repeats to be processed together
@@ -20,41 +20,48 @@ pub struct Batch {
 
 impl Batch {
     pub fn new(chromosome: String, repeats: Vec<RepeatInterval>) -> Self {
-        let start = repeats.first().map(|r| r.start.saturating_sub(10)).unwrap_or(0);
-        let end = repeats.last().map(|r| r.end.saturating_add(10)).unwrap_or(0);
+        let start = repeats
+            .first()
+            .map(|r| r.start.saturating_sub(10))
+            .unwrap_or(0);
+        let end = repeats
+            .last()
+            .map(|r| r.end.saturating_add(10))
+            .unwrap_or(0);
         Self { chromosome, start, end, repeats }
     }
 }
 
 /// Create batches from repeats, grouping nearby repeats within chromosome boundaries
-/// Batches are created within 50kb distance threshold to optimize I/O
-pub fn create_batches(repeats: Vec<RepeatInterval>) -> Vec<Batch> {
-    const BATCH_DISTANCE_THRESHOLD: u32 = 50000; // 50kb threshold for batching
-    
+/// Batches are created within configurable distance threshold to optimize I/O
+pub fn create_batches(repeats: Vec<RepeatInterval>, batch_distance_threshold: u32) -> Vec<Batch> {
     // Group repeats by chromosome first
     let mut by_chromosome: HashMap<String, Vec<RepeatInterval>> = HashMap::new();
-    
+
     for repeat in repeats {
-        by_chromosome.entry(repeat.chrom.clone()).or_default().push(repeat);
+        by_chromosome
+            .entry(repeat.chrom.clone())
+            .or_default()
+            .push(repeat);
     }
-    
+
     // Sort repeats within each chromosome
     for chrom_repeats in by_chromosome.values_mut() {
         chrom_repeats.sort_by(|a, b| a.start.cmp(&b.start));
     }
-    
+
     // Create batches within each chromosome
     let mut all_batches = Vec::new();
-    
+
     for (chromosome, chrom_repeats) in by_chromosome {
         let mut current_batch = Vec::new();
         let mut current_end = 0u32;
-        
+
         for repeat in chrom_repeats {
             // Check if this repeat should be added to current batch or start a new batch
-            let should_batch = !current_batch.is_empty() 
-                && repeat.start <= current_end + BATCH_DISTANCE_THRESHOLD;
-            
+            let should_batch =
+                !current_batch.is_empty() && repeat.start <= current_end + batch_distance_threshold;
+
             if should_batch {
                 // Add to current batch and extend the region
                 current_end = std::cmp::max(current_end, repeat.end.saturating_add(10));
@@ -64,24 +71,23 @@ pub fn create_batches(repeats: Vec<RepeatInterval>) -> Vec<Batch> {
                 if !current_batch.is_empty() {
                     all_batches.push(Batch::new(chromosome.clone(), current_batch));
                 }
-                
+
                 // Start new batch
                 current_end = repeat.end.saturating_add(10);
                 current_batch = vec![repeat];
             }
         }
-        
+
         // Add the final batch for this chromosome
         if !current_batch.is_empty() {
             all_batches.push(Batch::new(chromosome, current_batch));
         }
     }
-    
+
     // Sort batches by chromosome and position for deterministic processing
-    all_batches.sort_by(|a, b| {
-        human_compare(&a.chromosome, &b.chromosome).then(a.start.cmp(&b.start))
-    });
-    
+    all_batches
+        .sort_by(|a, b| human_compare(&a.chromosome, &b.chromosome).then(a.start.cmp(&b.start)));
+
     all_batches
 }
 
@@ -96,17 +102,20 @@ pub fn process_batch_worker(
 ) -> Vec<Genotype> {
     let mut bam = get_bam_reader(bamp, reference);
     let mut results = Vec::new();
-    
+
     // Fetch the entire batch region once
     if let Some(tid) = bam.header().tid(batch.chromosome.as_bytes()) {
         if let Err(e) = bam.fetch((tid, batch.start, batch.end)) {
-            warn!("Failed to fetch batch region {}:{}-{}: {}", 
-                  batch.chromosome, batch.start, batch.end, e);
+            warn!(
+                "Failed to fetch batch region {}:{}-{}: {}",
+                batch.chromosome, batch.start, batch.end, e
+            );
             return results;
         }
 
         // Smart overlap filtering: only store reads that intersect with STR targets
-        let target_intervals_with_idx: Vec<(u32, u32, usize)> = batch.repeats
+        let target_intervals_with_idx: Vec<(u32, u32, usize)> = batch
+            .repeats
             .iter()
             .enumerate()
             .map(|(idx, repeat)| (repeat.start.saturating_sub(100), repeat.end + 100, idx))
@@ -155,7 +164,8 @@ pub fn process_batch_worker(
 
         // Process each target in the batch using the lightweight read info
         for repeat in &batch.repeats {
-            let result = process_target_from_read_info(&batch_reads, repeat, minlen, support, unphased);
+            let result =
+                process_target_from_read_info(&batch_reads, repeat, minlen, support, unphased);
 
             match result {
                 Ok((genotype, _had_hp_tags)) => {
@@ -163,11 +173,8 @@ pub fn process_batch_worker(
                 }
                 Err(_e) => {
                     // Output NaN genotype for failed targets (matches original behavior)
-                    let failed_genotype = Genotype {
-                        repeat: repeat.clone(),
-                        phase1: f64::NAN,
-                        phase2: f64::NAN,
-                    };
+                    let failed_genotype =
+                        Genotype { repeat: repeat.clone(), phase1: f64::NAN, phase2: f64::NAN };
                     results.push(failed_genotype);
                 }
             }

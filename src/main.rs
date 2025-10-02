@@ -92,6 +92,10 @@ enum Commands {
         /// maximum locus size to consider (intervals larger than this will be filtered out)
         #[clap(long, value_parser)]
         max_locus: Option<u32>,
+
+        /// Batch size in KB for grouping nearby STR targets (default: 50). Larger values use more memory but reduce I/O operations. Use 20-35 for memory-constrained systems, 80-100 for high-performance setups.
+        #[clap(long, value_parser, default_value_t = 50)]
+        batch_size: u32,
     },
     /// Combine lengths from multiple bams to a TSV
     Combine {
@@ -209,6 +213,10 @@ enum Commands {
         /// Number of principal components to compute (currently only first 2 are plotted)
         #[clap(short, long, value_parser, default_value_t = 10)]
         components: usize,
+
+        /// Number of threads to use for parallel processing (0 = auto-detect)
+        #[clap(short, long, value_parser, default_value_t = 0)]
+        threads: usize,
     },
 }
 
@@ -228,6 +236,7 @@ fn main() {
             sample_name,
             reference,
             max_locus,
+            batch_size,
         } => call::genotype_repeats(
             bam,
             region,
@@ -239,6 +248,7 @@ fn main() {
             sample_name,
             reference,
             max_locus,
+            batch_size,
         ),
         Commands::Combine { calls } => {
             combine::combine(calls);
@@ -290,11 +300,11 @@ fn main() {
         Commands::Plot { combined, metadata, condition, region, output } => {
             plot::plot(combined, metadata, condition, region, output)
         }
-        Commands::Pca { combined, output, components } => {
+        Commands::Pca { combined, output, components, threads } => {
             if !combined.exists() {
                 panic!("Combined file does not exist!");
             }
-            pca::pca(combined, output, components);
+            pca::pca(combined, output, components, threads);
         }
     }
 }

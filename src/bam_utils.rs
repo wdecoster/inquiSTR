@@ -8,7 +8,6 @@ use std::collections::HashMap;
 use std::env;
 use url::Url;
 
-
 /// Get chromosome lengths from BAM header
 pub fn get_chrom_lengths_from_bam_header(bam: String) -> HashMap<String, u64> {
     let bam = get_bam_reader(&bam, &None);
@@ -38,7 +37,7 @@ fn setup_ssl_certificates() {
     if env::var("CURL_CA_BUNDLE").is_ok() {
         return;
     }
-    
+
     // Common CA bundle locations across different systems
     let possible_paths = vec![
         "/etc/ssl/certs/ca-certificates.crt",     // Debian/Ubuntu
@@ -46,9 +45,9 @@ fn setup_ssl_certificates() {
         "/etc/ssl/ca-bundle.pem",                 // SUSE
         "/usr/local/share/certs/ca-root-nss.crt", // FreeBSD
         "/usr/local/etc/openssl/cert.pem",        // macOS Homebrew
-        "/etc/ssl/cert.pem"                       // macOS/OpenBSD
+        "/etc/ssl/cert.pem",                      // macOS/OpenBSD
     ];
-    
+
     // Try each path in order
     for path in possible_paths {
         if std::path::Path::new(path).exists() {
@@ -56,7 +55,7 @@ fn setup_ssl_certificates() {
             return;
         }
     }
-    
+
     // None of the paths exist, warn the user
     warn!(
         "Could not find a valid CA certificate bundle for HTTPS/S3 access. \
@@ -102,23 +101,30 @@ pub fn get_bam_reader(bamp: &String, reference: &Option<String>) -> bam::Indexed
 /// Validates that the BAM/CRAM file contains phasing information (HP tags) by scanning early reads
 /// Returns immediately upon finding the first HP tag, or errors after scanning max_reads without finding any
 /// This provides fast failure detection before expensive processing begins
-pub fn validate_phasing_early(bam_path: &str, reference: &Option<String>, max_reads: usize) -> Result<(), String> {
+pub fn validate_phasing_early(
+    bam_path: &str,
+    reference: &Option<String>,
+    max_reads: usize,
+) -> Result<(), String> {
     let bam_path_string = bam_path.to_string();
     let mut bam = get_bam_reader(&bam_path_string, reference);
     let mut reads_checked = 0;
-    
+
     for record_result in bam.records() {
         if reads_checked >= max_reads {
             break;
         }
-        
+
         match record_result {
             Ok(record) => {
                 // Check for HP tag (haplotype tag)
                 if let Ok(Aux::U8(_)) = record.aux(b"HP") {
                     // Found HP tag - phasing information is present
-                    debug!("Found HP tag in read {} after checking {} reads", 
-                           String::from_utf8_lossy(record.qname()), reads_checked + 1);
+                    debug!(
+                        "Found HP tag in read {} after checking {} reads",
+                        String::from_utf8_lossy(record.qname()),
+                        reads_checked + 1
+                    );
                     return Ok(());
                 }
                 reads_checked += 1;
@@ -129,7 +135,7 @@ pub fn validate_phasing_early(bam_path: &str, reference: &Option<String>, max_re
             }
         }
     }
-    
+
     // No HP tags found in the first max_reads reads
     Err(format!(
         "No phasing information (HP tags) found in the first {} reads. \

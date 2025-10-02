@@ -7,11 +7,9 @@ use std::fmt;
 use std::io::{self, Write};
 use std::path::PathBuf;
 
-use crate::batch::{create_batches, process_batch_worker};
 use crate::bam_utils::validate_phasing_early;
-use crate::repeats::{RepeatInterval,get_targets};
-
-
+use crate::batch::{create_batches, process_batch_worker};
+use crate::repeats::{get_targets, RepeatInterval};
 
 // This struct keeps the genotype information and allows to compare them and thus sort them on chromosomal location
 pub struct Genotype {
@@ -86,13 +84,14 @@ pub fn genotype_repeats(
     sample_name: Option<String>,
     reference: Option<String>,
     max_locus: Option<u32>,
+    batch_size_kb: u32,
 ) {
     // only test if path.is_file() if the file is local
     if !PathBuf::from(&bamp).is_file() && !bamp.starts_with("s3") && !bamp.starts_with("https://") {
         error!("ERROR: path to bam file {} is not valid!\n\n", &bamp);
         std::process::exit(1);
     };
-    
+
     // Early validation: check for phasing information before expensive processing
     if !unphased {
         if let Err(err_msg) = validate_phasing_early(&bamp, &reference, 10000) {
@@ -100,29 +99,23 @@ pub fn genotype_repeats(
             std::process::exit(1);
         }
     }
-    
-    let sample = sample_name.unwrap_or_else(|| {
-        extract_sample_name_from_path(&bamp)
-    });
-    
-    let file_header = format!("chromosome\tbegin\tend\t{sample}_H1\t{sample}_H2");
+
     let repeats = get_targets(region, region_file, &bamp, max_locus);
-    
+
     // Unified batch-level producer-consumer approach for both single and multi-threaded
+    // Batch size is configurable for performance optimization
     let all_repeats: Vec<RepeatInterval> = repeats.collect();
     let total_loci = all_repeats.len();
-    
-    // Create batches from all repeats (maintains chromosome boundaries)
-    let batches = create_batches(all_repeats);
-    
-    // Setup progress bar 
+    let batches = create_batches(all_repeats, batch_size_kb * 1000); // Convert kb to basepair
+
+    // Setup progress bar
     let pb = indicatif::ProgressBar::new(total_loci as u64);
     pb.set_style(
         indicatif::ProgressStyle::default_bar()
             .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} loci ({eta})")
             .expect("Failed to set progress bar template")
     );
-    
+
     // Process batches using producer-consumer pattern with configurable worker count
     let results: Vec<Vec<Genotype>> = if threads > 1 {
         // Multi-threaded: Process batches in parallel
@@ -130,13 +123,14 @@ pub fn genotype_repeats(
             .num_threads(threads)
             .build()
             .expect("Failed to build thread pool");
-            
+
         thread_pool.install(|| {
             batches
                 .into_par_iter()
                 .map(|batch| {
                     let batch_size = batch.repeats.len();
-                    let results = process_batch_worker(batch, &bamp, &reference, minlen, support, unphased);
+                    let results =
+                        process_batch_worker(batch, &bamp, &reference, minlen, support, unphased);
                     pb.inc(batch_size as u64);
                     results
                 })
@@ -148,22 +142,27 @@ pub fn genotype_repeats(
             .into_iter()
             .map(|batch| {
                 let batch_size = batch.repeats.len();
-                let results = process_batch_worker(batch, &bamp, &reference, minlen, support, unphased);
+                let results =
+                    process_batch_worker(batch, &bamp, &reference, minlen, support, unphased);
                 pb.inc(batch_size as u64);
                 results
             })
             .collect()
     };
-    
-    pb.finish_with_message("Completed batch processing");
-    
+
+    pb.finish_with_message("Finished!");
+
     // Collect and sort all results
     let mut all_genotypes: Vec<Genotype> = results.into_iter().flatten().collect();
     all_genotypes.sort_unstable();
-    
+
     // Output results in consistent format
     let stdout = io::stdout();
     let mut handle = io::BufWriter::new(stdout);
+    // Use either the sample_name provided as command line argument or extract one from the path
+    let sample = sample_name.unwrap_or_else(|| extract_sample_name_from_path(&bamp));
+
+    let file_header = format!("chromosome\tbegin\tend\t{sample}_H1\t{sample}_H2");
     writeln!(handle, "{file_header}").expect("Failed writing the header.");
     for genotype in &all_genotypes {
         writeln!(handle, "{genotype}").expect("Failed writing the result.");
@@ -173,30 +172,33 @@ pub fn genotype_repeats(
 /// Extract a sample name from a file path by removing path, extension, and common BAM/CRAM suffixes
 fn extract_sample_name_from_path(path: &str) -> String {
     let path_buf = PathBuf::from(path);
-    
+
     // Handle URLs by extracting just the filename part
     let filename = if path.starts_with("http") || path.starts_with("s3") {
         path.rsplit('/').next().unwrap_or(path)
     } else {
-        path_buf.file_name()
+        path_buf
+            .file_name()
             .and_then(|name| name.to_str())
             .unwrap_or(path)
     };
-    
+
     // Remove common extensions and suffixes
     let mut result = filename.to_string();
-    
-    // Remove BAM/CRAM extensions
-    if result.ends_with(".bam") {
+
+    // Remove BAM/CRAM extensions and index files (check longer suffixes first)
+    if result.ends_with(".bam.bai") {
+        result = result.strip_suffix(".bam.bai").unwrap().to_string();
+    } else if result.ends_with(".cram.crai") {
+        result = result.strip_suffix(".cram.crai").unwrap().to_string();
+    } else if result.ends_with(".bam") {
         result = result.strip_suffix(".bam").unwrap().to_string();
-    }
-    if result.ends_with(".cram") {
+    } else if result.ends_with(".cram") {
         result = result.strip_suffix(".cram").unwrap().to_string();
     }
-    
+
     result
 }
-
 
 /// Take the median of the lengths of the STRs, relative to the reference genome
 /// If the vector has fewer than <support> calls then return NAN
@@ -254,6 +256,7 @@ fn test_region() {
         Some("sample".to_string()),
         None,
         None, // No max_locus filter for tests
+        50,   // Default batch size for tests
     );
 }
 
@@ -270,6 +273,7 @@ fn test_region_from_url() {
         Some("sample".to_string()),
         None,
         None, // No max_locus filter for tests
+        50,   // Default batch size for tests
     );
 }
 
@@ -286,6 +290,7 @@ fn test_region_bed() {
         Some("sample".to_string()),
         None,
         None, // No max_locus filter for tests
+        50,   // Default batch size for tests
     );
 }
 #[test]
@@ -301,6 +306,7 @@ fn test_unphased() {
         Some("sample".to_string()),
         None,
         None, // No max_locus filter for tests
+        50,   // Default batch size for tests
     );
 }
 
@@ -318,10 +324,9 @@ fn test_region_wrong_chromosome() {
         Some("sample".to_string()),
         None,
         None, // No max_locus filter for tests
+        50,   // Default batch size for tests
     );
 }
-
-
 
 #[test]
 fn test_phasing_validation_triggers() {
@@ -343,17 +348,14 @@ fn test_phasing_validation_triggers() {
         None,
         5,
         3,
-        1,     // single-threaded
-        true,  // unphased mode - required since test BAM lacks HP tags
+        1,    // single-threaded
+        true, // unphased mode - required since test BAM lacks HP tags
         Some("sample".to_string()),
         None,
         None, // No max_locus filter for tests
+        50,   // Default batch size for tests
     );
 }
-
-
-
-
 
 #[test]
 fn test_nan_genotype_for_unphased_loci() {
@@ -379,6 +381,7 @@ fn test_nan_genotype_for_unphased_loci() {
         Some("test_sample".to_string()),
         None,
         None, // No max_locus filter
+        50,   // Default batch size for tests
     );
 
     // Clean up
@@ -391,30 +394,18 @@ fn test_extract_sample_name_from_path() {
     assert_eq!(extract_sample_name_from_path("test-data/sample.bam"), "sample");
     assert_eq!(extract_sample_name_from_path("test-data/sample.cram"), "sample");
     assert_eq!(extract_sample_name_from_path("/path/to/HG00096.hg38.cram"), "HG00096.hg38");
-    
+
     // Test URLs
+    assert_eq!(extract_sample_name_from_path("https://example.com/data/sample.bam"), "sample");
     assert_eq!(
-        extract_sample_name_from_path("https://example.com/data/sample.bam"), 
-        "sample"
-    );
-    assert_eq!(
-        extract_sample_name_from_path("s3://bucket/data/HG00096.hg38.cram"), 
+        extract_sample_name_from_path("s3://bucket/data/HG00096.hg38.cram"),
         "HG00096.hg38"
     );
-    
+
     // Test complex filenames
     assert_eq!(extract_sample_name_from_path("sample.sorted.dedup.bam"), "sample.sorted.dedup");
-    
+
     // Test edge cases
     assert_eq!(extract_sample_name_from_path("sample"), "sample");
     assert_eq!(extract_sample_name_from_path("sample.bam.bai"), "sample");
 }
-
-
-
-
-
-
-
-
-
