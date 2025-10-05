@@ -1,5 +1,6 @@
 use flate2::read;
 use rayon::prelude::*;
+use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
@@ -20,6 +21,40 @@ fn reader(filename: &str) -> Box<dyn BufRead> {
     } else {
         Box::new(BufReader::with_capacity(128 * 1024, file))
     }
+}
+
+/// Detect if a file contains kmer frequency data or STR call data
+/// Returns true if it's a kmer file, false if it's an STR call file
+fn is_kmer_file(file_path: &Path) -> bool {
+    let mut file_reader = reader(&file_path.to_string_lossy()).lines();
+
+    if let Some(Ok(first_line)) = file_reader.next() {
+        let fields: Vec<&str> = first_line.split('\t').collect();
+
+        // Check if it's a kmer file format
+        // Kmer files have "kmer" as first column header
+        if fields.len() >= 2 && fields[0] == "kmer" {
+            return true;
+        }
+
+        // Check if it's STR call format (with or without header)
+        // STR files either start with "chromosome" or have genomic coordinates
+        if fields.len() >= 3 {
+            if fields[0] == "chromosome" {
+                return false; // STR file with header
+            }
+
+            // Check if first line looks like genomic coordinates (chr1, etc.)
+            if fields[0].starts_with("chr")
+                && fields[1].parse::<u32>().is_ok()
+                && fields[2].parse::<u32>().is_ok()
+            {
+                return false; // STR file without header
+            }
+        }
+    }
+
+    panic!("Unable to determine file format for {}", file_path.display());
 }
 
 pub fn combine(calls: Vec<PathBuf>, threads: usize) {
@@ -50,6 +85,42 @@ pub fn combine(calls: Vec<PathBuf>, threads: usize) {
         }
     }
 
+    // Detect file format from first file and validate all files are the same type
+    let first_file_is_kmer = is_kmer_file(&calls[0]);
+
+    // Validate that all files are the same type as the first file
+    for file in calls.iter().skip(1) {
+        let is_kmer = is_kmer_file(file);
+        if is_kmer != first_file_is_kmer {
+            let first_type = if first_file_is_kmer {
+                "kmer frequency"
+            } else {
+                "STR call"
+            };
+            let current_type = if is_kmer {
+                "kmer frequency"
+            } else {
+                "STR call"
+            };
+            panic!(
+                "File type mismatch: first file {} is a {} file, but file {} is a {} file. All files must be the same type.",
+                calls[0].display(), first_type, file.display(), current_type
+            );
+        }
+    }
+
+    // Route to appropriate combining function based on detected file type
+    if first_file_is_kmer {
+        eprintln!("Detected kmer frequency files - combining kmer data");
+        combine_kmer_files(calls, actual_threads);
+    } else {
+        eprintln!("Detected STR call files - combining STR data");
+        combine_str_files(calls, actual_threads);
+    }
+}
+
+/// Combine STR call files (original functionality)
+fn combine_str_files(calls: Vec<PathBuf>, _actual_threads: usize) {
     // Read and validate headers first
     let headers = read_and_validate_headers(&calls);
     let has_headers = headers[0].split('\t').next() == Some("chromosome");
@@ -65,6 +136,167 @@ pub fn combine(calls: Vec<PathBuf>, threads: usize) {
     process_data_parallel(&calls, has_headers);
 
     eprintln!("Completed combining {} files", calls.len());
+}
+
+/// Combine kmer frequency files from inquiSTR unmapped
+fn combine_kmer_files(calls: Vec<PathBuf>, _actual_threads: usize) {
+    // Read and validate headers from all kmer files
+    let headers = read_and_validate_kmer_headers(&calls);
+
+    // Output combined header
+    output_combined_kmer_header(&headers);
+
+    // Process kmer data
+    process_kmer_data(&calls);
+
+    eprintln!("Completed combining {} kmer frequency files", calls.len());
+}
+
+/// Read and validate headers from kmer frequency files
+fn read_and_validate_kmer_headers(calls: &[PathBuf]) -> Vec<String> {
+    let headers: Vec<String> = calls
+        .par_iter()
+        .enumerate()
+        .map(|(_i, file)| {
+            let mut file_reader =
+                reader(&file.clone().into_os_string().into_string().unwrap()).lines();
+            file_reader
+                .next()
+                .unwrap_or_else(|| panic!("File {} is empty", file.display()))
+                .unwrap_or_else(|e| panic!("Error reading header from {}: {}", file.display(), e))
+        })
+        .collect();
+
+    // Validate that all files have kmer headers
+    for (i, header) in headers.iter().enumerate() {
+        let fields: Vec<&str> = header.split('\t').collect();
+        if fields.len() < 2 || fields[0] != "kmer" {
+            panic!(
+                "Invalid kmer file header in {}: expected 'kmer' as first column, got '{}'",
+                calls[i].display(),
+                fields.first().unwrap_or(&"<empty>")
+            );
+        }
+    }
+
+    headers
+}
+
+/// Output the combined header for kmer files
+fn output_combined_kmer_header(headers: &[String]) {
+    let mut combined_header = vec!["kmer"];
+
+    // Add sample names from all files
+    for header in headers {
+        let fields: Vec<&str> = header.split('\t').collect();
+        if fields.len() >= 2 {
+            combined_header.push(fields[1]); // Sample name is in second column
+        }
+    }
+
+    println!("{}", combined_header.join("\t"));
+}
+
+/// Process kmer data from all files
+fn process_kmer_data(calls: &[PathBuf]) {
+    // Create file readers
+    let mut file_readers: Vec<_> = calls
+        .iter()
+        .map(|file| reader(&file.clone().into_os_string().into_string().unwrap()).lines())
+        .collect();
+
+    // Skip headers
+    for file_reader in &mut file_readers {
+        file_reader.next(); // Skip header line
+    }
+
+    // Collect all kmer data into a master map
+    let mut kmer_data: HashMap<String, Vec<String>> = HashMap::new();
+    let mut line_count = 0;
+    let chunk_size = 1000;
+
+    loop {
+        let mut data_lines: Vec<Option<String>> = Vec::with_capacity(calls.len());
+        let mut all_done = true;
+
+        // Read one line from each file
+        for (file_idx, file_reader) in file_readers.iter_mut().enumerate() {
+            match file_reader.next() {
+                Some(Ok(line)) => {
+                    data_lines.push(Some(line));
+                    all_done = false;
+                }
+                Some(Err(e)) => panic!("Error reading file {}: {}", calls[file_idx].display(), e),
+                None => {
+                    data_lines.push(None);
+                }
+            }
+        }
+
+        if all_done {
+            break;
+        }
+
+        // Process this line set - validate kmer consistency
+        if let Some(ref first_line) = data_lines[0] {
+            let first_fields: Vec<&str> = first_line.split('\t').collect();
+            if first_fields.len() < 2 {
+                panic!("Invalid kmer data line at line {}: {}", line_count, first_line);
+            }
+            let kmer = first_fields[0];
+
+            // Validate that all files have the same kmer (or are finished)
+            for (file_idx, data_line) in data_lines.iter().enumerate() {
+                if let Some(line) = data_line {
+                    let fields: Vec<&str> = line.split('\t').collect();
+                    if fields.len() < 2 {
+                        panic!(
+                            "Invalid kmer data line in file {} at line {}: {}",
+                            file_idx, line_count, line
+                        );
+                    }
+                    if fields[0] != kmer {
+                        panic!(
+                            "Kmer mismatch at line {}: file 0 has '{}', file {} has '{}'",
+                            line_count, kmer, file_idx, fields[0]
+                        );
+                    }
+                } else if !all_done {
+                    panic!(
+                        "File {} finished early at line {}, expected kmer '{}'",
+                        calls[file_idx].display(),
+                        line_count,
+                        kmer
+                    );
+                }
+            }
+
+            // Collect frequency values for this kmer
+            let mut values = Vec::new();
+            for line in data_lines.iter().flatten() {
+                let fields: Vec<&str> = line.split('\t').collect();
+                values.push(fields[1].to_string());
+            }
+
+            kmer_data.insert(kmer.to_string(), values);
+        }
+
+        line_count += 1;
+        if line_count % chunk_size == 0 {
+            eprintln!("Processed {} lines...", line_count);
+        }
+    }
+
+    // Output combined data sorted by kmer
+    let mut sorted_kmers: Vec<_> = kmer_data.keys().collect();
+    sorted_kmers.sort();
+
+    for kmer in sorted_kmers {
+        let values = &kmer_data[kmer];
+        println!("{}\t{}", kmer, values.join("\t"));
+    }
+
+    eprintln!("Processed {} total kmer entries", kmer_data.len());
 }
 
 /// Read and validate headers from all files

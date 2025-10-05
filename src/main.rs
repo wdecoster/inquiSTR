@@ -38,6 +38,7 @@ pub mod pca;
 pub mod plot;
 pub mod query;
 pub mod repeats;
+pub mod unmapped;
 pub mod utils;
 
 // The arguments end up in the Cli struct
@@ -97,9 +98,9 @@ enum Commands {
         #[clap(long, value_parser, default_value_t = 50)]
         batch_size: u32,
     },
-    /// Combine lengths from multiple bams to a TSV
+    /// Combine lengths from multiple bams to a TSV, or combine kmer frequency files from unmapped
     Combine {
-        /// files from inquiSTR call
+        /// files from inquiSTR call or inquiSTR unmapped
         // this validator gets applied to each element from the Vec separately
         #[clap(value_parser, required = true)]
         calls: Vec<PathBuf>,
@@ -230,6 +231,29 @@ enum Commands {
         #[clap(short, long, value_parser, default_value_t = pca::AlleleAggregation::Max)]
         aggregation: pca::AlleleAggregation,
     },
+    /// Count kmer frequencies in unmapped reads
+    #[clap(arg_required_else_help = true)]
+    Unmapped {
+        /// BAM/CRAM file to analyze unmapped reads from
+        #[clap()]
+        bam: String,
+
+        /// Maximum kmer length to count (counts all sizes from 2 to klength)
+        #[clap(short = 'k', long, value_parser, default_value_t = 6)]
+        klength: usize,
+
+        /// Sample name to use in output header
+        #[clap(long, value_parser)]
+        sample_name: Option<String>,
+
+        /// Reference fasta for CRAM decoding
+        #[clap(long, value_parser)]
+        reference: Option<String>,
+
+        /// Number of parallel threads to use
+        #[clap(short, long, value_parser, default_value_t = 1)]
+        threads: usize,
+    },
 }
 
 fn main() {
@@ -317,6 +341,9 @@ fn main() {
                 panic!("Combined file does not exist!");
             }
             pca::pca(combined, output, components, threads, aggregation);
+        }
+        Commands::Unmapped { bam, klength, sample_name, reference, threads } => {
+            unmapped::count_unmapped_kmers(bam, klength, sample_name, reference, threads);
         }
     }
 }

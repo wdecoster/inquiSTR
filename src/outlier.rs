@@ -5,9 +5,10 @@ use dbscan::Model;
 use log::debug;
 
 use std::cmp::max;
-use std::cmp::Ordering;
 use std::io::BufRead;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+use rayon::prelude::*;
 
 /// Helper function to clean sample names by removing _H1/_H2 suffixes
 #[inline]
@@ -50,6 +51,41 @@ fn streaming_stats(values: &[f32]) -> (f32, f32) {
     (mean, variance.max(0.0).sqrt())
 }
 
+/// Detect if input file contains kmer frequency data or STR call data
+/// Returns true if it's a kmer file, false if it's an STR call file
+fn is_kmer_file(file_path: &Path) -> bool {
+    let file_reader = crate::utils::reader(&file_path.to_string_lossy());
+    let mut lines = file_reader.lines();
+
+    if let Some(Ok(first_line)) = lines.next() {
+        let fields: Vec<&str> = first_line.split('\t').collect();
+
+        // Check if it's a kmer file format
+        // Kmer files have "kmer" as first column header
+        if fields.len() >= 2 && fields[0] == "kmer" {
+            return true;
+        }
+
+        // Check if it's STR call format (with or without header)
+        // STR files either start with "chromosome" or have genomic coordinates
+        if fields.len() >= 3 {
+            if fields[0] == "chromosome" {
+                return false; // STR file with header
+            }
+
+            // Check if first line looks like genomic coordinates (chr1, etc.)
+            if fields[0].starts_with("chr")
+                && fields[1].parse::<u32>().is_ok()
+                && fields[2].parse::<u32>().is_ok()
+            {
+                return false; // STR file without header
+            }
+        }
+    }
+
+    panic!("Unable to determine file format for {}", file_path.display());
+}
+
 pub fn outlier(
     combined: PathBuf,
     minsize: u32,
@@ -59,25 +95,31 @@ pub fn outlier(
     threads: usize,
 ) {
     // Configure thread pool
-    let actual_threads = if threads == 0 {
-        rayon::current_num_threads()
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(threads)
+        .build_global()
+        .expect("Failed to build thread pool");
+
+    // Detect file format
+    let is_kmer_format = is_kmer_file(&combined);
+
+    if is_kmer_format {
+        eprintln!("Detected kmer frequency file format");
+        outlier_kmer_analysis(combined, minsize, zscore_cutoff, method, subset);
     } else {
-        // Try to configure the global thread pool, but it might already be configured
-        if rayon::ThreadPoolBuilder::new()
-            .num_threads(threads)
-            .build_global()
-            .is_ok()
-        {
-            threads
-        } else {
-            // If we can't configure it, use the current number of threads
-            eprintln!("Warning: Thread pool already configured, using existing settings");
-            rayon::current_num_threads()
-        }
-    };
+        eprintln!("Detected STR call file format");
+        outlier_str_analysis(combined, minsize, zscore_cutoff, method, subset);
+    }
+}
 
-    eprintln!("Using {} threads for parallel processing", actual_threads);
-
+/// Outlier analysis for STR call data (original functionality)
+fn outlier_str_analysis(
+    combined: PathBuf,
+    minsize: u32,
+    zscore_cutoff: f32,
+    method: Method,
+    subset: Option<Vec<String>>,
+) {
     let file = crate::utils::reader(&combined.into_os_string().into_string().unwrap());
     let mut lines = file.lines();
     let header_line = lines.next().unwrap().unwrap();
@@ -140,6 +182,76 @@ pub fn outlier(
     eprintln!("Completed processing {} loci", processed_count);
 }
 
+/// Outlier analysis for kmer frequency data
+fn outlier_kmer_analysis(
+    combined: PathBuf,
+    minsize: u32,
+    zscore_cutoff: f32,
+    method: Method,
+    subset: Option<Vec<String>>,
+) {
+    let file = crate::utils::reader(&combined.into_os_string().into_string().unwrap());
+    let mut lines = file.lines();
+    let header_line = lines.next().unwrap().unwrap();
+    println!("kmer\toutliers");
+
+    // Parse sample names once and store them
+    let sample_names: Vec<String> = header_line
+        .split('\t')
+        .skip(1) // Skip "kmer" column
+        .map(|s| s.to_string())
+        .collect();
+
+    let num_samples = sample_names.len();
+    let mincluster = num_samples.ilog2() as usize;
+
+    // Process lines in chunks for better memory efficiency
+    let chunk_size = 1000; // Process 1000 lines at a time
+    let mut line_buffer = Vec::with_capacity(chunk_size);
+    let mut processed_count = 0;
+
+    for line_result in lines {
+        let line = line_result.unwrap();
+        line_buffer.push(line);
+
+        // When chunk is full, process it in parallel
+        if line_buffer.len() == chunk_size {
+            process_kmer_chunk(
+                &line_buffer,
+                &sample_names,
+                minsize,
+                zscore_cutoff,
+                method,
+                mincluster,
+                &subset,
+            );
+
+            processed_count += line_buffer.len();
+            if processed_count % 10_000 == 0 {
+                eprintln!("Processed {} kmers...", processed_count);
+            }
+
+            line_buffer.clear();
+        }
+    }
+
+    // Process remaining lines
+    if !line_buffer.is_empty() {
+        process_kmer_chunk(
+            &line_buffer,
+            &sample_names,
+            minsize,
+            zscore_cutoff,
+            method,
+            mincluster,
+            &subset,
+        );
+        processed_count += line_buffer.len();
+    }
+
+    eprintln!("Completed processing {} kmers", processed_count);
+}
+
 /// Process a chunk of lines in parallel
 fn process_chunk(
     lines: &[String],
@@ -163,12 +275,10 @@ fn process_chunk(
 
             let (chrom, begin, end) = (splitline[0], splitline[1], splitline[2]);
 
-            if let Some(values) = get_repeat_lengths_optimized(&splitline, minsize) {
+            if let Some(values) = get_repeat_lengths(&splitline, minsize) {
                 let expanded = match method {
-                    Method::Zscore => {
-                        z_score_outliers_optimized(&values, sample_names, zscore_cutoff)
-                    }
-                    Method::Dbscan => dbscan_outliers_optimized(&values, sample_names, mincluster),
+                    Method::Zscore => z_score_outliers(&values, sample_names, zscore_cutoff),
+                    Method::Dbscan => dbscan_outliers(&values, sample_names, mincluster),
                 };
 
                 if !expanded.is_empty() {
@@ -212,8 +322,64 @@ fn process_chunk(
     }
 }
 
-/// Optimized version that reuses buffer and avoids unnecessary allocations
-fn get_repeat_lengths_optimized(line: &[&str], minsize: u32) -> Option<Vec<f32>> {
+/// Process a chunk of kmer lines in parallel
+fn process_kmer_chunk(
+    lines: &[String],
+    sample_names: &[String],
+    minsize: u32,
+    zscore_cutoff: f32,
+    method: Method,
+    mincluster: usize,
+    subset: &Option<Vec<String>>,
+) {
+    // Process lines in parallel and collect results
+    let results: Vec<_> = lines
+        .par_iter()
+        .filter_map(|line| {
+            let splitline: Vec<&str> = line.split('\t').collect();
+            if splitline.len() < 2 {
+                return None;
+            }
+
+            let kmer = splitline[0];
+
+            if let Some(values) = get_kmer_frequencies(&splitline, minsize) {
+                let expanded = match method {
+                    Method::Zscore => z_score_outliers(&values, sample_names, zscore_cutoff),
+                    Method::Dbscan => dbscan_outliers(&values, sample_names, mincluster),
+                };
+
+                if !expanded.is_empty() {
+                    debug!(
+                        "kmer: {}, N_expanded: {}, expanded: {:?}",
+                        kmer,
+                        expanded.len(),
+                        expanded
+                    );
+
+                    // Check subset filtering
+                    if let Some(subset) = subset {
+                        if expanded.iter().any(|sample| subset.contains(sample)) {
+                            return Some((kmer.to_string(), expanded));
+                        }
+                    } else {
+                        return Some((kmer.to_string(), expanded));
+                    }
+                }
+            }
+            None
+        })
+        .collect();
+
+    // Output results in order (important for deterministic output)
+    for (kmer, expanded) in results {
+        let expanded_str = expanded.join(",");
+        println!("{}\t{}", kmer, expanded_str);
+    }
+}
+
+/// Get repeat lengths for outlier analysis
+fn get_repeat_lengths(line: &[&str], minsize: u32) -> Option<Vec<f32>> {
     if line.len() < 4 {
         return None;
     }
@@ -243,53 +409,43 @@ fn get_repeat_lengths_optimized(line: &[&str], minsize: u32) -> Option<Vec<f32>>
     }
 }
 
-#[allow(dead_code)]
-fn get_repeat_lengths(line: &[&str], minsize: u32) -> Option<Vec<f32>> {
-    let values: Vec<f32> = line
-        .iter()
-        .skip(3)
-        .map(|number| number.parse().expect("Failed to parse number"))
-        .collect();
-    let values = values
-        .iter()
-        .map(|&value| if value.is_nan() { 0.0 } else { value })
-        .collect::<Vec<f32>>();
-    // Check if the maximum value is larger than the minimum size
-    // If all values are NaN then the vector will contain only zeroes
-    if values
-        .iter()
-        .max_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Less))
-        .unwrap()
-        < &(minsize as f32)
-    {
+/// Get kmer frequencies for outlier analysis
+fn get_kmer_frequencies(line: &[&str], minsize: u32) -> Option<Vec<f32>> {
+    if line.len() < 2 {
+        return None;
+    }
+
+    let mut max_value = 0.0f32;
+    let mut values = Vec::with_capacity(line.len() - 1);
+
+    // Single pass to parse and find max (skip first column which is kmer name)
+    for field in line.iter().skip(1) {
+        let value = if field.eq_ignore_ascii_case("nan") || field.is_empty() {
+            0.0
+        } else {
+            field.parse().unwrap_or(0.0)
+        };
+
+        if value > max_value {
+            max_value = value;
+        }
+        values.push(value);
+    }
+
+    // For kmer frequencies, we use a lower threshold since they're normalized frequencies
+    // Convert minsize to a frequency threshold (e.g., minsize/1000000 for per-million normalization)
+    let freq_threshold = (minsize as f32) / 1000000.0;
+
+    // Early exit if max value is too small
+    if max_value < freq_threshold {
         None
     } else {
         Some(values)
     }
 }
 
-#[allow(dead_code)]
-fn z_score_outliers(values: Vec<f32>, samples: &[&str], zscore_cutoff: f32) -> Vec<String> {
-    // calculate mean and std deviation of the STR lengths
-    let (values_mean, values_std_dev) = streaming_stats(&values);
-    debug!("mean: {}, std_dev: {}", values_mean, values_std_dev);
-    // calculate the zscore for each haplotype and get the haplotype identifier based on the index if larger zscore > cutoff
-    // intentionally this only selects for values that are larger than the mean
-    // and therefore only for expansions, not contractions
-    values
-        .iter()
-        .enumerate()
-        .filter(|(_, &value)| ((value - values_mean) / values_std_dev) >= zscore_cutoff)
-        .map(|(index, _)| samples[index].replace("_H1", "").replace("_H2", ""))
-        .collect::<Vec<String>>()
-}
-
-/// Optimized z-score outlier detection with reduced allocations
-fn z_score_outliers_optimized(
-    values: &[f32],
-    sample_names: &[String],
-    zscore_cutoff: f32,
-) -> Vec<String> {
+/// Z-score outlier detection
+fn z_score_outliers(values: &[f32], sample_names: &[String], zscore_cutoff: f32) -> Vec<String> {
     let (values_mean, values_std_dev) = streaming_stats(values);
     debug!("mean: {}, std_dev: {}", values_mean, values_std_dev);
 
@@ -309,36 +465,11 @@ fn z_score_outliers_optimized(
     outliers
 }
 
-#[allow(dead_code)]
-fn dbscan_outliers(values: Vec<f32>, samples: &[&str], mincluster: usize) -> Vec<String> {
-    // the parameters for the dbscan model are as used by the schizophrenia STR outlier paper (https://doi.org/10.1038/s41380-022-01857-4)
-    // however, the eps parameter is set as minimally 10
-    let eps = max(2 * mode(&values), 10) as f64;
-    let values = values
-        .iter()
-        .map(|&value| vec![value])
-        .collect::<Vec<Vec<f32>>>();
-    let model = Model::new(eps, mincluster);
-    let output = model.run(&values);
-    debug!("eps: {}, mincluster: {}", eps, mincluster);
-    debug!("output: {:?}", output);
-    output
-        .iter()
-        .enumerate()
-        .filter(|(_, &classification)| matches!(classification, Noise))
-        .map(|(index, _)| samples[index].replace("_H1", "").replace("_H2", ""))
-        .collect::<Vec<String>>()
-}
-
-/// Optimized DBSCAN outlier detection with reduced allocations
-fn dbscan_outliers_optimized(
-    values: &[f32],
-    sample_names: &[String],
-    mincluster: usize,
-) -> Vec<String> {
+/// DBSCAN outlier detection
+fn dbscan_outliers(values: &[f32], sample_names: &[String], mincluster: usize) -> Vec<String> {
     // the parameters for the dbscan model are as used by the schizophrenia STR outlier paper
     // however, the eps parameter is set as minimally 10
-    let eps = max(2 * mode_optimized(values), 10) as f64;
+    let eps = max(2 * mode(values), 10) as f64;
 
     // Convert to format expected by DBSCAN
     let dbscan_values: Vec<Vec<f32>> = values.iter().map(|&value| vec![value]).collect();
@@ -360,8 +491,8 @@ fn dbscan_outliers_optimized(
     outliers
 }
 
-/// Optimized mode calculation
-fn mode_optimized(values: &[f32]) -> usize {
+/// Calculate mode of values
+fn mode(values: &[f32]) -> usize {
     let mut counts = std::collections::HashMap::new();
     for &value in values.iter().filter(|&&value| value > 0.0) {
         *counts.entry(value as usize).or_insert(0) += 1;
@@ -374,41 +505,31 @@ fn mode_optimized(values: &[f32]) -> usize {
         .unwrap_or(10) // Return 10 as fallback instead of panicking
 }
 
-#[allow(dead_code)]
-fn mode(values: &[f32]) -> usize {
-    // calculate the mode of the STR lengths
-    // as NaN values are replaced by 0.0, we need to filter out the 0.0 values
-    // if not eps will often be 0
-    let mut counts = std::collections::HashMap::new();
-    for &value in values.iter().filter(|&&value| value > 0.0) {
-        *counts.entry(value as usize).or_insert(0) += 1;
-    }
-    counts
-        .into_iter()
-        .max_by_key(|&(_, count)| count)
-        .map(|(value, _)| value)
-        .expect("No mode found for repeat")
-}
-
 #[cfg(test)]
 #[test]
 fn test_dbscan_outliers() {
     let values = vec![1.0, 2.0, 2.0, 3.0, 1.0, 5.0, 3.0, 2.0, 2.0, 1.0, 120.0];
-    let samples = vec![
+    let samples: Vec<String> = vec![
         "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8", "s9", "s10", "s11",
-    ];
+    ]
+    .into_iter()
+    .map(|s| s.to_string())
+    .collect();
     let expected = vec!["s11"];
     let mincluster = values.len().ilog2() as usize;
-    assert_eq!(dbscan_outliers(values, &samples, mincluster), expected);
+    assert_eq!(dbscan_outliers(&values, &samples, mincluster), expected);
 }
 
 #[test]
 fn test_z_score_outliers() {
     let values = vec![1.0, 2.0, 2.0, 3.0, 1.0, 5.0, 3.0, 2.0, 2.0, 1.0, 120.0];
-    let samples = vec![
+    let samples: Vec<String> = vec![
         "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8", "s9", "s10", "s11",
-    ];
+    ]
+    .into_iter()
+    .map(|s| s.to_string())
+    .collect();
     let expected = vec!["s11"];
     let zscore_cutoff = 2.0;
-    assert_eq!(z_score_outliers(values, &samples, zscore_cutoff), expected);
+    assert_eq!(z_score_outliers(&values, &samples, zscore_cutoff), expected);
 }
