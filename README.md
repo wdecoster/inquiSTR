@@ -63,12 +63,13 @@ Usage: inquiSTR <COMMAND>
 
 Commands:
   call       Call lengths
-  combine    Combine lengths from multiple bams to a TSV
-  outlier    Find outliers from TSV
+  combine    Combine STR calls or kmer frequencies from multiple samples to a TSV
+  outlier    Find outliers from combined STR or kmer data
   query      Lookup genotypes and display
   histogram
   plot       Show a histogram with multiple groups for a specific repeat
   pca        Perform Principal Component Analysis on combined STR data
+  unmapped   Count kmer frequencies in unmapped reads
   help       Print this message or the help of the given subcommand(s)
 
 Options:
@@ -112,7 +113,7 @@ inquiSTR call sample.bam -R regions.bed
 # Filter out large intervals (>10kb) that may span problematic regions
 inquiSTR call sample.bam -R regions.bed --max-locus 10000
 
-# Multithreaded processing with custom parameters
+# Use multiple threads for faster processing
 inquiSTR call sample.bam -R regions.bed --threads 8 --minlen 10 --support 5
 
 # CRAM file with reference
@@ -121,69 +122,40 @@ inquiSTR call sample.cram --reference genome.fa -R regions.bed
 # Unphased analysis with custom sample name
 inquiSTR call sample.bam -R regions.bed --unphased --sample-name "Sample123"
 
-# Memory-constrained system (use smaller batch size)
+# Custom batch size (in kb) and threads
 inquiSTR call sample.bam -R regions.bed --batch-size 30 --threads 4
-
-# High-performance system with ample RAM (use larger batch size)
-inquiSTR call sample.bam -R regions.bed --batch-size 100 --threads 16
 ```
 
 ### `inquiSTR combine` - Multi-sample Analysis
 
-Variants from multiple samples can be combined with `inquiSTR combine`.
+Combine data from multiple samples with `inquiSTR combine`. This command supports both STR call files (from `inquiSTR call`) and kmer frequency files (from `inquiSTR unmapped`), automatically detecting the input format.
 
 ```text
 Usage: inquiSTR combine [OPTIONS] <CALLS>...
 
 Arguments:
-  <CALLS>...  files from inquiSTR call
+  <CALLS>...  files from inquiSTR call or inquiSTR unmapped
 
 Options:
-  -t, --threads <THREADS>  Number of threads to use for parallel processing (0 = auto-detect) [default: 0]
+  -t, --threads <THREADS>  Number of threads to use for parallel processing [default: 1]
   -h, --help               Print help
 ```
-
-**Performance and Validation Features:**
-
-For large-scale analyses, inquiSTR combine includes optimizations and validation:
-
-- **Parallel header processing**: Headers from multiple files are read in parallel
-- **Variant consistency checking**: Ensures all files have identical loci in the same order
-- **Progress reporting**: Shows processing progress for large datasets
-- **Thread control**: Use `--threads` to control CPU usage for concurrent analyses
-- **Memory efficiency**: Optimized string operations and pre-allocated buffers
 
 **Examples:**
 
 ```bash
 # Combine STR calls from multiple samples
-inquiSTR combine sample1.inq sample2.inq sample3.inq > combined.tsv
+inquiSTR combine sample1.inq sample2.inq sample3.inq > str_combined.tsv
 
-# Combine all .inq files in current directory
+# Combine kmer frequency files from unmapped analysis
+inquiSTR combine sample1_kmers.tsv sample2_kmers.tsv sample3_kmers.tsv > kmer_combined.tsv
+
+# Combine all .inq files in current directory (STR data)
 inquiSTR combine *.inq > cohort_combined.tsv
 
-# Use 8 threads for large-scale combining (500+ files)
-inquiSTR combine *.inq --threads 8 > large_cohort.tsv
-
-# Use fewer threads when running multiple analyses simultaneously
-inquiSTR combine batch1/*.inq --threads 2 > batch1_combined.tsv
-
-# Auto-detect optimal number of threads (default behavior)
-inquiSTR combine *.inq --threads 0 > auto_combined.tsv
+# Use multiple threads 
+inquiSTR combine *.inq --threads 8 > combined.tsv
 ```
-
-**Validation and Error Handling:**
-
-- **Header validation**: Ensures all files have consistent header formats
-- **Variant coordinate validation**: Panics if files have different loci or different ordering
-- **File existence checking**: Validates all input files exist before processing
-- **Progress reporting**: Shows processing progress for datasets with millions of loci
-
-**Threading Guidelines:**
-
-- For 100+ files: Use `--threads 4-8` for optimal performance
-- For concurrent analyses: Use `--threads 2-4` to avoid system overload
-- For single large analysis: Use `--threads 0` (auto-detect) for maximum performance
 
 ### `inquiSTR query` - Genotype Lookup
 
@@ -215,13 +187,13 @@ inquiSTR query combined.tsv regions.txt
 
 ### `inquiSTR outlier` - Outlier Detection
 
-Identifying outliers from a combined file can be done with `inquiSTR outlier`, using either z-scores or DBSCAN.
+Identify outliers from combined data using `inquiSTR outlier`. This command works with both STR call data and kmer frequency data (automatically detecting the format), using either z-scores or DBSCAN algorithms.
 
 ```text
 Usage: inquiSTR outlier [OPTIONS] <COMBINED>
 
 Arguments:
-  <COMBINED>  combined file of calls
+  <COMBINED>  combined file from inquiSTR combine (STR calls or kmer frequencies)
 
 Options:
       --minsize <MINSIZE>  minimal length of expansion to be present in cohort [default: 10]
@@ -229,20 +201,20 @@ Options:
       --method <METHOD>    method to test for outliers [default: zscore] [possible values: zscore, dbscan]
   -s, --sample <SAMPLE>    sample to consider
   -S, --subset <SUBSET>    file with subset of samples to consider
-  -t, --threads <THREADS>  Number of threads to use for parallel processing (0 = auto-detect) [default: 0]
+  -t, --threads <THREADS>  Number of threads to use for parallel processing [default: 1]
   -h, --help               Print help
 ```
 
 **Examples:**
 
 ```bash
-# Find outliers using default z-score method
-inquiSTR outlier combined.tsv
+# Find outliers in STR call data using default z-score method
+inquiSTR outlier str_combined.tsv
 
-# Find outliers with stricter z-score threshold
-inquiSTR outlier combined.tsv --zscore 2.5
+# Find outliers in kmer frequency data
+inquiSTR outlier kmer_combined.tsv --zscore 2.5
 
-# Find outliers using DBSCAN method
+# Find outliers using DBSCAN method (works with both data types)
 inquiSTR outlier combined.tsv --method dbscan
 
 # Find outliers for specific sample only
@@ -254,30 +226,9 @@ inquiSTR outlier combined.tsv --subset sample_list.txt
 # Custom minimum expansion size
 inquiSTR outlier combined.tsv --minsize 15
 
-# Use 8 threads for parallel processing (for large datasets)
+# Use multiple threads
 inquiSTR outlier combined.tsv --threads 8
-
-# Auto-detect optimal number of threads (default behavior)
-inquiSTR outlier combined.tsv --threads 0
-
-# Combine thread control with other options
-inquiSTR outlier combined.tsv --method dbscan --threads 4 --zscore 2.5
 ```
-
-**Performance Optimization:**
-
-For large datasets (>100K loci), inquiSTR outlier uses parallel processing to improve performance:
-
-- **Automatic threading**: By default (`--threads 0`), uses all available CPU cores
-- **Thread control**: Use `--threads N` to limit CPU usage when running multiple analyses
-- **Memory efficiency**: Processes data in chunks to minimize memory usage
-- **Progress reporting**: Shows processing progress for large datasets
-
-**Threading Guidelines:**
-
-- Use fewer threads (`--threads 2-4`) when running multiple analyses simultaneously
-- Use more threads (`--threads 8+`) for single large-scale analyses on high-performance systems
-- For very large datasets (>1M loci), consider limiting threads to avoid memory pressure
 
 ### `inquiSTR histogram` - Data Visualization
 
@@ -337,6 +288,106 @@ inquiSTR plot combined.tsv metadata.tsv chr15:34419414-34419461 \
   --condition "status:case,control" --output "case_control_plot.html"
 ```
 
+### `inquiSTR unmapped` - Kmer Frequency Analysis
+
+Count kmer frequencies in unmapped reads from BAM/CRAM files. This analysis extracts all unmapped reads and counts occurrences of kmers of all sizes from 2 to a specified maximum length. All kmer rotations (e.g., CAG, AGC, GCA) are represented by their lexicographically smallest form (AGC) for consistent analysis.
+
+```text
+Usage: inquiSTR unmapped [OPTIONS] <BAM>
+
+Arguments:
+  <BAM>  BAM/CRAM file to analyze unmapped reads from
+
+Options:
+  -k, --klength <KLENGTH>          Maximum kmer length to count (counts all sizes from 2 to klength) [default: 6]
+      --sample-name <SAMPLE_NAME>  Sample name to use in output header
+      --reference <REFERENCE>      Reference fasta for CRAM decoding
+  -t, --threads <THREADS>          Number of parallel threads to use [default: 1]
+  -h, --help                       Print help
+```
+
+**Key Features:**
+
+- **Comprehensive kmer analysis**: Counts all kmer sizes from 2 to `--klength` (default 6)
+- **Canonical representation**: All rotations of the same kmer are represented by the lexicographically smallest form
+- **Complete output**: Includes all possible kmers (including zeros) sorted alphabetically by k-size
+- **Normalized counts**: Results are normalized by total read count in the entire BAM/CRAM file
+- **Parallel processing**: Batch-based parallel processing for efficient analysis of large files
+- **Quality filtering**: Automatically excludes reads containing N bases and empty sequences
+
+**Output Format:**
+
+The output is a TSV file with two columns:
+
+- **kmer**: All possible kmers of each length (2-mers, then 3-mers, etc.)
+- **sample_name**: Normalized frequency counts (kmer_count / total_reads)
+
+**Examples:**
+
+```bash
+# Basic kmer analysis with default settings (k=6, 1 thread)
+inquiSTR unmapped sample.bam > kmers.tsv
+
+# Custom kmer length and sample name
+inquiSTR unmapped sample.bam --klength 4 --sample-name MySample > kmers_k4.tsv
+
+# Use multiple threads
+inquiSTR unmapped sample.bam --klength 5 --threads 8 --sample-name MySample
+
+# CRAM file with reference
+inquiSTR unmapped sample.cram --reference genome.fasta --klength 3 --sample-name CramSample
+
+# Remote file analysis
+inquiSTR unmapped https://example.com/sample.bam --threads 4 --sample-name RemoteSample
+
+# Test with provided example data
+inquiSTR unmapped test-data/unmapped.bam --klength 3 --sample-name test_sample
+```
+
+**Example Output:**
+
+```tsv
+kmer    demo_sample
+AA      1080.441548
+AC      1586.379696
+AG      1649.190091
+AT      1545.704501
+CC      734.356865
+CG      765.888925
+CT      1648.491418
+GG      737.300032
+GT      1598.415641
+TT      1079.760363
+AAA     ...
+```
+
+Note that only canonical forms are shown. Rotations like CA, GA, GC, TA, TC, TG are represented by their canonical forms (AC, AG, CG, AT, CT, GT respectively) and their counts are combined.
+
+**Use Cases:**
+
+- **Contamination detection**: Identify unexpected sequences in unmapped reads
+- **Species identification**: Compare kmer profiles against known organisms
+- **Quality control**: Assess the composition of unmapped reads
+- **Metagenomic analysis**: Analyze microbial content in unmapped fractions
+- **Technical artifact detection**: Identify adapter sequences or other technical contamination
+
+**Integration with Other Commands:**
+
+The kmer frequency output from `inquiSTR unmapped` can be processed with other inquiSTR commands:
+
+```bash
+# Complete kmer analysis workflow
+inquiSTR unmapped sample1.bam > sample1_kmers.tsv
+inquiSTR unmapped sample2.bam > sample2_kmers.tsv
+inquiSTR unmapped sample3.bam > sample3_kmers.tsv
+
+# Combine kmer data from multiple samples
+inquiSTR combine sample*_kmers.tsv > combined_kmers.tsv
+
+# Find outlier samples based on kmer frequencies
+inquiSTR outlier combined_kmers.tsv --method dbscan
+```
+
 ### `inquiSTR pca` - Principal Component Analysis
 
 Perform Principal Component Analysis (PCA) on combined STR data to identify population structure and sample relationships. This is particularly useful for large-scale genomic analyses and quality control.
@@ -350,19 +401,10 @@ Arguments:
 Options:
   -o, --output <OUTPUT>            HTML output file name for interactive PCA plot [default: pca_plot.html]
   -c, --components <COMPONENTS>    Number of principal components to compute (currently only first 2 are plotted) [default: 10]
-  -t, --threads <THREADS>          Number of threads to use for parallel processing (0 = auto-detect) [default: 0]
+  -t, --threads <THREADS>          Number of threads to use for parallel processing [default: 1]
   -a, --aggregation <AGGREGATION>  Method for aggregating H1/H2 allele lengths: max (default), min, or sum [default: max]
   -h, --help                       Print help
 ```
-
-**Performance and Memory Optimization:**
-
-For large datasets (>100K loci), inquiSTR uses intelligent feature selection and parallel processing:
-
-- **Automatic feature selection**: Selects the most informative STR loci based on variance and completeness
-- **Streaming processing**: Processes data in chunks to minimize memory usage
-- **Parallel computing**: Utilizes multiple CPU cores for feature scoring and data loading
-- **Thread control**: Use `--threads` to limit CPU usage (0 = use all available cores)
 
 **Allele Aggregation Methods:**
 
@@ -378,7 +420,7 @@ The `--aggregation` parameter controls how the two allele lengths (H1/H2) are co
 # Basic PCA analysis
 inquiSTR pca combined.tsv
 
-# Use maximum aggregation with 8 threads and custom output
+# Use maximum aggregation (default) with 8 threads and custom output
 inquiSTR pca combined.tsv --aggregation max --threads 8 --output population_pca.html
 
 # Use minimum aggregation to focus on deletions
@@ -391,26 +433,6 @@ inquiSTR pca combined.tsv --aggregation sum --threads 4 --output total_burden_pc
 inquiSTR pca combined.tsv --components 20 --output detailed_pca.html
 ```
 
-**Performance Tips:**
-
-- For very large datasets (>1M loci), consider using fewer threads to avoid memory pressure
-- The sum aggregation method may be more sensitive to technical artifacts
-- Max aggregation is recommended for most population genetics applications
-
-## Performance Tuning
-
-The `--batch-size` parameter controls how inquiSTR groups nearby STR targets for processing, affecting both memory usage and I/O efficiency:
-
-- **Default (50KB)**: Works well for most systems and datasets
-- **Smaller values (20-35KB)**: Use on memory-constrained systems or when processing many samples simultaneously
-- **Larger values (80-100KB)**: Optimal for high-performance systems with ample RAM, especially beneficial under heavy system load
-
-**Guidelines:**
-
-- Increase batch size if you have >32GB RAM and fast storage (SSD)
-- Decrease batch size if experiencing memory pressure or running many parallel jobs
-- Test different values with your specific data to find the optimal setting
-
 ## Usage for Association Testing
 
-This repository contains `STR_regression.R`, code to perform association testing of STRs with built-in parallelization. The code is written in R and can be found in the scripts folder. This version provides improved performance and memory efficiency for large datasets. In [STR_regression_examples.md](STR_regression_examples.md) are some examples. Please open an issue if the usage of this script is unclear after reading the examples below.
+This repository contains `STR_regression.R`, an R script for association testing of STRs. The script can be found in the scripts folder. Examples are provided in [STR_regression_examples.md](STR_regression_examples.md). Please open an issue if the usage is unclear.

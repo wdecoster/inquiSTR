@@ -105,8 +105,8 @@ enum Commands {
         #[clap(value_parser, required = true)]
         calls: Vec<PathBuf>,
 
-        /// Number of threads to use for parallel processing (0 = auto-detect)
-        #[clap(short = 't', long, value_parser, default_value_t = 0)]
+        /// Number of threads to use for parallel processing
+        #[clap(short = 't', long, value_parser, default_value_t = 1)]
         threads: usize,
     },
     /// Search for regions potentially containing a polymorphic repeat
@@ -137,8 +137,8 @@ enum Commands {
         #[clap(short = 'S', long, value_parser)]
         subset: Option<PathBuf>,
 
-        /// Number of threads to use for parallel processing (0 = auto-detect)
-        #[clap(short = 't', long, value_parser, default_value_t = 0)]
+        /// Number of threads to use for parallel processing
+        #[clap(short = 't', long, value_parser, default_value_t = 1)]
         threads: usize,
     },
     /// Lookup genotypes and display
@@ -223,8 +223,8 @@ enum Commands {
         #[clap(short, long, value_parser, default_value_t = 10)]
         components: usize,
 
-        /// Number of threads to use for parallel processing (0 = auto-detect)
-        #[clap(short, long, value_parser, default_value_t = 0)]
+        /// Number of threads to use for parallel processing
+        #[clap(short, long, value_parser, default_value_t = 1)]
         threads: usize,
 
         /// Method for aggregating H1/H2 allele lengths: max (default), min, or sum
