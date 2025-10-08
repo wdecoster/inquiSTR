@@ -26,6 +26,7 @@ use clap::{Parser, Subcommand};
 use log::info;
 use std::{io::BufRead, path::PathBuf};
 
+pub mod assoc;
 pub mod bam_utils;
 pub mod batch;
 pub mod call;
@@ -160,33 +161,61 @@ enum Commands {
         #[clap(required = true)]
         region: String,
     },
-    // /// Test for association of repeat length by comparing two cohorts
-    // Association {
-    //     /// combined file of calls
-    //     #[clap(parse(from_os_str), required = true, validator=is_file)]
-    //     combined: PathBuf,
+    /// Perform association testing for STRs using embedded R script
+    #[clap(arg_required_else_help = true)]
+    Association {
+        /// Combined STR file from inquiSTR combine command
+        #[clap(short, long, value_parser)]
+        input: PathBuf,
 
-    //     /// file with sample_id, phenotype and covariates
-    //     #[clap(parse(from_os_str), required = true, validator=is_file)]
-    //     metadata: PathBuf,
+        /// Phenotype and covariate file with header, first column is individual ID
+        #[clap(short, long, value_parser)]
+        phenocovar: PathBuf,
 
-    //     /// missing genotypes cutoff
-    //     #[clap(long, value_parser, default_value_t = 0.8)]
-    //     missing_cutoff: f32,
+        /// Column name of phenotype in phenocovar file
+        #[clap(long, value_parser)]
+        phenotype: String,
 
-    //     /// association mode
-    //     #[clap(short, long, value_enum, value_parser, default_value_t = assoc::Mode::Max)]
-    //     mode: assoc::Mode,
+        /// Output file name for association results
+        #[clap(short, long, value_parser)]
+        out: PathBuf,
 
-    //     /// test column and 2 groups to test e.g. group:PAT,CON with <group> the name of the column containing <PAT> and <CON>
-    //     #[clap(short, long, value_parser)]
-    //     condition: String,
+        /// STR mode: MEAN, MAX, or MIN for H1/H2 combination
+        #[clap(long, value_parser)]
+        str_mode: String,
 
-    //     /// covariates, comma separated
-    //     #[clap(long, value_parser)]
-    //     covariates: Option<String>,
-    //     // p <- add_argument(p, "--outcometype", help = "Select a outcome variable type: binary or continuous", nargs = 1)
-    // },
+        /// Outcome type: binary or continuous
+        #[clap(long, value_parser)]
+        outcometype: String,
+
+        /// Covariate names, comma separated (optional)
+        #[clap(long, value_parser)]
+        covnames: Option<String>,
+
+        /// Call rate cutoff for variants (default 0.80)
+        #[clap(long, value_parser, default_value_t = 0.80)]
+        missing_cutoff: f64,
+
+        /// Minimum maximum STR length across samples for variant to be included
+        #[clap(long, value_parser)]
+        minimal_length: Option<f64>,
+
+        /// Number of threads for parallel processing
+        #[clap(short, long, value_parser, default_value_t = 1)]
+        threads: usize,
+
+        /// Number of variants to process in each chunk (default 1000)
+        #[clap(long, value_parser, default_value_t = 1000)]
+        chunk_size: usize,
+
+        /// Binary phenotype order, comma separated (e.g., Control,Patient) - required for binary outcomes
+        #[clap(long, value_parser)]
+        binary_order: Option<String>,
+
+        /// Do not print progress messages
+        #[clap(long)]
+        quiet: bool,
+    },
     /// Show a histogram with multiple groups for a specific repeat
     Plot {
         /// combined file of calls
@@ -316,23 +345,37 @@ fn main() {
         Commands::Histogram { combined, region } => {
             histogram::histogram(combined, region);
         }
-        // Commands::Association {
-        //     combined,
-        //     metadata,
-        //     missing_cutoff,
-        //     mode,
-        //     condition,
-        //     covariates,
-        // } => {
-        //     assoc::assocation(
-        //         combined,
-        //         metadata,
-        //         missing_cutoff,
-        //         mode,
-        //         condition,
-        //         covariates,
-        //     );
-        // }
+        Commands::Association {
+            input,
+            phenocovar,
+            phenotype,
+            out,
+            str_mode,
+            outcometype,
+            covnames,
+            missing_cutoff,
+            minimal_length,
+            threads,
+            chunk_size,
+            binary_order,
+            quiet,
+        } => {
+            assoc::run_association(
+                input,
+                phenocovar,
+                phenotype,
+                out,
+                str_mode,
+                outcometype,
+                covnames,
+                missing_cutoff,
+                minimal_length,
+                threads,
+                chunk_size,
+                binary_order,
+                quiet,
+            );
+        }
         Commands::Plot { combined, metadata, condition, region, output } => {
             plot::plot(combined, metadata, condition, region, output)
         }
