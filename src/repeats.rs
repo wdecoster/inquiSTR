@@ -26,11 +26,13 @@ impl RepeatIntervalIterator {
         RepeatIntervalIterator { current_index: 0, data: vec![repeat], num_intervals: 1 }
     }
     pub fn from_bed(
-        region_file: &String,
+        region_file: &str,
         chrom_lengths: HashMap<String, u64>,
         max_locus: Option<u32>,
     ) -> Self {
-        let mut reader = bed::Reader::from_file(region_file).expect("Problem reading bed file!");
+        // Use utils::reader to handle gzipped files
+        let file_reader = crate::utils::reader(region_file);
+        let mut reader = bed::Reader::new(file_reader);
         let mut data = Vec::new();
         let mut filtered_count = 0;
         for record in reader.records() {
@@ -135,14 +137,15 @@ pub fn get_targets(
     region_file: Option<PathBuf>,
     bam: &str,
     max_locus: Option<u32>,
+    reference: &Option<String>,
 ) -> RepeatIntervalIterator {
-    let chrom_lengths = get_chrom_lengths_from_bam_header(bam.to_string());
+    let chrom_lengths = get_chrom_lengths_from_bam_header(bam.to_string(), reference);
     match (&region, &region_file) {
         // a region string
         (Some(region), None) => RepeatIntervalIterator::from_string(region, chrom_lengths),
         // a region file
         (None, Some(region_file)) => RepeatIntervalIterator::from_bed(
-            &region_file.to_string_lossy().to_string(),
+            &region_file.to_string_lossy(),
             chrom_lengths,
             max_locus,
         ),
@@ -173,7 +176,7 @@ mod tests {
             .expect("Could not write test file");
 
         let chrom_lengths =
-            get_chrom_lengths_from_bam_header(String::from("test-data/small-test.bam"));
+            get_chrom_lengths_from_bam_header(String::from("test-data/small-test.bam"), &None);
 
         // Test without max_locus - should include both intervals
         let repeats_no_filter = RepeatIntervalIterator::from_bed(
