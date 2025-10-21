@@ -9,8 +9,8 @@ use std::env;
 use url::Url;
 
 /// Get chromosome lengths from BAM header
-pub fn get_chrom_lengths_from_bam_header(bam: String) -> HashMap<String, u64> {
-    let bam = get_bam_reader(&bam, &None);
+pub fn get_chrom_lengths_from_bam_header(bam: String, reference: &Option<String>) -> HashMap<String, u64> {
+    let bam = get_bam_reader(&bam, reference);
     let header = bam::Header::from_template(bam.header());
     let mut chrom_lengts = HashMap::new();
     for (key, records) in header.to_hashmap() {
@@ -65,7 +65,10 @@ fn setup_ssl_certificates() {
 }
 
 /// Create a BAM reader from path or URL with appropriate configuration
+/// Note: This returns IndexedReader for compatibility with existing code, but we should
+/// consider using Reader for sequential access
 pub fn get_bam_reader(bamp: &String, reference: &Option<String>) -> bam::IndexedReader {
+    debug!("Opening BAM/CRAM file: {}", bamp);
     let mut bam = if bamp.starts_with("s3") || bamp.starts_with("https://") {
         setup_ssl_certificates();
         bam::IndexedReader::from_url(&Url::parse(bamp.as_str()).expect("Failed to parse s3 URL"))
@@ -80,6 +83,7 @@ pub fn get_bam_reader(bamp: &String, reference: &Option<String>) -> bam::Indexed
         })
     };
     if bamp.ends_with(".cram") {
+        debug!("Detected CRAM file, setting CRAM options...");
         bam.set_cram_options(
             hts_sys::hts_fmt_option_CRAM_OPT_REQUIRED_FIELDS,
             hts_sys::sam_fields_SAM_AUX
@@ -89,9 +93,68 @@ pub fn get_bam_reader(bamp: &String, reference: &Option<String>) -> bam::Indexed
                 | hts_sys::sam_fields_SAM_TLEN,
         )
         .expect("Failed setting cram options");
+        debug!("CRAM options set successfully");
+        
         if reference.is_some() {
-            bam.set_reference(reference.as_ref().unwrap().as_str())
-                .expect("Failed setting reference");
+            let ref_path = reference.as_ref().unwrap();
+            debug!("Setting CRAM reference to: {}", ref_path);
+            bam.set_reference(ref_path)
+                .unwrap_or_else(|err| {
+                    error!("Failed to set CRAM reference '{}': {}. This usually means the reference genome doesn't match the CRAM file.", ref_path, err);
+                    std::process::exit(1);
+                });
+            debug!("CRAM reference set successfully");
+        } else {
+            error!("No reference provided for CRAM file. Use --reference option to specify the reference genome.");
+            std::process::exit(1);
+        }
+    }
+
+    bam
+}
+
+/// Create a sequential BAM reader for reading all records
+fn get_sequential_bam_reader(bamp: &String, reference: &Option<String>) -> bam::Reader {
+    debug!("Opening BAM/CRAM file for sequential reading: {}", bamp);
+    let mut bam = if bamp.starts_with("s3") || bamp.starts_with("https://") || bamp.starts_with("ftp://") {
+        setup_ssl_certificates();
+        bam::Reader::from_url(&Url::parse(bamp.as_str()).expect("Failed to parse s3 URL"))
+            .unwrap_or_else(|err| {
+                error!("Error opening remote BAM file: {err}");
+                std::process::exit(1);
+            })
+    } else {
+        bam::Reader::from_path(bamp).unwrap_or_else(|err| {
+            error!("Error opening local BAM file: {err}");
+            std::process::exit(1);
+        })
+    };
+    
+    if bamp.ends_with(".cram") {
+        debug!("Detected CRAM file for sequential reading, setting CRAM options...");
+        bam.set_cram_options(
+            hts_sys::hts_fmt_option_CRAM_OPT_REQUIRED_FIELDS,
+            hts_sys::sam_fields_SAM_AUX
+                | hts_sys::sam_fields_SAM_MAPQ
+                | hts_sys::sam_fields_SAM_CIGAR
+                | hts_sys::sam_fields_SAM_POS
+                | hts_sys::sam_fields_SAM_TLEN,
+        )
+        .expect("Failed setting cram options");
+        debug!("CRAM options set successfully for sequential reader");
+        
+        if reference.is_some() {
+            let ref_path = reference.as_ref().unwrap();
+            debug!("Setting CRAM reference for sequential reader to: {}", ref_path);
+            bam.set_reference(ref_path)
+                .unwrap_or_else(|err| {
+                    error!("Failed to set CRAM reference '{}' for sequential reader: {}. This usually means the reference genome doesn't match the CRAM file.", ref_path, err);
+                    std::process::exit(1);
+                });
+            debug!("CRAM reference set successfully for sequential reader");
+        } else {
+            error!("No reference provided for CRAM file. Use --reference option to specify the reference genome.");
+            std::process::exit(1);
         }
     }
 
@@ -101,35 +164,61 @@ pub fn get_bam_reader(bamp: &String, reference: &Option<String>) -> bam::Indexed
 /// Validates that the BAM/CRAM file contains phasing information (HP tags) by scanning early reads
 /// Returns immediately upon finding the first HP tag, or errors after scanning max_reads without finding any
 /// This provides fast failure detection before expensive processing begins
+/// 
+/// Note: This function detects HP tags regardless of their Aux type (U8, I32, etc.) by simply
+/// checking for the presence of the tag. The actual value parsing and validation happens elsewhere.
 pub fn validate_phasing_early(
     bam_path: &str,
     reference: &Option<String>,
     max_reads: usize,
 ) -> Result<(), String> {
     let bam_path_string = bam_path.to_string();
-    let mut bam = get_bam_reader(&bam_path_string, reference);
+    
+    // Check if file exists (skip check for URLs)
+    if !bam_path_string.starts_with("http") && !bam_path_string.starts_with("ftp") && !bam_path_string.starts_with("s3") {
+        if !std::path::Path::new(&bam_path_string).exists() {
+            return Err(format!("BAM/CRAM file does not exist: {}", bam_path_string));
+        }
+    }
+    
+    debug!("Starting phasing validation for file: {}", bam_path);
+    debug!("Reference path: {:?}", reference);
+    debug!("File exists, attempting to open BAM/CRAM reader...");
+    
+    let mut seq_bam = get_sequential_bam_reader(&bam_path_string, reference);
+    debug!("Sequential BAM/CRAM reader opened successfully");
+    
+    // Try to read the header to verify the file is accessible
+    let header = seq_bam.header();
+    let header_text = std::str::from_utf8(header.as_bytes()).unwrap_or("Invalid UTF-8");
+    debug!("Header read successfully, length: {} bytes", header_text.len());
+    
     let mut reads_checked = 0;
+    let records_iterator = seq_bam.records();
+    debug!("Starting HP tag validation, scanning up to {} reads...", max_reads);
 
-    for record_result in bam.records() {
+    for record_result in records_iterator {
         if reads_checked >= max_reads {
             break;
         }
 
         match record_result {
             Ok(record) => {
-                // Check for HP tag (haplotype tag)
-                if let Ok(Aux::U8(_)) = record.aux(b"HP") {
-                    // Found HP tag - phasing information is present
-                    debug!(
-                        "Found HP tag in read {} after checking {} reads",
-                        String::from_utf8_lossy(record.qname()),
-                        reads_checked + 1
-                    );
+                // Check for HP tag - simple and direct
+                if record.aux(b"HP").is_ok() {
+                    debug!("Found HP tag in read {}, validation successful", reads_checked + 1);
                     return Ok(());
                 }
+                
                 reads_checked += 1;
             }
             Err(e) => {
+                // Check if this is a CRAM format error indicating incompatible reference
+                let error_str = e.to_string();
+                if error_str.contains("CRC32 failure") || error_str.contains("truncated record") {
+                    error!("CRAM format error detected: {}. This usually indicates that the reference genome doesn't match the CRAM file. Please verify that you're using the correct reference genome.", error_str);
+                    std::process::exit(1);
+                }
                 warn!("Error reading record during phasing validation: {}", e);
                 reads_checked += 1;
             }
@@ -263,7 +352,7 @@ mod tests {
     #[test]
     fn test_get_chrom_lengths_from_bam_header() {
         let bam = String::from("test-data/small-test.bam");
-        let chrom_lengths = get_chrom_lengths_from_bam_header(bam);
+        let chrom_lengths = get_chrom_lengths_from_bam_header(bam, &None);
         assert_eq!(chrom_lengths.get("chr7").unwrap(), &159345973);
     }
 }

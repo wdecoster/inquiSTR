@@ -87,7 +87,7 @@ pub fn genotype_repeats(
     batch_size_kb: u32,
 ) {
     // only test if path.is_file() if the file is local
-    if !PathBuf::from(&bamp).is_file() && !bamp.starts_with("s3") && !bamp.starts_with("https://") {
+    if !PathBuf::from(&bamp).is_file() && !bamp.starts_with("s3") && !bamp.starts_with("https://") && !bamp.starts_with("ftp://") {
         error!("ERROR: path to bam file {} is not valid!\n\n", &bamp);
         std::process::exit(1);
     };
@@ -100,7 +100,7 @@ pub fn genotype_repeats(
         }
     }
 
-    let repeats = get_targets(region, region_file, &bamp, max_locus);
+    let repeats = get_targets(region, region_file, &bamp, max_locus, &reference);
 
     // Unified batch-level producer-consumer approach for both single and multi-threaded
     // Batch size is configurable for performance optimization
@@ -150,11 +150,26 @@ pub fn genotype_repeats(
             .collect()
     };
 
-    pb.finish_with_message("Finished!");
+    pb.finish_with_message("Processing completed, sorting results...");
 
     // Collect and sort all results
     let mut all_genotypes: Vec<Genotype> = results.into_iter().flatten().collect();
-    all_genotypes.sort_unstable();
+    
+    // Create a new progress bar for sorting if we have a large number of results
+    if all_genotypes.len() > 10000 {
+        let sort_pb = indicatif::ProgressBar::new_spinner();
+        sort_pb.set_style(
+            indicatif::ProgressStyle::default_spinner()
+                .template("{spinner:.green} Sorting {} results...")
+                .expect("Failed to set spinner template")
+        );
+        sort_pb.set_message(format!("Sorting {} results...", all_genotypes.len()));
+        
+        all_genotypes.sort_unstable();
+        sort_pb.finish_with_message("Sorting completed, writing output...");
+    } else {
+        all_genotypes.sort_unstable();
+    }
 
     // Output results in consistent format
     let stdout = io::stdout();
@@ -174,7 +189,7 @@ fn extract_sample_name_from_path(path: &str) -> String {
     let path_buf = PathBuf::from(path);
 
     // Handle URLs by extracting just the filename part
-    let filename = if path.starts_with("http") || path.starts_with("s3") {
+    let filename = if path.starts_with("http") || path.starts_with("ftp") || path.starts_with("s3") {
         path.rsplit('/').next().unwrap_or(path)
     } else {
         path_buf
