@@ -17,6 +17,7 @@ const STR_REGRESSION_SCRIPT: &str = include_str!("../scripts/STR_regression.R");
 const REQUIRED_R_PACKAGES: &[&str] = &["data.table", "argparser", "parallel"];
 
 /// Main function to run STR association testing
+#[allow(clippy::too_many_arguments)]
 pub fn run_association(
     input: PathBuf,
     phenocovar: PathBuf,
@@ -137,7 +138,7 @@ fn check_r_environment(quiet: bool) -> Result<(), String> {
     }
 
     // Check if R is installed
-    let r_version = Command::new("R").args(&["--version"]).output();
+    let r_version = Command::new("R").args(["--version"]).output();
 
     match r_version {
         Ok(output) => {
@@ -182,7 +183,7 @@ fn check_r_packages(quiet: bool) -> Result<Vec<String>, String> {
         );
 
         let result = Command::new("R")
-            .args(&["--slave", "-e", &check_cmd])
+            .args(["--slave", "-e", &check_cmd])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status();

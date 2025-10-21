@@ -182,10 +182,9 @@ pub fn validate_phasing_early(
     if !bam_path_string.starts_with("http")
         && !bam_path_string.starts_with("ftp")
         && !bam_path_string.starts_with("s3")
+        && !std::path::Path::new(&bam_path_string).exists()
     {
-        if !std::path::Path::new(&bam_path_string).exists() {
-            return Err(format!("BAM/CRAM file does not exist: {}", bam_path_string));
-        }
+        return Err(format!("BAM/CRAM file does not exist: {}", bam_path_string));
     }
 
     debug!("Starting phasing validation for file: {}", bam_path);

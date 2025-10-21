@@ -76,6 +76,7 @@ fn get_counts_from_index(bam_path: &str) -> Option<(u64, u64)> {
     let reader_result = if bam_path.starts_with("s3")
         || bam_path.starts_with("https://")
         || bam_path.starts_with("http://")
+        || bam_path.starts_with("ftp://")
     {
         info!("Opening remote BAM file for index statistics...");
         rust_htslib::bam::IndexedReader::from_url(
@@ -249,6 +250,7 @@ fn try_collect_indexed(
     let reader_result = if bam_path.starts_with("s3")
         || bam_path.starts_with("https://")
         || bam_path.starts_with("http://")
+        || bam_path.starts_with("ftp://")
     {
         info!("Creating IndexedReader for remote file...");
         rust_htslib::bam::IndexedReader::from_url(

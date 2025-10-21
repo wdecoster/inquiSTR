@@ -4,12 +4,15 @@ use plotly::{Plot, Scatter};
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
 struct InquiSTRRecord {
+    #[allow(dead_code)]
     chromosome: String,
+    #[allow(dead_code)]
     begin: u32,
+    #[allow(dead_code)]
     end: u32,
     h1: f64,
     h2: f64,
@@ -17,7 +20,9 @@ struct InquiSTRRecord {
 
 #[derive(Debug, Clone)]
 struct TruthRecord {
+    #[allow(dead_code)]
     chromosome: String,
+    #[allow(dead_code)]
     pos: u32,
     h1: f64,
     h2: f64,
@@ -25,9 +30,9 @@ struct TruthRecord {
 
 /// Parse BED file with 9 columns (last 2 are haplotype lengths)
 fn parse_bed_file(
-    file_path: &PathBuf,
+    file_path: &Path,
 ) -> Result<HashMap<String, TruthRecord>, Box<dyn std::error::Error>> {
-    let reader = crate::utils::reader(&file_path.to_string_lossy().to_string());
+    let reader = crate::utils::reader(file_path.to_string_lossy().as_ref());
     let mut records = HashMap::new();
     let mut line_count = 0;
 
@@ -50,8 +55,8 @@ fn parse_bed_file(
         let begin: u32 = fields[1].parse()?;
 
         // Parse the last 2 columns as haplotype lengths and flip their signs
-        let h1: f64 = fields[7].parse::<f64>()? * -1.0;
-        let h2: f64 = fields[8].parse::<f64>()? * -1.0;
+        let h1: f64 = -fields[7].parse::<f64>()?;
+        let h2: f64 = -fields[8].parse::<f64>()?;
 
         let record = TruthRecord {
             chromosome: chromosome.clone(),
@@ -72,7 +77,7 @@ fn parse_bed_file(
 
 /// Parse inquiSTR output file
 fn parse_inquistr_file(
-    file_path: &PathBuf,
+    file_path: &Path,
 ) -> Result<HashMap<String, InquiSTRRecord>, Box<dyn std::error::Error>> {
     let file = File::open(file_path)?;
     let reader = BufReader::new(file);
@@ -118,9 +123,9 @@ fn parse_inquistr_file(
 
 /// Parse VCF file (supports compressed files)
 fn parse_vcf_file(
-    file_path: &PathBuf,
+    file_path: &Path,
 ) -> Result<HashMap<String, TruthRecord>, Box<dyn std::error::Error>> {
-    let reader = crate::utils::reader(&file_path.to_string_lossy().to_string());
+    let reader = crate::utils::reader(&file_path.to_string_lossy());
     let mut records = HashMap::new();
     let mut total_variants = 0;
     let mut snp_variants = 0;
