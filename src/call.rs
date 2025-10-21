@@ -87,7 +87,11 @@ pub fn genotype_repeats(
     batch_size_kb: u32,
 ) {
     // only test if path.is_file() if the file is local
-    if !PathBuf::from(&bamp).is_file() && !bamp.starts_with("s3") && !bamp.starts_with("https://") && !bamp.starts_with("ftp://") {
+    if !PathBuf::from(&bamp).is_file()
+        && !bamp.starts_with("s3")
+        && !bamp.starts_with("https://")
+        && !bamp.starts_with("ftp://")
+    {
         error!("ERROR: path to bam file {} is not valid!\n\n", &bamp);
         std::process::exit(1);
     };
@@ -154,17 +158,17 @@ pub fn genotype_repeats(
 
     // Collect and sort all results
     let mut all_genotypes: Vec<Genotype> = results.into_iter().flatten().collect();
-    
+
     // Create a new progress bar for sorting if we have a large number of results
     if all_genotypes.len() > 10000 {
         let sort_pb = indicatif::ProgressBar::new_spinner();
         sort_pb.set_style(
             indicatif::ProgressStyle::default_spinner()
                 .template("{spinner:.green} Sorting {} results...")
-                .expect("Failed to set spinner template")
+                .expect("Failed to set spinner template"),
         );
         sort_pb.set_message(format!("Sorting {} results...", all_genotypes.len()));
-        
+
         all_genotypes.sort_unstable();
         sort_pb.finish_with_message("Sorting completed, writing output...");
     } else {
@@ -189,7 +193,8 @@ fn extract_sample_name_from_path(path: &str) -> String {
     let path_buf = PathBuf::from(path);
 
     // Handle URLs by extracting just the filename part
-    let filename = if path.starts_with("http") || path.starts_with("ftp") || path.starts_with("s3") {
+    let filename = if path.starts_with("http") || path.starts_with("ftp") || path.starts_with("s3")
+    {
         path.rsplit('/').next().unwrap_or(path)
     } else {
         path_buf

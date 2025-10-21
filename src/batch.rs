@@ -1,5 +1,5 @@
 use human_sort::compare as human_compare;
-use log::{warn,error};
+use log::{error, warn};
 use rust_htslib::bam::ext::BamRecordExtensions;
 use rust_htslib::bam::Read;
 use std::collections::HashMap;
@@ -157,7 +157,8 @@ pub fn process_batch_worker(
                 }
                 Err(e) => {
                     let error_str = e.to_string();
-                    if error_str.contains("CRC32 failure") || error_str.contains("truncated record") {
+                    if error_str.contains("CRC32 failure") || error_str.contains("truncated record")
+                    {
                         error!("CRAM format error in batch {}: {}. This usually indicates that the reference genome doesn't match the CRAM file or CRAM index is corrupted.", batch.chromosome, error_str);
                     } else {
                         error!("Error reading BAM record in batch {}: {}", batch.chromosome, e);

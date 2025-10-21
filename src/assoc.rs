@@ -37,7 +37,8 @@ pub fn run_association(
     }
 
     // Validate input arguments
-    if let Err(e) = validate_arguments(&input, &phenocovar, &str_mode, &outcometype, &binary_order) {
+    if let Err(e) = validate_arguments(&input, &phenocovar, &str_mode, &outcometype, &binary_order)
+    {
         error!("Argument validation failed: {}", e);
         std::process::exit(1);
     }
@@ -106,7 +107,7 @@ fn validate_arguments(
     if !input.exists() {
         return Err(format!("Input file does not exist: {}", input.display()));
     }
-    
+
     if !phenocovar.exists() {
         return Err(format!("Phenotype file does not exist: {}", phenocovar.display()));
     }
@@ -136,9 +137,7 @@ fn check_r_environment(quiet: bool) -> Result<(), String> {
     }
 
     // Check if R is installed
-    let r_version = Command::new("R")
-        .args(&["--version"])
-        .output();
+    let r_version = Command::new("R").args(&["--version"]).output();
 
     match r_version {
         Ok(output) => {
@@ -156,12 +155,9 @@ fn check_r_environment(quiet: bool) -> Result<(), String> {
 
     // Check for required packages
     let missing_packages = check_r_packages(quiet)?;
-    
+
     if !missing_packages.is_empty() {
-        return Err(format!(
-            "Missing required R packages: {}",
-            missing_packages.join(", ")
-        ));
+        return Err(format!("Missing required R packages: {}", missing_packages.join(", ")));
     }
 
     if !quiet {
@@ -210,10 +206,10 @@ fn check_r_packages(quiet: bool) -> Result<Vec<String>, String> {
 fn create_temp_r_script() -> Result<PathBuf, std::io::Error> {
     let temp_dir = std::env::temp_dir();
     let temp_file = temp_dir.join("str_regression_temp.R");
-    
+
     let mut file = fs::File::create(&temp_file)?;
     file.write_all(STR_REGRESSION_SCRIPT.as_bytes())?;
-    
+
     Ok(temp_file)
 }
 
@@ -242,18 +238,27 @@ fn execute_r_script(
     let missing_cutoff_str = missing_cutoff.to_string();
     let threads_str = threads.to_string();
     let chunk_size_str = chunk_size.to_string();
-    
+
     let mut args = vec![
         script_path_str.as_ref(),
-        "--input", input_str.as_ref(),
-        "--phenocovar", phenocovar_str.as_ref(),
-        "--phenotype", &phenotype,
-        "--out", out_str.as_ref(),
-        "--STRmode", &str_mode,
-        "--outcometype", &outcometype,
-        "--missing_cutoff", &missing_cutoff_str,
-        "--threads", &threads_str,
-        "--chunk_size", &chunk_size_str,
+        "--input",
+        input_str.as_ref(),
+        "--phenocovar",
+        phenocovar_str.as_ref(),
+        "--phenotype",
+        &phenotype,
+        "--out",
+        out_str.as_ref(),
+        "--STRmode",
+        &str_mode,
+        "--outcometype",
+        &outcometype,
+        "--missing_cutoff",
+        &missing_cutoff_str,
+        "--threads",
+        &threads_str,
+        "--chunk_size",
+        &chunk_size_str,
     ];
 
     // Add optional arguments
@@ -284,11 +289,11 @@ fn execute_r_script(
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let stdout = String::from_utf8_lossy(&output.stdout);
-        
+
         error!("R script execution failed");
         error!("STDOUT: {}", stdout);
         error!("STDERR: {}", stderr);
-        
+
         return Err(format!("R script failed with exit code: {:?}", output.status.code()));
     }
 
@@ -313,15 +318,15 @@ fn print_r_setup_instructions() {
     eprintln!("   - CentOS/RHEL: sudo yum install R");
     eprintln!("   - macOS with Homebrew: brew install r");
     eprintln!("   - Windows: Download from https://cran.r-project.org/");
-    
+
     eprintln!("\n2. Required R packages installed:");
     eprintln!("   Start R and run:");
     eprintln!("   install.packages(c('data.table', 'argparser'))");
     eprintln!("   # Note: 'parallel' is part of base R");
-    
+
     eprintln!("\n3. Alternative: Install using command line:");
     eprintln!("   Rscript -e \"install.packages(c('data.table', 'argparser'), repos='https://cran.rstudio.com/')\"");
-    
+
     eprintln!("\nOnce R is properly set up, you can run:");
     eprintln!("   inquiSTR association --help");
     eprintln!("\nFor more details, see: https://github.com/wdecoster/inquiSTR#association-testing");
@@ -338,21 +343,15 @@ mod tests {
         let temp_dir = std::env::temp_dir();
         let input_file = temp_dir.join("test_input.txt");
         let phenocovar_file = temp_dir.join("test_pheno.txt");
-        
+
         // Create the files
         std::fs::write(&input_file, "test").unwrap();
         std::fs::write(&phenocovar_file, "test").unwrap();
-        
-        let result = validate_arguments(
-            &input_file,
-            &phenocovar_file,
-            "MAX",
-            "continuous",
-            &None,
-        );
-        
+
+        let result = validate_arguments(&input_file, &phenocovar_file, "MAX", "continuous", &None);
+
         assert!(result.is_ok());
-        
+
         // Clean up
         std::fs::remove_file(&input_file).unwrap();
         std::fs::remove_file(&phenocovar_file).unwrap();
@@ -363,21 +362,16 @@ mod tests {
         let temp_dir = std::env::temp_dir();
         let input_file = temp_dir.join("test_input2.txt");
         let phenocovar_file = temp_dir.join("test_pheno2.txt");
-        
+
         std::fs::write(&input_file, "test").unwrap();
         std::fs::write(&phenocovar_file, "test").unwrap();
-        
-        let result = validate_arguments(
-            &input_file,
-            &phenocovar_file,
-            "INVALID",
-            "continuous",
-            &None,
-        );
-        
+
+        let result =
+            validate_arguments(&input_file, &phenocovar_file, "INVALID", "continuous", &None);
+
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("STR mode must be"));
-        
+
         std::fs::remove_file(&input_file).unwrap();
         std::fs::remove_file(&phenocovar_file).unwrap();
     }
@@ -387,21 +381,15 @@ mod tests {
         let temp_dir = std::env::temp_dir();
         let input_file = temp_dir.join("test_input3.txt");
         let phenocovar_file = temp_dir.join("test_pheno3.txt");
-        
+
         std::fs::write(&input_file, "test").unwrap();
         std::fs::write(&phenocovar_file, "test").unwrap();
-        
-        let result = validate_arguments(
-            &input_file,
-            &phenocovar_file,
-            "MAX",
-            "binary",
-            &None,
-        );
-        
+
+        let result = validate_arguments(&input_file, &phenocovar_file, "MAX", "binary", &None);
+
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("Binary order is required"));
-        
+
         std::fs::remove_file(&input_file).unwrap();
         std::fs::remove_file(&phenocovar_file).unwrap();
     }
@@ -410,15 +398,15 @@ mod tests {
     fn test_create_temp_r_script() {
         let result = create_temp_r_script();
         assert!(result.is_ok());
-        
+
         let temp_file = result.unwrap();
         assert!(temp_file.exists());
-        
+
         // Check content
         let content = std::fs::read_to_string(&temp_file).unwrap();
         assert!(content.contains("#!/usr/bin/env Rscript"));
         assert!(content.contains("STR_regression"));
-        
+
         // Clean up
         std::fs::remove_file(&temp_file).unwrap();
     }

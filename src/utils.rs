@@ -8,7 +8,7 @@ fn is_bgzip_file(filename: &str) -> bool {
     if !filename.ends_with(".gz") {
         return false;
     }
-    
+
     if let Ok(mut file) = File::open(filename) {
         let mut magic = [0u8; 16];
         if file.read_exact(&mut magic).is_ok() {

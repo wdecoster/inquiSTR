@@ -62,15 +62,16 @@ The inquiSTR tool has several subcommands, as detailed below. All commands write
 Usage: inquiSTR <COMMAND>
 
 Commands:
-  call       Call lengths
-  combine    Combine STR calls or kmer frequencies from multiple samples to a TSV
-  outlier    Find outliers from combined STR or kmer data
-  query      Lookup genotypes and display
-  histogram
-  plot       Show a histogram with multiple groups for a specific repeat
-  pca        Perform Principal Component Analysis on combined STR data
-  unmapped   Count kmer frequencies in unmapped reads
-  help       Print this message or the help of the given subcommand(s)
+  call         Call lengths
+  combine      Combine STR calls or kmer frequencies from multiple samples to a TSV
+  outlier      Find outliers from combined STR or kmer data
+  query        Lookup genotypes and display
+  histogram    Generate histograms for specific repeats
+  plot         Show a histogram with multiple groups for a specific repeat
+  pca          Perform Principal Component Analysis on combined STR data
+  association  Perform statistical association testing for STRs
+  unmapped     Count kmer frequencies in unmapped reads
+  help         Print this message or the help of the given subcommand(s)
 
 Options:
   -h, --help     Print help
@@ -433,6 +434,134 @@ inquiSTR pca combined.tsv --aggregation sum --threads 4 --output total_burden_pc
 inquiSTR pca combined.tsv --components 20 --output detailed_pca.html
 ```
 
-## Usage for Association Testing
+### `inquiSTR association` - Statistical Association Testing
 
-This repository contains `STR_regression.R`, an R script for association testing of STRs. The script can be found in the scripts folder. Examples are provided in [STR_regression_examples.md](STR_regression_examples.md). Please open an issue if the usage is unclear.
+Perform statistical association testing for STRs using the embedded R script. This subcommand provides a convenient wrapper around sophisticated statistical analysis capabilities without requiring separate script management.
+
+```text
+Usage: inquiSTR association [OPTIONS] --input <INPUT> --phenocovar <PHENOCOVAR> --phenotype <PHENOTYPE> --out <OUT> --str-mode <STR_MODE> --outcometype <OUTCOMETYPE>
+
+Arguments:
+  -i, --input <INPUT>              Combined STR file from inquiSTR combine command
+  -p, --phenocovar <PHENOCOVAR>    Phenotype and covariate file with header, first column is individual ID
+      --phenotype <PHENOTYPE>      Column name of phenotype in phenocovar file
+  -o, --out <OUT>                  Output file name for association results
+      --str-mode <STR_MODE>        STR mode: MEAN, MAX, or MIN for H1/H2 combination
+      --outcometype <OUTCOMETYPE>  Outcome type: binary or continuous
+
+Options:
+      --covnames <COVNAMES>              Covariate names, comma separated (optional)
+      --missing-cutoff <MISSING_CUTOFF>  Call rate cutoff for variants [default: 0.8]
+      --minimal-length <MINIMAL_LENGTH>  Minimum maximum STR length across samples for inclusion
+  -t, --threads <THREADS>                Number of threads for parallel processing [default: 1]
+      --chunk-size <CHUNK_SIZE>          Number of variants to process in each chunk [default: 1000]
+      --binary-order <BINARY_ORDER>      Binary phenotype order (e.g., Control,Patient) - required for binary outcomes
+      --quiet                            Do not print progress messages
+  -h, --help                             Print help
+```
+
+#### R Environment Setup
+
+The association testing functionality requires R with specific packages. inquiSTR automatically checks your R environment and provides setup instructions if needed.
+
+**Required R packages:**
+
+- `data.table` - Fast data manipulation
+- `argparser` - Command-line argument parsing
+- `parallel` - Parallel processing (included with base R)
+
+**Installation:**
+
+```bash
+# Install R packages
+Rscript -e "install.packages(c('data.table', 'argparser'), repos='https://cran.rstudio.com/')"
+
+# Or install interactively in R
+R
+> install.packages(c('data.table', 'argparser'))
+```
+
+#### Phenotype File Format
+
+The phenotype file should be a tab-separated or comma-separated file with:
+
+- **Header row** with column names
+- **First column**: Individual IDs matching those in the combined STR file
+- **Phenotype column**: The outcome variable
+- **Additional columns**: Optional covariates (age, sex, population, etc.)
+
+**Example for continuous outcome:**
+
+```csv
+individual_id,height,age,sex
+sample1,175.2,25,M
+sample2,168.1,30,F
+sample3,182.5,28,M
+```
+
+**Example for binary outcome:**
+
+```csv
+individual_id,disease_status,age,population
+patient1,Case,45,EUR
+control1,Control,47,EUR
+patient2,Case,52,AFR
+```
+
+#### STR Mode Options
+
+- **MEAN**: Average of H1 and H2 allele lengths
+- **MAX**: Maximum of H1 and H2 allele lengths (good for expansion detection)
+- **MIN**: Minimum of H1 and H2 allele lengths
+
+#### Examples
+
+**Continuous phenotype analysis:**
+
+```bash
+inquiSTR association \
+  --input combined_strs.tsv \
+  --phenocovar phenotypes.csv \
+  --phenotype height \
+  --out height_association.tsv \
+  --str-mode MAX \
+  --outcometype continuous \
+  --covnames age,sex \
+  --threads 8
+```
+
+**Binary case-control analysis:**
+
+```bash
+inquiSTR association \
+  --input combined_strs.tsv \
+  --phenocovar case_control.csv \
+  --phenotype disease_status \
+  --out disease_association.tsv \
+  --str-mode MEAN \
+  --outcometype binary \
+  --binary-order Control,Case \
+  --covnames age,sex,population \
+  --missing-cutoff 0.9 \
+  --threads 4
+```
+
+**Advanced filtering:**
+
+```bash
+inquiSTR association \
+  --input combined_strs.tsv \
+  --phenocovar phenotypes.csv \
+  --phenotype trait \
+  --out filtered_association.tsv \
+  --str-mode MAX \
+  --outcometype continuous \
+  --minimal-length 10 \
+  --missing-cutoff 0.95 \
+  --chunk-size 500 \
+  --quiet
+```
+
+## Legacy R Script Usage
+
+For advanced users who prefer direct script access, the association testing functionality is also available as a standalone R script `STR_regression.R` in the scripts folder. Detailed examples are provided in [STR_regression_examples.md](STR_regression_examples.md).

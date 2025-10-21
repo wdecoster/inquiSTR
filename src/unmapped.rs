@@ -349,6 +349,7 @@ fn collect_fallback(
 
     let mut reader = if bam_path.starts_with("http")
         || bam_path.starts_with("https")
+        || bam_path.starts_with("ftp")
         || bam_path.starts_with("s3")
     {
         info!("Opening BAM from URL...");

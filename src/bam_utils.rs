@@ -9,7 +9,10 @@ use std::env;
 use url::Url;
 
 /// Get chromosome lengths from BAM header
-pub fn get_chrom_lengths_from_bam_header(bam: String, reference: &Option<String>) -> HashMap<String, u64> {
+pub fn get_chrom_lengths_from_bam_header(
+    bam: String,
+    reference: &Option<String>,
+) -> HashMap<String, u64> {
     let bam = get_bam_reader(&bam, reference);
     let header = bam::Header::from_template(bam.header());
     let mut chrom_lengts = HashMap::new();
@@ -94,7 +97,7 @@ pub fn get_bam_reader(bamp: &String, reference: &Option<String>) -> bam::Indexed
         )
         .expect("Failed setting cram options");
         debug!("CRAM options set successfully");
-        
+
         if reference.is_some() {
             let ref_path = reference.as_ref().unwrap();
             debug!("Setting CRAM reference to: {}", ref_path);
@@ -116,20 +119,21 @@ pub fn get_bam_reader(bamp: &String, reference: &Option<String>) -> bam::Indexed
 /// Create a sequential BAM reader for reading all records
 fn get_sequential_bam_reader(bamp: &String, reference: &Option<String>) -> bam::Reader {
     debug!("Opening BAM/CRAM file for sequential reading: {}", bamp);
-    let mut bam = if bamp.starts_with("s3") || bamp.starts_with("https://") || bamp.starts_with("ftp://") {
-        setup_ssl_certificates();
-        bam::Reader::from_url(&Url::parse(bamp.as_str()).expect("Failed to parse s3 URL"))
-            .unwrap_or_else(|err| {
-                error!("Error opening remote BAM file: {err}");
+    let mut bam =
+        if bamp.starts_with("s3") || bamp.starts_with("https://") || bamp.starts_with("ftp://") {
+            setup_ssl_certificates();
+            bam::Reader::from_url(&Url::parse(bamp.as_str()).expect("Failed to parse s3 URL"))
+                .unwrap_or_else(|err| {
+                    error!("Error opening remote BAM file: {err}");
+                    std::process::exit(1);
+                })
+        } else {
+            bam::Reader::from_path(bamp).unwrap_or_else(|err| {
+                error!("Error opening local BAM file: {err}");
                 std::process::exit(1);
             })
-    } else {
-        bam::Reader::from_path(bamp).unwrap_or_else(|err| {
-            error!("Error opening local BAM file: {err}");
-            std::process::exit(1);
-        })
-    };
-    
+        };
+
     if bamp.ends_with(".cram") {
         debug!("Detected CRAM file for sequential reading, setting CRAM options...");
         bam.set_cram_options(
@@ -142,7 +146,7 @@ fn get_sequential_bam_reader(bamp: &String, reference: &Option<String>) -> bam::
         )
         .expect("Failed setting cram options");
         debug!("CRAM options set successfully for sequential reader");
-        
+
         if reference.is_some() {
             let ref_path = reference.as_ref().unwrap();
             debug!("Setting CRAM reference for sequential reader to: {}", ref_path);
@@ -164,7 +168,7 @@ fn get_sequential_bam_reader(bamp: &String, reference: &Option<String>) -> bam::
 /// Validates that the BAM/CRAM file contains phasing information (HP tags) by scanning early reads
 /// Returns immediately upon finding the first HP tag, or errors after scanning max_reads without finding any
 /// This provides fast failure detection before expensive processing begins
-/// 
+///
 /// Note: This function detects HP tags regardless of their Aux type (U8, I32, etc.) by simply
 /// checking for the presence of the tag. The actual value parsing and validation happens elsewhere.
 pub fn validate_phasing_early(
@@ -173,26 +177,29 @@ pub fn validate_phasing_early(
     max_reads: usize,
 ) -> Result<(), String> {
     let bam_path_string = bam_path.to_string();
-    
+
     // Check if file exists (skip check for URLs)
-    if !bam_path_string.starts_with("http") && !bam_path_string.starts_with("ftp") && !bam_path_string.starts_with("s3") {
+    if !bam_path_string.starts_with("http")
+        && !bam_path_string.starts_with("ftp")
+        && !bam_path_string.starts_with("s3")
+    {
         if !std::path::Path::new(&bam_path_string).exists() {
             return Err(format!("BAM/CRAM file does not exist: {}", bam_path_string));
         }
     }
-    
+
     debug!("Starting phasing validation for file: {}", bam_path);
     debug!("Reference path: {:?}", reference);
     debug!("File exists, attempting to open BAM/CRAM reader...");
-    
+
     let mut seq_bam = get_sequential_bam_reader(&bam_path_string, reference);
     debug!("Sequential BAM/CRAM reader opened successfully");
-    
+
     // Try to read the header to verify the file is accessible
     let header = seq_bam.header();
     let header_text = std::str::from_utf8(header.as_bytes()).unwrap_or("Invalid UTF-8");
     debug!("Header read successfully, length: {} bytes", header_text.len());
-    
+
     let mut reads_checked = 0;
     let records_iterator = seq_bam.records();
     debug!("Starting HP tag validation, scanning up to {} reads...", max_reads);
@@ -209,7 +216,7 @@ pub fn validate_phasing_early(
                     debug!("Found HP tag in read {}, validation successful", reads_checked + 1);
                     return Ok(());
                 }
-                
+
                 reads_checked += 1;
             }
             Err(e) => {
