@@ -29,6 +29,7 @@ use std::{io::BufRead, path::PathBuf};
 pub mod assoc;
 pub mod bam_utils;
 pub mod batch;
+pub mod benchmark;
 pub mod call;
 pub mod combine;
 pub mod histogram;
@@ -283,6 +284,28 @@ enum Commands {
         #[clap(short, long, value_parser, default_value_t = 1)]
         threads: usize,
     },
+    /// Benchmark inquiSTR calls against a truth VCF or BED file
+    Benchmark {
+        /// inquiSTR call output file (.inq format)
+        #[clap(value_parser, required = true)]
+        inquistr: PathBuf,
+
+        /// VCF file with truth genotypes (can be compressed)
+        #[clap(long, value_parser)]
+        vcf: Option<PathBuf>,
+
+        /// BED file with truth genotypes (can be compressed, 9 columns with last 2 being haplotype lengths)
+        #[clap(long, value_parser)]
+        bed: Option<PathBuf>,
+
+        /// Mode for selecting alleles: MAX (default) or MIN
+        #[clap(short, long, value_parser, default_value_t = String::from("MAX"))]
+        mode: String,
+
+        /// Output file for correlation plot
+        #[clap(short, long, value_parser, required = true)]
+        plot: PathBuf,
+    },
 }
 
 fn main() {
@@ -387,6 +410,9 @@ fn main() {
         }
         Commands::Unmapped { bam, klength, sample_name, reference, threads } => {
             unmapped::count_unmapped_kmers(bam, klength, sample_name, reference, threads);
+        }
+        Commands::Benchmark { inquistr, vcf, bed, mode, plot } => {
+            benchmark::benchmark(inquistr, vcf, bed, mode, plot);
         }
     }
 }
