@@ -4,6 +4,7 @@
 //! from BAM/CRAM files. It extracts all unmapped reads and counts occurrences of
 //! kmers of all sizes from 2 to a specified maximum length.
 
+use crate::bam_utils::setup_index_caching;
 use indicatif::{ProgressBar, ProgressStyle};
 use log::{info, warn};
 use rayon::prelude::{IntoParallelIterator, ParallelIterator};
@@ -18,11 +19,19 @@ pub fn count_unmapped_kmers(
     sample_name: Option<String>,
     reference: Option<String>,
     threads: usize,
+    target_kmer: Option<String>,
 ) {
     info!("Starting kmer counting for unmapped reads");
     info!("BAM file: {}", bam_path);
     info!("Maximum kmer length: {}", klength);
     info!("Threads: {}", threads);
+
+    if let Some(ref target) = target_kmer {
+        info!("Target kmer: {}", target);
+        // If target kmer is specified, only count that specific kmer
+        count_target_kmer(&bam_path, target, sample_name, &reference, threads);
+        return;
+    }
 
     if klength < 2 {
         panic!("klength must be at least 2");
@@ -72,6 +81,9 @@ pub fn count_unmapped_kmers(
 /// Get unmapped read count and total read count from BAM index statistics using rust-htslib
 /// Returns Some((unmapped_count, total_count)) if successful, None if index is not available or other error
 fn get_counts_from_index(bam_path: &str) -> Option<(u64, u64)> {
+    // Set up index caching before opening the file
+    setup_index_caching(bam_path);
+
     // Try to create an IndexedReader and get index statistics
     let reader_result = if bam_path.starts_with("s3")
         || bam_path.starts_with("https://")
@@ -246,6 +258,9 @@ fn try_collect_indexed(
     expected_unmapped: u64,
     progress: Option<ProgressBar>,
 ) -> Option<(Vec<Vec<Vec<u8>>>, u64)> {
+    // Set up index caching before opening the file
+    setup_index_caching(bam_path);
+
     // Use the same logic as fetch_unmapped_reads_indexed but stream the results
     let reader_result = if bam_path.starts_with("s3")
         || bam_path.starts_with("https://")
@@ -348,6 +363,9 @@ fn collect_fallback(
     progress: Option<ProgressBar>,
 ) -> (Vec<Vec<Vec<u8>>>, u64) {
     info!("Using fallback file traversal for sequence production");
+
+    // Set up index caching before opening the file
+    setup_index_caching(bam_path);
 
     let mut reader = if bam_path.starts_with("http")
         || bam_path.starts_with("https")
@@ -459,6 +477,194 @@ fn get_canonical_kmer(kmer: &[u8]) -> Vec<u8> {
 
     // Return the lexicographically smallest
     rotations.into_iter().min().unwrap()
+}
+
+/// Count occurrences of a specific target kmer in unmapped reads
+fn count_target_kmer(
+    bam_path: &str,
+    target_kmer: &str,
+    sample_name: Option<String>,
+    reference: &Option<String>,
+    threads: usize,
+) {
+    // Validate target kmer contains only ACGT
+    let target_upper = target_kmer.to_uppercase();
+    if !target_upper
+        .bytes()
+        .all(|b| matches!(b, b'A' | b'C' | b'G' | b'T'))
+    {
+        panic!("Target kmer must contain only A, C, G, T characters");
+    }
+
+    let target_bytes = target_upper.as_bytes();
+    let k = target_bytes.len();
+
+    if k < 1 {
+        panic!("Target kmer must be at least 1 base long");
+    }
+
+    info!("Counting target kmer '{}' (length {})", target_upper, k);
+
+    // Generate all rotations of the target kmer
+    let mut rotations = Vec::new();
+    for i in 0..k {
+        let mut rotation = Vec::with_capacity(k);
+        rotation.extend_from_slice(&target_bytes[i..]);
+        rotation.extend_from_slice(&target_bytes[..i]);
+        rotations.push(rotation);
+    }
+
+    // Set up thread pool
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(threads)
+        .build_global()
+        .expect("Failed to build thread pool");
+
+    // Determine sample name
+    let sample_name = sample_name.unwrap_or_else(|| {
+        Path::new(bam_path)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("sample")
+            .to_string()
+    });
+
+    // Try to get unmapped read count from index statistics
+    let counts_from_index = get_counts_from_index(bam_path);
+
+    // Stream unmapped reads and count target kmer
+    let (total_count, total_reads) =
+        stream_and_count_target_kmer(bam_path, reference, counts_from_index, &rotations);
+
+    // Output results
+    println!("Sample\tTarget_Kmer\tCanonical_Kmer\tKmer_Length\tCount\tTotal_Reads\tFrequency");
+    let canonical = String::from_utf8(get_canonical_kmer(target_bytes)).unwrap();
+    let frequency = if total_reads > 0 {
+        total_count as f64 / total_reads as f64
+    } else {
+        0.0
+    };
+    println!(
+        "{}\t{}\t{}\t{}\t{}\t{}\t{:.6}",
+        sample_name, target_upper, canonical, k, total_count, total_reads, frequency
+    );
+}
+
+/// Stream unmapped reads and count occurrences of target kmer rotations
+fn stream_and_count_target_kmer(
+    bam_path: &str,
+    reference: &Option<String>,
+    counts_from_index: Option<(u64, u64)>,
+    rotations: &[Vec<u8>],
+) -> (u64, u64) {
+    const BATCH_SIZE: usize = 10000;
+
+    // Set up progress bar
+    let progress_bar = if let Some((unmapped_count, _)) = counts_from_index {
+        let pb = ProgressBar::new(unmapped_count);
+        pb.set_style(
+            ProgressStyle::default_bar()
+                .template("[{elapsed_precise}] {bar:40.cyan/blue} {pos}/{len} reads ({eta})")
+                .expect("Failed to set progress bar template")
+                .progress_chars("=>-"),
+        );
+        Some(pb)
+    } else {
+        None
+    };
+
+    // Set up index caching before opening the file
+    setup_index_caching(bam_path);
+
+    // Open BAM reader
+    let mut reader = if bam_path.starts_with("http")
+        || bam_path.starts_with("https")
+        || bam_path.starts_with("ftp")
+        || bam_path.starts_with("s3")
+    {
+        info!("Opening BAM from URL...");
+        bam::Reader::from_url(&bam_path.parse().expect("Invalid URL"))
+            .expect("Failed to open BAM from URL")
+    } else {
+        info!("Opening local BAM file...");
+        bam::Reader::from_path(bam_path).expect("Failed to open BAM file")
+    };
+
+    // Set reference for CRAM files
+    if bam_path.ends_with(".cram") {
+        if let Some(ref_path) = reference {
+            reader
+                .set_reference(ref_path)
+                .expect("Failed to set reference");
+        }
+    }
+
+    let mut batch = Vec::with_capacity(BATCH_SIZE);
+    let mut batch_counts = Vec::new();
+    let mut total_reads = 0u64;
+
+    for result in reader.records() {
+        match result {
+            Ok(record) => {
+                if record.is_unmapped() {
+                    total_reads += 1;
+                    if let Some(ref pb) = progress_bar {
+                        pb.inc(1);
+                    }
+                    batch.push(record.seq().as_bytes());
+
+                    if batch.len() >= BATCH_SIZE {
+                        // Process batch and collect count
+                        batch_counts.push(batch.clone());
+                        batch.clear();
+                    }
+                }
+            }
+            Err(e) => {
+                warn!("Error reading record: {}", e);
+            }
+        }
+    }
+
+    // Add remaining reads to batches
+    if !batch.is_empty() {
+        batch_counts.push(batch);
+    }
+
+    if let Some(pb) = progress_bar {
+        pb.finish_with_message("Done");
+    }
+
+    // Count target kmer in parallel batches
+    let total_count: u64 = batch_counts
+        .into_par_iter()
+        .map(|batch| count_target_in_batch(&batch, rotations))
+        .sum();
+
+    (total_count, total_reads)
+}
+
+/// Count occurrences of target kmer (any rotation) in a batch of reads
+fn count_target_in_batch(batch: &[Vec<u8>], rotations: &[Vec<u8>]) -> u64 {
+    let mut count = 0u64;
+    let k = rotations[0].len();
+
+    for read in batch {
+        if read.len() < k {
+            continue;
+        }
+
+        // Check each position in the read
+        for i in 0..=(read.len() - k) {
+            let kmer = &read[i..i + k];
+            // Check if this kmer matches any rotation
+            if rotations.iter().any(|rot| rot.as_slice() == kmer) {
+                count += 1;
+            }
+        }
+    }
+
+    count
 }
 
 /// Canonicalize kmer counts by summing all rotations together

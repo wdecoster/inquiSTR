@@ -283,6 +283,10 @@ enum Commands {
         /// Number of parallel threads to use
         #[clap(short, long, value_parser, default_value_t = 1)]
         threads: usize,
+
+        /// Target kmer to specifically quantify (optional, can be any length)
+        #[clap(long, value_parser)]
+        target_kmer: Option<String>,
     },
     /// Benchmark inquiSTR calls against a truth VCF or BED file
     Benchmark {
@@ -305,6 +309,21 @@ enum Commands {
         /// Output file for correlation plot
         #[clap(short, long, value_parser, required = true)]
         plot: PathBuf,
+    },
+    /// Clean the index cache directory (hidden command)
+    #[clap(hide = true)]
+    CleanCache {
+        /// Show what would be deleted without actually deleting
+        #[clap(long)]
+        dry_run: bool,
+
+        /// Delete all cached files regardless of age
+        #[clap(long)]
+        all: bool,
+
+        /// Maximum age in days (files older than this will be deleted)
+        #[clap(long, default_value_t = 30)]
+        max_age_days: u64,
     },
 }
 
@@ -408,11 +427,21 @@ fn main() {
             }
             pca::pca(combined, output, components, threads, aggregation);
         }
-        Commands::Unmapped { bam, klength, sample_name, reference, threads } => {
-            unmapped::count_unmapped_kmers(bam, klength, sample_name, reference, threads);
+        Commands::Unmapped { bam, klength, sample_name, reference, threads, target_kmer } => {
+            unmapped::count_unmapped_kmers(
+                bam,
+                klength,
+                sample_name,
+                reference,
+                threads,
+                target_kmer,
+            );
         }
         Commands::Benchmark { inquistr, vcf, bed, mode, plot } => {
             benchmark::benchmark(inquistr, vcf, bed, mode, plot);
+        }
+        Commands::CleanCache { dry_run, all, max_age_days } => {
+            bam_utils::clean_cache(dry_run, all, max_age_days);
         }
     }
 }

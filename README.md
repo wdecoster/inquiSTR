@@ -15,7 +15,19 @@ A toolkit for genotyping and analyzing Short Tandem Repeats (STRs) from long-rea
 - **Multi-sample analysis**: Combine results across samples for cohort studies
 - **Quality control**: Built-in filtering and validation
 - **Association testing**: R scripts for statistical analysis of STR variations
+- **Remote file support**: Seamless access to HTTP/HTTPS/FTP/S3 URLs with automatic index caching
 - **Cross-platform**: Pre-built binaries for Linux and macOS
+
+### Remote File Access
+
+inquiSTR automatically handles remote BAM/CRAM files with intelligent index caching:
+
+- **Auto-caching**: Downloaded indexes are cached at `~/.cache/inquistr/` for instant reuse
+- **Local-first**: Checks current directory for index files before downloading
+- **Auto-cleanup**: Removes cached files older than 30 days to prevent bloat
+- **User control**: Set `INQUISTR_NO_CACHE=1` to disable caching for one-time analyses
+
+See [INDEX_CACHING.md](INDEX_CACHING.md) for detailed configuration options.
 
 ## 📦 Installation
 
@@ -565,3 +577,90 @@ inquiSTR association \
 ## Legacy R Script Usage
 
 For advanced users who prefer direct script access, the association testing functionality is also available as a standalone R script `STR_regression.R` in the scripts folder. Detailed examples are provided in [STR_regression_examples.md](STR_regression_examples.md).
+
+## 🛠️ Development
+
+### Development Setup
+
+```bash
+# Clone the repository
+git clone https://github.com/wdecoster/inquiSTR.git
+cd inquiSTR
+
+# Install development tools
+make setup
+
+# Install git hooks for automated code quality checks
+make install-hooks
+```
+
+### Code Quality
+
+This project uses automated code quality checks to maintain consistency and prevent CI failures:
+
+- **Formatting**: `cargo fmt` automatically formats code according to Rust standards
+- **Linting**: `cargo clippy` checks for common mistakes and suggests improvements
+- **Testing**: `cargo test` runs the test suite
+
+#### Git Hooks (Recommended)
+
+The project includes pre-commit and pre-push hooks that automatically run quality checks:
+
+```bash
+# Install hooks (run once after cloning)
+make install-hooks
+
+# The hooks will now automatically:
+# - Format code on commit (pre-commit)
+# - Run clippy and formatting checks before push (pre-push)
+```
+
+#### Manual Quality Checks
+
+You can also run quality checks manually:
+
+```bash
+# Format code
+make fmt
+
+# Run clippy linter
+make clippy
+
+# Run all pre-push checks
+make pre-push
+
+# Run all CI checks (formatting, linting, tests)
+make ci
+```
+
+#### Available Make Targets
+
+```bash
+make help          # Show all available targets
+make fmt           # Format code with cargo fmt
+make clippy        # Run clippy linter with warnings as errors
+make test          # Run tests
+make build         # Build in release mode
+make ci            # Run all CI checks (fmt-check, clippy, test)
+make pre-push      # Run pre-push checks (fmt, clippy)
+make install-hooks # Install git hooks for automated checks
+```
+
+### Why Use Git Hooks?
+
+The most common cause of CI failures is code formatting and clippy warnings. The git hooks prevent these issues by:
+
+1. **Pre-commit hook**: Automatically formats your code before each commit
+2. **Pre-push hook**: Ensures code passes formatting and clippy checks before pushing
+
+This saves time by catching issues locally instead of discovering them in CI.
+
+### Contributing
+
+1. **Fork and clone** the repository
+2. **Install hooks**: `make install-hooks`
+3. **Make changes** and commit (hooks will auto-format)
+4. **Push changes** (hooks will run quality checks)
+5. **Create a pull request**
+
+The automated hooks ensure your contributions meet the project's quality standards before they reach CI.
