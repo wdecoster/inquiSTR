@@ -281,6 +281,7 @@ fn test_region() {
 }
 
 #[test]
+#[ignore] // Requires network access - can be enabled with: cargo test -- --ignored
 fn test_region_from_url() {
     genotype_repeats(
         String::from("https://ftp.1000genomes.ebi.ac.uk/vol1/ftp/data_collections/1KG_ONT_VIENNA/hg38/HG00096.hg38.cram"),
@@ -291,7 +292,7 @@ fn test_region_from_url() {
         4,
         true, // Use unphased mode for test to avoid phasing validation issues
         Some("sample".to_string()),
-        None,
+        Some(String::from("https://ftp.1000genomes.ebi.ac.uk/vol1/ftp/technical/reference/GRCh38_reference_genome/GRCh38_full_analysis_set_plus_decoy_hla.fa")),
         None, // No max_locus filter for tests
         50,   // Default batch size for tests
     );
