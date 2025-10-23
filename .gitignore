@@ -177,3 +177,14 @@ test_str_streaming/test_str_data.txt
 test_str_streaming/test_phenotypes.txt
 test_str_streaming/test_large_data.txt
 test_str_streaming/test_binary_min.txt
+
+# Benchmark and large data files
+*.vcf.gz
+*.vcf.gz.tbi
+*.bed.gz
+*.crai
+*.inq
+benchmark*.html
+benchmark_output.txt
+*_short_*.tsv
+HG002_GRCh38_TandemRepeats_*

@@ -20,16 +20,20 @@ pub fn count_unmapped_kmers(
     reference: Option<String>,
     threads: usize,
     target_kmer: Option<String>,
+    combine_revcomp: bool,
 ) {
     info!("Starting kmer counting for unmapped reads");
     info!("BAM file: {}", bam_path);
     info!("Maximum kmer length: {}", klength);
     info!("Threads: {}", threads);
+    if combine_revcomp {
+        info!("Combining kmers with their reverse complements");
+    }
 
     if let Some(ref target) = target_kmer {
         info!("Target kmer: {}", target);
         // If target kmer is specified, only count that specific kmer
-        count_target_kmer(&bam_path, target, sample_name, &reference, threads);
+        count_target_kmer(&bam_path, target, sample_name, &reference, threads, combine_revcomp);
         return;
     }
 
@@ -73,7 +77,7 @@ pub fn count_unmapped_kmers(
     }
 
     // Canonicalize the counts (sum rotations together)
-    let canonical_counts = canonicalize_kmer_counts(&kmer_counts, klength);
+    let canonical_counts = canonicalize_kmer_counts(&kmer_counts, klength, combine_revcomp);
 
     // Output results
     output_results(&canonical_counts, &sample_name, klength, total_reads);
@@ -467,6 +471,20 @@ fn count_kmers_in_read(read: &[u8], k: usize, counts: &mut [u64]) {
     }
 }
 
+/// Get the reverse complement of a DNA sequence
+fn reverse_complement(seq: &[u8]) -> Vec<u8> {
+    seq.iter()
+        .rev()
+        .map(|&base| match base {
+            b'A' => b'T',
+            b'T' => b'A',
+            b'C' => b'G',
+            b'G' => b'C',
+            _ => base, // Should not happen with validated sequences
+        })
+        .collect()
+}
+
 /// Convert a kmer to its canonical form (lexicographically smallest rotation)
 fn get_canonical_kmer(kmer: &[u8]) -> Vec<u8> {
     let mut rotations = Vec::new();
@@ -483,6 +501,33 @@ fn get_canonical_kmer(kmer: &[u8]) -> Vec<u8> {
     rotations.into_iter().min().unwrap()
 }
 
+/// Convert a kmer to its canonical form considering both rotations and reverse complement
+fn get_canonical_kmer_with_revcomp(kmer: &[u8]) -> Vec<u8> {
+    let mut candidates = Vec::new();
+
+    // Get reverse complement
+    let revcomp = reverse_complement(kmer);
+
+    // Generate all rotations of forward strand
+    for i in 0..kmer.len() {
+        let mut rotation = Vec::with_capacity(kmer.len());
+        rotation.extend_from_slice(&kmer[i..]);
+        rotation.extend_from_slice(&kmer[..i]);
+        candidates.push(rotation);
+    }
+
+    // Generate all rotations of reverse complement
+    for i in 0..revcomp.len() {
+        let mut rotation = Vec::with_capacity(revcomp.len());
+        rotation.extend_from_slice(&revcomp[i..]);
+        rotation.extend_from_slice(&revcomp[..i]);
+        candidates.push(rotation);
+    }
+
+    // Return the lexicographically smallest
+    candidates.into_iter().min().unwrap()
+}
+
 /// Count occurrences of a specific target kmer in unmapped reads
 fn count_target_kmer(
     bam_path: &str,
@@ -490,6 +535,7 @@ fn count_target_kmer(
     sample_name: Option<String>,
     reference: &Option<String>,
     threads: usize,
+    combine_revcomp: bool,
 ) {
     // Validate target kmer contains only ACGT
     let target_upper = target_kmer.to_uppercase();
@@ -513,6 +559,9 @@ fn count_target_kmer(
     }
 
     info!("Counting target kmer '{}' (length {})", target_upper, k);
+    if combine_revcomp {
+        info!("Including reverse complement in search");
+    }
 
     // Generate all rotations of the target kmer
     let mut rotations = Vec::new();
@@ -521,6 +570,17 @@ fn count_target_kmer(
         rotation.extend_from_slice(&target_bytes[i..]);
         rotation.extend_from_slice(&target_bytes[..i]);
         rotations.push(rotation);
+    }
+
+    // If combine_revcomp is enabled, also add rotations of the reverse complement
+    if combine_revcomp {
+        let revcomp = reverse_complement(target_bytes);
+        for i in 0..k {
+            let mut rotation = Vec::with_capacity(k);
+            rotation.extend_from_slice(&revcomp[i..]);
+            rotation.extend_from_slice(&revcomp[..i]);
+            rotations.push(rotation);
+        }
     }
 
     // Set up thread pool
@@ -547,7 +607,11 @@ fn count_target_kmer(
 
     // Output results
     println!("Sample\tTarget_Kmer\tCanonical_Kmer\tKmer_Length\tCount\tTotal_Reads\tFrequency");
-    let canonical = String::from_utf8(get_canonical_kmer(target_bytes)).unwrap();
+    let canonical = if combine_revcomp {
+        String::from_utf8(get_canonical_kmer_with_revcomp(target_bytes)).unwrap()
+    } else {
+        String::from_utf8(get_canonical_kmer(target_bytes)).unwrap()
+    };
     let frequency = if total_reads > 0 {
         total_count as f64 / total_reads as f64
     } else {
@@ -612,6 +676,7 @@ fn stream_and_count_target_kmer(
     let mut batch_counts = Vec::new();
     let mut total_reads = 0u64;
 
+    // Collect batches (producer phase)
     for result in reader.records() {
         match result {
             Ok(record) => {
@@ -623,7 +688,7 @@ fn stream_and_count_target_kmer(
                     batch.push(record.seq().as_bytes());
 
                     if batch.len() >= BATCH_SIZE {
-                        // Process batch and collect count
+                        // Store batch for parallel processing
                         batch_counts.push(batch.clone());
                         batch.clear();
                     }
@@ -644,7 +709,7 @@ fn stream_and_count_target_kmer(
         pb.finish_with_message("Done");
     }
 
-    // Count target kmer in parallel batches
+    // Count target kmer in parallel batches (consumer phase)
     let total_count: u64 = batch_counts
         .into_par_iter()
         .map(|batch| count_target_in_batch(&batch, rotations))
@@ -655,8 +720,13 @@ fn stream_and_count_target_kmer(
 
 /// Count occurrences of target kmer (any rotation) in a batch of reads
 fn count_target_in_batch(batch: &[Vec<u8>], rotations: &[Vec<u8>]) -> u64 {
+    use std::collections::HashSet;
+
     let mut count = 0u64;
     let k = rotations[0].len();
+
+    // Convert rotations to HashSet for O(1) lookup instead of O(n) linear search
+    let rotation_set: HashSet<&[u8]> = rotations.iter().map(|v| v.as_slice()).collect();
 
     for read in batch {
         if read.len() < k {
@@ -666,8 +736,8 @@ fn count_target_in_batch(batch: &[Vec<u8>], rotations: &[Vec<u8>]) -> u64 {
         // Check each position in the read
         for i in 0..=(read.len() - k) {
             let kmer = &read[i..i + k];
-            // Check if this kmer matches any rotation
-            if rotations.iter().any(|rot| rot.as_slice() == kmer) {
+            // O(1) hash lookup instead of O(n) linear search
+            if rotation_set.contains(kmer) {
                 count += 1;
             }
         }
@@ -677,10 +747,12 @@ fn count_target_in_batch(batch: &[Vec<u8>], rotations: &[Vec<u8>]) -> u64 {
 }
 
 /// Canonicalize kmer counts by summing all rotations together
+/// If combine_revcomp is true, also sum reverse complements together
 /// Returns a map from canonical kmer to total count
 fn canonicalize_kmer_counts(
     kmer_counts: &[Vec<u64>],
     klength: usize,
+    combine_revcomp: bool,
 ) -> Vec<std::collections::HashMap<String, u64>> {
     use std::collections::HashMap;
 
@@ -696,7 +768,11 @@ fn canonicalize_kmer_counts(
             let count = kmer_counts[k_idx][kmer_idx];
             if count > 0 {
                 let kmer_bytes = index_to_kmer_bytes(kmer_idx, k);
-                let canonical_kmer = get_canonical_kmer(&kmer_bytes);
+                let canonical_kmer = if combine_revcomp {
+                    get_canonical_kmer_with_revcomp(&kmer_bytes)
+                } else {
+                    get_canonical_kmer(&kmer_bytes)
+                };
                 let canonical_str = String::from_utf8(canonical_kmer).unwrap();
 
                 *canonical_map.entry(canonical_str).or_insert(0) += count;
@@ -945,7 +1021,7 @@ mod tests {
         kmer_counts_k2[kmer_to_index(b"TA")] = 4;
 
         let kmer_counts = vec![kmer_counts_k2];
-        let canonical_counts = canonicalize_kmer_counts(&kmer_counts, 2);
+        let canonical_counts = canonicalize_kmer_counts(&kmer_counts, 2, false);
 
         // Should have AC with count 3+2=5
         assert_eq!(canonical_counts[0]["AC"], 5);
@@ -956,5 +1032,67 @@ mod tests {
         // Should not have CA or TA as separate entries
         assert!(!canonical_counts[0].contains_key("CA"));
         assert!(!canonical_counts[0].contains_key("TA"));
+    }
+
+    #[test]
+    fn test_canonicalization_with_revcomp() {
+        // Test combining reverse complements
+        let mut kmer_counts_k2 = vec![0u64; 16]; // 4^2 = 16 dimers
+
+        // Add counts for AG (revcomp: CT) and their rotations
+        kmer_counts_k2[kmer_to_index(b"AG")] = 3;
+        kmer_counts_k2[kmer_to_index(b"GA")] = 2;
+        kmer_counts_k2[kmer_to_index(b"CT")] = 5;
+        kmer_counts_k2[kmer_to_index(b"TC")] = 1;
+
+        let kmer_counts = vec![kmer_counts_k2];
+        let canonical_counts = canonicalize_kmer_counts(&kmer_counts, 2, true);
+
+        // AG, GA, CT, TC should all map to the same canonical form (lexicographically smallest)
+        // Rotations: AG, GA (forward) and CT, TC (revcomp)
+        // Canonical should be "AG" (lexicographically smallest)
+        // Total: 3 + 2 + 5 + 1 = 11
+        assert_eq!(canonical_counts[0]["AG"], 11);
+
+        // Should not have separate entries for others
+        assert!(!canonical_counts[0].contains_key("GA"));
+        assert!(!canonical_counts[0].contains_key("CT"));
+        assert!(!canonical_counts[0].contains_key("TC"));
+    }
+
+    #[test]
+    fn test_reverse_complement() {
+        assert_eq!(reverse_complement(b"ACGT"), b"ACGT");
+        assert_eq!(reverse_complement(b"AAAA"), b"TTTT");
+        assert_eq!(reverse_complement(b"CTCTCT"), b"AGAGAG");
+        assert_eq!(reverse_complement(b"AGAGAG"), b"CTCTCT");
+        assert_eq!(reverse_complement(b"ACGTACGT"), b"ACGTACGT");
+    }
+
+    #[test]
+    fn test_canonical_kmer_with_revcomp() {
+        // Test that CTCTCT and AGAGAG map to same canonical (lexicographically smallest)
+        let ctctct_canon = get_canonical_kmer_with_revcomp(b"CTCTCT");
+        let agagag_canon = get_canonical_kmer_with_revcomp(b"AGAGAG");
+
+        // Both should map to the same canonical form
+        assert_eq!(ctctct_canon, agagag_canon);
+
+        // Should be "AGAGAG" as it's lexicographically smaller than "CTCTCT"
+        assert_eq!(ctctct_canon, b"AGAGAG");
+
+        // Test with a simple dimer
+        let ag_canon = get_canonical_kmer_with_revcomp(b"AG");
+        let ct_canon = get_canonical_kmer_with_revcomp(b"CT");
+        let ga_canon = get_canonical_kmer_with_revcomp(b"GA");
+        let tc_canon = get_canonical_kmer_with_revcomp(b"TC");
+
+        // All should map to the same canonical
+        assert_eq!(ag_canon, ct_canon);
+        assert_eq!(ag_canon, ga_canon);
+        assert_eq!(ag_canon, tc_canon);
+
+        // Should be "AG" (lexicographically smallest among AG, GA, CT, TC)
+        assert_eq!(ag_canon, b"AG");
     }
 }

@@ -287,6 +287,10 @@ enum Commands {
         /// Target kmer to specifically quantify (optional, can be any length)
         #[clap(long, value_parser)]
         target_kmer: Option<String>,
+
+        /// Combine kmers with their reverse complements (e.g., CTCTCT and AGAGAG counted together)
+        #[clap(long, value_parser, default_value_t = false)]
+        combine_revcomp: bool,
     },
     /// Benchmark inquiSTR calls against a truth VCF or BED file
     Benchmark {
@@ -430,7 +434,15 @@ fn main() {
             }
             pca::pca(combined, output, components, threads, aggregation);
         }
-        Commands::Unmapped { bam, klength, sample_name, reference, threads, target_kmer } => {
+        Commands::Unmapped {
+            bam,
+            klength,
+            sample_name,
+            reference,
+            threads,
+            target_kmer,
+            combine_revcomp,
+        } => {
             unmapped::count_unmapped_kmers(
                 bam,
                 klength,
@@ -438,6 +450,7 @@ fn main() {
                 reference,
                 threads,
                 target_kmer,
+                combine_revcomp,
             );
         }
         Commands::Benchmark { inquistr, vcf, bed, mode, plot } => {
