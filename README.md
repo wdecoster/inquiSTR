@@ -6,7 +6,7 @@
 [![Documentation](https://docs.rs/inquiSTR/badge.svg)](https://docs.rs/inquiSTR)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-A toolkit for genotyping and analyzing Short Tandem Repeats (STRs) from long-read sequencing data. Works with Oxford Nanopore Technologies (ONT) BAM/CRAM files and supports both phased and unphased analysis.
+A toolkit for lightning-fast Short Tandem Repeat (STR) length genotyping and downstream analysis from long-read sequencing data. inquiSTR works with Oxford Nanopore Technologies and PacBio BAM/CRAM files and supports both phased and unphased data.
 
 ## Table of Contents
 
@@ -35,29 +35,17 @@ A toolkit for genotyping and analyzing Short Tandem Repeats (STRs) from long-rea
 ## Features
 
 - **STR length genotyping**: Determine repeat lengths at specific genomic loci
-- **Phased analysis**: Use HP tags from phased BAM files to analyze haplotypes separately
+- **Phased analysis**: Use HP tags from phased BAM/CRAM files to analyze haplotypes separately
 - **Multi-sample analysis**: Combine results across samples for cohort studies
-- **Quality control**: Built-in filtering and validation
-- **Association testing**: R scripts for statistical analysis of STR variations
+- **Association testing**: Perform statistical analysis of STR variations
 - **Remote file support**: Seamless access to HTTP/HTTPS/FTP/S3 URLs with automatic index caching
-- **Cross-platform**: Pre-built binaries for Linux and macOS
-
-### Remote File Access
-
-inquiSTR automatically handles remote BAM/CRAM files with intelligent index caching:
-
-- **Auto-caching**: Downloaded indexes are cached at `~/.cache/inquistr/` for instant reuse
-- **Local-first**: Checks current directory for index files before downloading
-- **Auto-cleanup**: Removes cached files older than 30 days to prevent bloat
-- **User control**: Set `INQUISTR_NO_CACHE=1` to disable caching for one-time analyses
-
-See [INDEX_CACHING.md](INDEX_CACHING.md) for detailed configuration options.
+- **Parallelized code**: Efficient use of multi-core systems
 
 ## 📦 Installation
 
 ### Pre-built Binaries (Recommended)
 
-Download the latest binary for your system from the [releases page](https://github.com/wdecoster/inquiSTR/releases). Make sure the binary is in your $PATH or use the full path to execute.
+Pre-built binaries for Linux and macOS can be downloaded from the [releases page](https://github.com/wdecoster/inquiSTR/releases). Make sure the binary is in your $PATH or use the full path to execute.
 
 ```bash
 # Linux (glibc)
@@ -87,8 +75,6 @@ cargo build --release
 ```bash
 cargo install inquiSTR
 ```
-
-This repository contains Rust code for inquiSTR, a toolset to genotype and analyze STRs from long read sequencing data, and has been tested with ONT data.
 
 ## Usage
 
@@ -162,6 +148,17 @@ inquiSTR call sample.bam -R regions.bed --unphased --sample-name "Sample123"
 # Custom batch size (in kb) and threads
 inquiSTR call sample.bam -R regions.bed --batch-size 30 --threads 4
 ```
+
+#### Remote File Access
+
+inquiSTR automatically handles remote BAM/CRAM files with index caching:
+
+- **Auto-caching**: Downloaded indexes are cached at `~/.cache/inquistr/` for instant reuse
+- **Local-first**: Checks current directory for index files before downloading
+- **Auto-cleanup**: Removes cached files older than 30 days to prevent bloat
+- **User control**: Set `INQUISTR_NO_CACHE=1` to disable caching for one-time analyses
+
+See [INDEX_CACHING.md](INDEX_CACHING.md) for detailed configuration options.
 
 ### `inquiSTR combine` - Multi-sample Analysis
 
