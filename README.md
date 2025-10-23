@@ -233,11 +233,21 @@ Options:
       --minsize <MINSIZE>  minimal length of expansion to be present in cohort [default: 10]
   -z, --zscore <ZSCORE>    zscore cutoff to decide if a value is an outlier [default: 3]
       --method <METHOD>    method to test for outliers [default: zscore] [possible values: zscore, dbscan]
-  -s, --sample <SAMPLE>    sample to consider
-  -S, --subset <SUBSET>    file with subset of samples to consider
+  -s, --sample <SAMPLE>    sample(s) to consider: can be a single sample name, comma-separated sample names, 
+                           or a file path containing sample names (one per line)
   -t, --threads <THREADS>  Number of threads to use for parallel processing [default: 1]
   -h, --help               Print help
 ```
+
+**Sample Specification:**
+
+The `--sample` option accepts three formats:
+
+1. **Single sample name**: `--sample "Sample123"`
+2. **Comma-separated names**: `--sample "Sample1,Sample2,Sample3"`
+3. **File path**: `--sample samples.txt` (one sample name per line)
+
+All specified samples are automatically validated against the combined file to ensure they exist.
 
 **Examples:**
 
@@ -254,11 +264,14 @@ inquiSTR outlier combined.tsv --method dbscan
 # Find outliers for specific sample only
 inquiSTR outlier combined.tsv --sample "Sample123"
 
-# Find outliers for subset of samples
-inquiSTR outlier combined.tsv --subset sample_list.txt
+# Find outliers for multiple samples (comma-separated)
+inquiSTR outlier combined.tsv --sample "Sample1,Sample2,Sample3"
 
-# Custom minimum expansion size
-inquiSTR outlier combined.tsv --minsize 15
+# Find outliers for samples listed in a file
+inquiSTR outlier combined.tsv --sample samples.txt
+
+# Custom minimum expansion size with sample filtering
+inquiSTR outlier combined.tsv --minsize 15 --sample "PatientX"
 
 # Use multiple threads
 inquiSTR outlier combined.tsv --threads 8

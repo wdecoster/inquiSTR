@@ -24,7 +24,7 @@
 
 use clap::{Parser, Subcommand};
 use log::info;
-use std::{io::BufRead, path::PathBuf};
+use std::path::PathBuf;
 
 pub mod assoc;
 pub mod bam_utils;
@@ -131,13 +131,9 @@ enum Commands {
         #[clap(long, value_enum, value_parser, default_value_t = outlier::Method::Zscore)]
         method: outlier::Method,
 
-        /// sample to consider
+        /// sample(s) to consider: can be a single sample name, comma-separated sample names, or a file path containing sample names (one per line)
         #[clap(short = 's', long, value_parser)]
         sample: Option<String>,
-
-        /// file with subset of samples to consider
-        #[clap(short = 'S', long, value_parser)]
-        subset: Option<PathBuf>,
 
         /// Number of threads to use for parallel processing
         #[clap(short = 't', long, value_parser, default_value_t = 1)]
@@ -367,24 +363,12 @@ fn main() {
         Commands::Scan {} => {
             unimplemented!();
         }
-        Commands::Outlier { combined, minsize, zscore, method, sample, subset, threads } => {
+        Commands::Outlier { combined, minsize, zscore, method, sample, threads } => {
             if !combined.exists() {
                 eprintln!("ERROR: Combined file does not exist: {}", combined.display());
                 std::process::exit(1);
             }
-            let subset = match (sample, subset) {
-                (Some(_), Some(_)) => {
-                    eprintln!("ERROR: Cannot use both --sample and --subset arguments. Please use only one.");
-                    std::process::exit(1);
-                }
-                (Some(sample), None) => Some(vec![sample]),
-                (None, Some(subset)) => {
-                    let file =
-                        crate::utils::reader(&subset.into_os_string().into_string().unwrap());
-                    Some(file.lines().map(|line| line.unwrap()).collect())
-                }
-                (None, None) => None,
-            };
+            let subset = sample.map(|s| outlier::parse_sample_input(&s));
             outlier::outlier(combined, minsize, zscore, method, subset, threads);
         }
         Commands::Query { combined, region } => {

@@ -5,6 +5,7 @@ use dbscan::Model;
 use log::debug;
 
 use std::cmp::max;
+use std::collections::HashSet;
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
 
@@ -17,6 +18,33 @@ fn clean_sample_name(sample_name: &str) -> &str {
         &sample_name[..sample_name.len() - 3]
     } else {
         sample_name
+    }
+}
+
+/// Parse sample input - can be a file path, comma-separated names, or a single name
+pub fn parse_sample_input(input: &str) -> Vec<String> {
+    let path = Path::new(input);
+
+    // Check if input is a file path
+    if path.exists() && path.is_file() {
+        eprintln!("Reading sample names from file: {}", input);
+        let file = crate::utils::reader(input);
+        file.lines()
+            .map(|line| line.unwrap().trim().to_string())
+            .filter(|line| !line.is_empty())
+            .collect()
+    } else if input.contains(',') {
+        // Comma-separated sample names
+        eprintln!("Parsing comma-separated sample names");
+        input
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect()
+    } else {
+        // Single sample name
+        eprintln!("Using single sample name: {}", input);
+        vec![input.to_string()]
     }
 }
 
@@ -49,6 +77,60 @@ fn streaming_stats(values: &[f32]) -> (f32, f32) {
     let variance = (sum_sq / count_f) - (mean * mean);
 
     (mean, variance.max(0.0).sqrt())
+}
+
+/// Get sample names from the header of the combined file
+fn get_sample_names_from_file(file_path: &Path, is_kmer: bool) -> Vec<String> {
+    let file_reader = crate::utils::reader(&file_path.to_string_lossy());
+    let mut lines = file_reader.lines();
+
+    if let Some(Ok(header_line)) = lines.next() {
+        let skip_columns = if is_kmer { 1 } else { 3 }; // kmer files skip 1, STR files skip 3
+        return header_line
+            .split('\t')
+            .skip(skip_columns)
+            .map(|s| s.to_string())
+            .collect();
+    }
+
+    Vec::new()
+}
+
+/// Validate that requested samples exist in the combined file
+fn validate_samples(file_path: &Path, requested_samples: &[String], is_kmer: bool) {
+    let available_samples = get_sample_names_from_file(file_path, is_kmer);
+
+    // Create a set of available sample names (cleaned) for efficient lookup
+    let available_set: HashSet<String> = available_samples
+        .iter()
+        .map(|s| clean_sample_name(s).to_string())
+        .collect();
+
+    // Check each requested sample
+    let mut missing_samples = Vec::new();
+    for sample in requested_samples {
+        if !available_set.contains(sample) {
+            missing_samples.push(sample.clone());
+        }
+    }
+
+    if !missing_samples.is_empty() {
+        eprintln!("ERROR: The following requested samples were not found in the combined file:");
+        for sample in &missing_samples {
+            eprintln!("  - {}", sample);
+        }
+        eprintln!("\nAvailable samples in file ({} total):", available_samples.len());
+        for (i, sample) in available_samples.iter().take(10).enumerate() {
+            eprintln!("  - {}", clean_sample_name(sample));
+            if i == 9 && available_samples.len() > 10 {
+                eprintln!("  ... and {} more", available_samples.len() - 10);
+                break;
+            }
+        }
+        std::process::exit(1);
+    }
+
+    eprintln!("✓ All {} requested sample(s) found in combined file", requested_samples.len());
 }
 
 /// Detect if input file contains kmer frequency data or STR call data
@@ -104,6 +186,11 @@ pub fn outlier(
 
     // Detect file format
     let is_kmer_format = is_kmer_file(&combined);
+
+    // Validate samples if subset is provided
+    if let Some(ref samples) = subset {
+        validate_samples(&combined, samples, is_kmer_format);
+    }
 
     if is_kmer_format {
         eprintln!("Detected kmer frequency file format");
@@ -508,30 +595,63 @@ fn mode(values: &[f32]) -> usize {
 }
 
 #[cfg(test)]
-#[test]
-fn test_dbscan_outliers() {
-    let values = vec![1.0, 2.0, 2.0, 3.0, 1.0, 5.0, 3.0, 2.0, 2.0, 1.0, 120.0];
-    let samples: Vec<String> = vec![
-        "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8", "s9", "s10", "s11",
-    ]
-    .into_iter()
-    .map(|s| s.to_string())
-    .collect();
-    let expected = vec!["s11"];
-    let mincluster = values.len().ilog2() as usize;
-    assert_eq!(dbscan_outliers(&values, &samples, mincluster), expected);
-}
+mod tests {
+    use super::*;
 
-#[test]
-fn test_z_score_outliers() {
-    let values = vec![1.0, 2.0, 2.0, 3.0, 1.0, 5.0, 3.0, 2.0, 2.0, 1.0, 120.0];
-    let samples: Vec<String> = vec![
-        "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8", "s9", "s10", "s11",
-    ]
-    .into_iter()
-    .map(|s| s.to_string())
-    .collect();
-    let expected = vec!["s11"];
-    let zscore_cutoff = 2.0;
-    assert_eq!(z_score_outliers(&values, &samples, zscore_cutoff), expected);
+    #[test]
+    fn test_dbscan_outliers() {
+        let values = vec![1.0, 2.0, 2.0, 3.0, 1.0, 5.0, 3.0, 2.0, 2.0, 1.0, 120.0];
+        let samples: Vec<String> = vec![
+            "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8", "s9", "s10", "s11",
+        ]
+        .into_iter()
+        .map(|s| s.to_string())
+        .collect();
+        let expected = vec!["s11"];
+        let mincluster = values.len().ilog2() as usize;
+        assert_eq!(dbscan_outliers(&values, &samples, mincluster), expected);
+    }
+
+    #[test]
+    fn test_z_score_outliers() {
+        let values = vec![1.0, 2.0, 2.0, 3.0, 1.0, 5.0, 3.0, 2.0, 2.0, 1.0, 120.0];
+        let samples: Vec<String> = vec![
+            "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8", "s9", "s10", "s11",
+        ]
+        .into_iter()
+        .map(|s| s.to_string())
+        .collect();
+        let expected = vec!["s11"];
+        let zscore_cutoff = 2.0;
+        assert_eq!(z_score_outliers(&values, &samples, zscore_cutoff), expected);
+    }
+
+    #[test]
+    fn test_parse_sample_input_single() {
+        let input = "Sample123";
+        let result = parse_sample_input(input);
+        assert_eq!(result, vec!["Sample123"]);
+    }
+
+    #[test]
+    fn test_parse_sample_input_comma_separated() {
+        let input = "Sample1,Sample2,Sample3";
+        let result = parse_sample_input(input);
+        assert_eq!(result, vec!["Sample1", "Sample2", "Sample3"]);
+    }
+
+    #[test]
+    fn test_parse_sample_input_comma_separated_with_spaces() {
+        let input = "Sample1, Sample2 , Sample3";
+        let result = parse_sample_input(input);
+        assert_eq!(result, vec!["Sample1", "Sample2", "Sample3"]);
+    }
+
+    #[test]
+    fn test_clean_sample_name() {
+        assert_eq!(clean_sample_name("Sample_H1"), "Sample");
+        assert_eq!(clean_sample_name("Sample_H2"), "Sample");
+        assert_eq!(clean_sample_name("Sample"), "Sample");
+        assert_eq!(clean_sample_name("Sample_H3"), "Sample_H3");
+    }
 }
