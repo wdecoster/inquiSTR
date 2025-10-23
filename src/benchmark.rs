@@ -212,7 +212,10 @@ fn select_allele(values: &[f64], mode: &str) -> Option<f64> {
             .iter()
             .min_by(|a, b| a.partial_cmp(b).unwrap())
             .copied(),
-        _ => panic!("Invalid mode: {}. Use MAX or MIN", mode),
+        _ => {
+            eprintln!("ERROR: Invalid mode '{}'. Must be 'MAX' or 'MIN'", mode);
+            std::process::exit(1);
+        }
     }
 }
 

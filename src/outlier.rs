@@ -83,7 +83,9 @@ fn is_kmer_file(file_path: &Path) -> bool {
         }
     }
 
-    panic!("Unable to determine file format for {}", file_path.display());
+    eprintln!("ERROR: Unable to determine file format for: {}", file_path.display());
+    eprintln!("File must be either STR call data or kmer frequency data from inquiSTR combine.");
+    std::process::exit(1);
 }
 
 pub fn outlier(

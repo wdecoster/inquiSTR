@@ -34,7 +34,8 @@ pub fn count_unmapped_kmers(
     }
 
     if klength < 2 {
-        panic!("klength must be at least 2");
+        eprintln!("ERROR: klength must be at least 2 (provided: {})", klength);
+        std::process::exit(1);
     }
 
     // Set up thread pool
@@ -459,7 +460,10 @@ fn count_kmers_in_read(read: &[u8], k: usize, counts: &mut [u64]) {
     for i in 0..=(read.len() - k) {
         let kmer = &read[i..i + k];
         let index = kmer_to_index(kmer);
-        counts[index] += 1;
+        // Skip invalid kmers (containing N or other ambiguous bases)
+        if index != usize::MAX {
+            counts[index] += 1;
+        }
     }
 }
 
@@ -493,14 +497,19 @@ fn count_target_kmer(
         .bytes()
         .all(|b| matches!(b, b'A' | b'C' | b'G' | b'T'))
     {
-        panic!("Target kmer must contain only A, C, G, T characters");
+        eprintln!(
+            "ERROR: Target kmer must contain only A, C, G, T characters (provided: '{}')",
+            target_kmer
+        );
+        std::process::exit(1);
     }
 
     let target_bytes = target_upper.as_bytes();
     let k = target_bytes.len();
 
     if k < 1 {
-        panic!("Target kmer must be at least 1 base long");
+        eprintln!("ERROR: Target kmer must be at least 1 base long");
+        std::process::exit(1);
     }
 
     info!("Counting target kmer '{}' (length {})", target_upper, k);
@@ -701,6 +710,7 @@ fn canonicalize_kmer_counts(
 }
 
 /// Convert a kmer to its vector index
+/// Returns usize::MAX if the kmer contains invalid bases (not A, C, G, or T)
 fn kmer_to_index(kmer: &[u8]) -> usize {
     let mut index = 0;
     for &base in kmer {
@@ -710,7 +720,12 @@ fn kmer_to_index(kmer: &[u8]) -> usize {
             b'C' => 1,
             b'G' => 2,
             b'T' => 3,
-            _ => panic!("Invalid base in kmer: {}", base as char),
+            _ => {
+                // Invalid base (N or other), return sentinel value
+                // This should be filtered earlier, but handle gracefully
+                warn!("Encountered invalid base '{}' in kmer - skipping", base as char);
+                return usize::MAX;
+            }
         };
     }
     index

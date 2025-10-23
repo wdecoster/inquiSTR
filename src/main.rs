@@ -365,11 +365,13 @@ fn main() {
         }
         Commands::Outlier { combined, minsize, zscore, method, sample, subset, threads } => {
             if !combined.exists() {
-                panic!("Combined file does not exist!");
+                eprintln!("ERROR: Combined file does not exist: {}", combined.display());
+                std::process::exit(1);
             }
             let subset = match (sample, subset) {
                 (Some(_), Some(_)) => {
-                    panic!("Cannot use both -s and -S arguments");
+                    eprintln!("ERROR: Cannot use both --sample and --subset arguments. Please use only one.");
+                    std::process::exit(1);
                 }
                 (Some(sample), None) => Some(vec![sample]),
                 (None, Some(subset)) => {
@@ -423,7 +425,8 @@ fn main() {
         }
         Commands::Pca { combined, output, components, threads, aggregation } => {
             if !combined.exists() {
-                panic!("Combined file does not exist!");
+                eprintln!("ERROR: Combined file does not exist: {}", combined.display());
+                std::process::exit(1);
             }
             pca::pca(combined, output, components, threads, aggregation);
         }

@@ -6,7 +6,8 @@ use std::path::PathBuf;
 
 pub fn query(combined: PathBuf, region: String) {
     if !combined.exists() {
-        panic!("Combined file does not exist!");
+        eprintln!("ERROR: Combined file does not exist: {}", combined.display());
+        std::process::exit(1);
     }
 
     // Read header to get sample names

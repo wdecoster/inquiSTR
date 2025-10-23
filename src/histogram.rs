@@ -4,7 +4,8 @@ use std::path::PathBuf;
 
 pub fn histogram(combined: PathBuf, region: String) {
     if !combined.exists() {
-        panic!("Combined file does not exist!");
+        eprintln!("ERROR: Combined file does not exist: {}", combined.display());
+        std::process::exit(1);
     }
 
     // Use the new locus search utility with containment strategy (original behavior)

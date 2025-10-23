@@ -113,7 +113,9 @@ impl RepeatInterval {
         chrom_lengths: &HashMap<String, u64>,
     ) -> Option<Self> {
         if end < start {
-            panic!("End coordinate is smaller than start coordinate for {chrom}:{start}-{end}")
+            eprintln!("ERROR: Invalid coordinates. End position ({}) is less than start position ({}) for {}:{}-{}", 
+                end, start, chrom, start, end);
+            std::process::exit(1);
         }
 
         // check if the chromosome exists in the chrom lengths hashmap
@@ -122,9 +124,19 @@ impl RepeatInterval {
             return Some(Self { chrom, start, end });
         }
         // if the chromosome is not in the fai file or the end does not fit the interval, return None
-        panic!(
-            "Chromosome {chrom} is not in the fasta file or the end coordinate is out of bounds"
+        eprintln!(
+            "ERROR: Chromosome '{}' not found in reference or coordinate {} is out of bounds",
+            chrom, end
         );
+        eprintln!(
+            "Available chromosomes: {}",
+            chrom_lengths
+                .keys()
+                .map(|s| s.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        std::process::exit(1);
     }
     pub fn new(chrom: &str, start: u32, end: u32) -> Self {
         Self { chrom: chrom.to_string(), start, end }

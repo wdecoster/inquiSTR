@@ -43,14 +43,15 @@ pub fn reader(filename: &str) -> BufReader<Box<dyn Read>> {
 pub fn process_region(reg: String) -> Result<(String, u32, u32), Box<dyn std::error::Error>> {
     let reg = reg.replace(',', "");
     if reg.matches(':').count() != 1 {
-        panic!(
-            "\n\nError while parsing interval, could not find exactly one `:` character separating chromosome and start\nGot {reg}"
-        );
+        eprintln!("ERROR: Invalid region format. Expected format: 'chr:start-end' (e.g., 'chr1:1000-2000')");
+        eprintln!("Got: {}", reg);
+        std::process::exit(1);
     }
     if reg.matches('-').count() != 1 {
-        panic!(
-            "\n\nError while parsing interval, could not find exactly one `-` character separating start and end"
-        );
+        eprintln!("ERROR: Invalid region format. Could not find exactly one '-' character separating start and end");
+        eprintln!("Expected format: 'chr:start-end' (e.g., 'chr1:1000-2000')");
+        eprintln!("Got: {}", reg);
+        std::process::exit(1);
     }
     let chrom = reg.split(':').collect::<Vec<&str>>()[0];
     let interval = reg.split(':').collect::<Vec<&str>>()[1];

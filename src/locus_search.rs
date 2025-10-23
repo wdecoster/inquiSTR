@@ -44,7 +44,8 @@ pub struct LocusSearchConfig {
 /// Returns the first matching locus, or None if not found
 pub fn find_locus(config: LocusSearchConfig) -> Option<LocusMatch> {
     if !config.combined_file.exists() {
-        panic!("Combined file does not exist or path is incorrect!");
+        eprintln!("ERROR: Combined file does not exist: {}", config.combined_file.display());
+        std::process::exit(1);
     }
 
     let (target_chrom, target_start, target_end) =
@@ -59,10 +60,12 @@ pub fn find_locus(config: LocusSearchConfig) -> Option<LocusMatch> {
         let first_line = first_line.unwrap();
         let first_cols = first_line.split('\t').count();
         if first_cols < 4 {
-            panic!(
-                "Invalid header line: expected at least 4 columns, got {}: '{}'",
-                first_cols, first_line
+            eprintln!(
+                "ERROR: Invalid file format. Expected at least 4 columns, got {}.",
+                first_cols
             );
+            eprintln!("First line: '{}'", first_line);
+            std::process::exit(1);
         }
 
         // If this line matches our target chromosome, process it
@@ -98,7 +101,8 @@ pub fn find_locus(config: LocusSearchConfig) -> Option<LocusMatch> {
 
         first_cols
     } else {
-        panic!("Combined file is empty!");
+        eprintln!("ERROR: Combined file is empty: {}", config.combined_file.display());
+        std::process::exit(1);
     };
 
     for (line_num, line_result) in lines.enumerate() {
@@ -111,13 +115,10 @@ pub fn find_locus(config: LocusSearchConfig) -> Option<LocusMatch> {
 
         let splitline: Vec<&str> = line.split('\t').collect();
         if splitline.len() != expected_columns {
-            panic!(
-                "Malformed line {} in combined file: expected {} columns, got {}: '{}'",
-                line_num + 2,
-                expected_columns,
-                splitline.len(),
-                line
-            );
+            eprintln!("ERROR: Malformed line {} in combined file.", line_num + 2);
+            eprintln!("Expected {} columns, got {}", expected_columns, splitline.len());
+            eprintln!("Line content: '{}'", line);
+            std::process::exit(1);
         }
 
         let begin: u32 = splitline[1].parse().expect("Failed parsing interval start");

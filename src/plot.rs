@@ -13,10 +13,12 @@ pub fn plot(
     output: String,
 ) {
     if !combined.exists() {
-        panic!("Combined file does not exist!");
+        eprintln!("ERROR: Combined file does not exist: {}", combined.display());
+        std::process::exit(1);
     }
     if !metadata.exists() {
-        panic!("Metadata file does not exist!");
+        eprintln!("ERROR: Metadata file does not exist: {}", metadata.display());
+        std::process::exit(1);
     }
 
     // Read header to get sample names
