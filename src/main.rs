@@ -284,7 +284,7 @@ enum Commands {
         #[clap(short, long, value_parser, default_value_t = 1)]
         threads: usize,
 
-        /// Target kmer to specifically quantify (optional, can be any length)
+        /// Target kmer to specifically quantify (optional, can be any length). Supports shorthand notation: (CT)4 = CTCTCTCT
         #[clap(long, value_parser)]
         target_kmer: Option<String>,
 

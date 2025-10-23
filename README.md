@@ -8,6 +8,30 @@
 
 A toolkit for genotyping and analyzing Short Tandem Repeats (STRs) from long-read sequencing data. Works with Oxford Nanopore Technologies (ONT) BAM/CRAM files and supports both phased and unphased analysis.
 
+## Table of Contents
+
+- [Features](#features)
+  - [Remote File Access](#remote-file-access)
+- [Installation](#-installation)
+  - [Pre-built Binaries](#pre-built-binaries-recommended)
+  - [From Source](#from-source)
+  - [Using Cargo](#using-cargo)
+- [Usage](#usage)
+  - [inquiSTR call - STR Genotyping](#inquistr-call---str-genotyping)
+  - [inquiSTR combine - Multi-sample Analysis](#inquistr-combine---multi-sample-analysis)
+  - [inquiSTR query - Genotype Lookup](#inquistr-query---genotype-lookup)
+  - [inquiSTR outlier - Outlier Detection](#inquistr-outlier---outlier-detection)
+  - [inquiSTR histogram - Data Visualization](#inquistr-histogram---data-visualization)
+  - [inquiSTR plot - Group Comparison Plots](#inquistr-plot---group-comparison-plots)
+  - [inquiSTR unmapped - Kmer Frequency Analysis](#inquistr-unmapped---kmer-frequency-analysis)
+  - [inquiSTR pca - Principal Component Analysis](#inquistr-pca---principal-component-analysis)
+  - [inquiSTR association - Statistical Association Testing](#inquistr-association---statistical-association-testing)
+- [Legacy R Script Usage](#legacy-r-script-usage)
+- [Development](#️-development)
+  - [Development Setup](#development-setup)
+  - [Code Quality](#code-quality)
+  - [Contributing](#contributing)
+
 ## Features
 
 - **STR length genotyping**: Determine repeat lengths at specific genomic loci
@@ -312,20 +336,26 @@ Arguments:
   <BAM>  BAM/CRAM file to analyze unmapped reads from
 
 Options:
-  -k, --klength <KLENGTH>          Maximum kmer length to count (counts all sizes from 2 to klength) [default: 6]
-      --sample-name <SAMPLE_NAME>  Sample name to use in output header
-      --reference <REFERENCE>      Reference fasta for CRAM decoding
-  -t, --threads <THREADS>          Number of parallel threads to use [default: 1]
-  -h, --help                       Print help
+  -k, --klength <KLENGTH>                Maximum kmer length to count (counts all sizes from 2 to klength) [default: 6]
+      --sample-name <SAMPLE_NAME>        Sample name to use in output header
+      --reference <REFERENCE>            Reference fasta for CRAM decoding
+  -t, --threads <THREADS>                Number of parallel threads to use [default: 1]
+      --target-kmer <TARGET_KMER>        Target kmer to specifically quantify (optional, can be any length). Supports shorthand notation: (CT)4 = CTCTCTCT
+      --combine-revcomp                  Combine kmers with their reverse complements (e.g., CTCTCT and AGAGAG counted together)
+  -h, --help                             Print help
 ```
 
 **Key Features:**
 
 - **Comprehensive kmer analysis**: Counts all kmer sizes from 2 to `--klength` (default 6)
 - **Canonical representation**: All rotations of the same kmer are represented by the lexicographically smallest form
+- **Target kmer search**: Optionally search for a specific kmer pattern with `--target-kmer`
+- **Shorthand notation**: Specify repeating kmers easily: `(CT)4` = `CTCTCTCT`, `(CAG)10` = `CAGCAGCAGCAGCAGCAGCAGCAGCAGCAG`
+- **Reverse complement combining**: Use `--combine-revcomp` to count forward and reverse complement kmers together (e.g., CTCTCT and AGAGAG)
 - **Complete output**: Includes all possible kmers (including zeros) sorted alphabetically by k-size
 - **Normalized counts**: Results are normalized by total read count in the entire BAM/CRAM file
 - **Parallel processing**: Batch-based parallel processing for efficient analysis of large files
+- **Optimized search**: Uses hash-based lookup for O(1) kmer matching (especially fast for target kmer searches)
 - **Quality filtering**: Automatically excludes reads containing N bases and empty sequences
 
 **Output Format:**
@@ -344,7 +374,7 @@ inquiSTR unmapped sample.bam > kmers.tsv
 # Custom kmer length and sample name
 inquiSTR unmapped sample.bam --klength 4 --sample-name MySample > kmers_k4.tsv
 
-# Use multiple threads
+# Use multiple threads for faster processing
 inquiSTR unmapped sample.bam --klength 5 --threads 8 --sample-name MySample
 
 # CRAM file with reference
@@ -353,11 +383,36 @@ inquiSTR unmapped sample.cram --reference genome.fasta --klength 3 --sample-name
 # Remote file analysis
 inquiSTR unmapped https://example.com/sample.bam --threads 4 --sample-name RemoteSample
 
+# Target specific kmer (traditional format)
+inquiSTR unmapped sample.bam --target-kmer CTCTCTCT --sample-name MySample
+
+# Target specific kmer with shorthand notation (equivalent to above)
+inquiSTR unmapped sample.bam --target-kmer "(CT)4" --sample-name MySample
+
+# Search for CAG repeats (common in neurodegenerative diseases)
+inquiSTR unmapped sample.bam --target-kmer "(CAG)10" --threads 4
+
+# Combine reverse complements (CTCTCT and AGAGAG counted together)
+inquiSTR unmapped sample.bam --target-kmer "(CT)4" --combine-revcomp
+
+# Full catalog with reverse complement combining
+inquiSTR unmapped sample.bam --klength 6 --combine-revcomp --threads 8
+
 # Test with provided example data
 inquiSTR unmapped test-data/unmapped.bam --klength 3 --sample-name test_sample
 ```
 
-**Example Output:**
+**Shorthand Notation:**
+
+For repeating sequences, use parentheses with a repeat count:
+- `(CT)4` → `CTCTCTCT`
+- `(AG)3` → `AGAGAG`
+- `(CAG)5` → `CAGCAGCAGCAGCAG`
+- `(ATCG)2` → `ATCGATCG`
+
+Limits: Repeat count must be 1-100, unit must contain only A, C, G, T
+
+**Example Output (Full Catalog):**
 
 ```tsv
 kmer    demo_sample
@@ -375,6 +430,15 @@ AAA     ...
 ```
 
 Note that only canonical forms are shown. Rotations like CA, GA, GC, TA, TC, TG are represented by their canonical forms (AC, AG, CG, AT, CT, GT respectively) and their counts are combined.
+
+**Example Output (Target Kmer):**
+
+```tsv
+Sample          Target_Kmer     Canonical_Kmer  Kmer_Length     Count   Total_Reads     Frequency
+MySample        CTCTCTCT        CTCTCT          8               1523    125000          0.012184
+```
+
+When `--combine-revcomp` is used, the canonical form represents the lexicographically smallest among all rotations of both the forward strand and reverse complement.
 
 **Use Cases:**
 

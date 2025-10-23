@@ -1078,7 +1078,7 @@ dependencies = [
 
 [[package]]
 name = "inquiSTR"
-version = "0.17.1"
+version = "0.18.0"
 dependencies = [
  "bio",
  "clap",
@@ -1098,6 +1098,7 @@ dependencies = [
  "noodles-bgzf",
  "plotly",
  "rayon",
+ "regex",
  "rust-htslib",
  "url",
 ]

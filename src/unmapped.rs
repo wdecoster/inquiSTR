@@ -528,6 +528,38 @@ fn get_canonical_kmer_with_revcomp(kmer: &[u8]) -> Vec<u8> {
     candidates.into_iter().min().unwrap()
 }
 
+/// Expand shorthand notation like (CT)4 to CTCTCTCT
+fn expand_kmer_shorthand(kmer: &str) -> Result<String, String> {
+    // Check if it matches the pattern (ACGT...)N where N is a number
+    let re = regex::Regex::new(r"^\(([ACGT]+)\)(\d+)$").unwrap();
+
+    if let Some(caps) = re.captures(&kmer.to_uppercase()) {
+        let unit = caps.get(1).unwrap().as_str();
+        let repeat_count: usize = caps
+            .get(2)
+            .unwrap()
+            .as_str()
+            .parse()
+            .map_err(|_| format!("Invalid repeat count in '{}'", kmer))?;
+
+        if repeat_count == 0 {
+            return Err(format!("Repeat count must be at least 1 (got 0 in '{}')", kmer));
+        }
+
+        if repeat_count > 100 {
+            return Err(format!(
+                "Repeat count too large (max 100, got {} in '{}')",
+                repeat_count, kmer
+            ));
+        }
+
+        Ok(unit.repeat(repeat_count))
+    } else {
+        // Not in shorthand format, return as-is
+        Ok(kmer.to_uppercase())
+    }
+}
+
 /// Count occurrences of a specific target kmer in unmapped reads
 fn count_target_kmer(
     bam_path: &str,
@@ -537,9 +569,17 @@ fn count_target_kmer(
     threads: usize,
     combine_revcomp: bool,
 ) {
+    // Expand shorthand notation if present (e.g., (CT)4 -> CTCTCTCT)
+    let expanded_kmer = match expand_kmer_shorthand(target_kmer) {
+        Ok(k) => k,
+        Err(e) => {
+            eprintln!("ERROR: {}", e);
+            std::process::exit(1);
+        }
+    };
+
     // Validate target kmer contains only ACGT
-    let target_upper = target_kmer.to_uppercase();
-    if !target_upper
+    if !expanded_kmer
         .bytes()
         .all(|b| matches!(b, b'A' | b'C' | b'G' | b'T'))
     {
@@ -550,7 +590,7 @@ fn count_target_kmer(
         std::process::exit(1);
     }
 
-    let target_bytes = target_upper.as_bytes();
+    let target_bytes = expanded_kmer.as_bytes();
     let k = target_bytes.len();
 
     if k < 1 {
@@ -558,7 +598,11 @@ fn count_target_kmer(
         std::process::exit(1);
     }
 
-    info!("Counting target kmer '{}' (length {})", target_upper, k);
+    if expanded_kmer != target_kmer.to_uppercase() {
+        info!("Expanded '{}' to '{}' (length {})", target_kmer, expanded_kmer, k);
+    } else {
+        info!("Counting target kmer '{}' (length {})", expanded_kmer, k);
+    }
     if combine_revcomp {
         info!("Including reverse complement in search");
     }
@@ -619,7 +663,7 @@ fn count_target_kmer(
     };
     println!(
         "{}\t{}\t{}\t{}\t{}\t{}\t{:.6}",
-        sample_name, target_upper, canonical, k, total_count, total_reads, frequency
+        sample_name, expanded_kmer, canonical, k, total_count, total_reads, frequency
     );
 }
 
@@ -1094,5 +1138,32 @@ mod tests {
 
         // Should be "AG" (lexicographically smallest among AG, GA, CT, TC)
         assert_eq!(ag_canon, b"AG");
+    }
+
+    #[test]
+    fn test_expand_kmer_shorthand() {
+        // Test basic expansion
+        assert_eq!(expand_kmer_shorthand("(CT)4").unwrap(), "CTCTCTCT");
+        assert_eq!(expand_kmer_shorthand("(AG)3").unwrap(), "AGAGAG");
+        assert_eq!(expand_kmer_shorthand("(CAG)2").unwrap(), "CAGCAG");
+
+        // Test single repeat
+        assert_eq!(expand_kmer_shorthand("(ATCG)1").unwrap(), "ATCG");
+
+        // Test lowercase input (should be converted to uppercase)
+        assert_eq!(expand_kmer_shorthand("(ct)4").unwrap(), "CTCTCTCT");
+        assert_eq!(expand_kmer_shorthand("(CaG)3").unwrap(), "CAGCAGCAG");
+
+        // Test regular kmer (not in shorthand) - should pass through
+        assert_eq!(expand_kmer_shorthand("CTCTCT").unwrap(), "CTCTCT");
+        assert_eq!(expand_kmer_shorthand("AGAGAG").unwrap(), "AGAGAG");
+
+        // Test error cases
+        assert!(expand_kmer_shorthand("(CT)0").is_err()); // Zero repeat
+        assert!(expand_kmer_shorthand("(CT)101").is_err()); // Too many repeats
+
+        // Invalid characters should work here (validation happens elsewhere)
+        // Just testing that the regex parsing works
+        assert_eq!(expand_kmer_shorthand("ATCGN").unwrap(), "ATCGN");
     }
 }
