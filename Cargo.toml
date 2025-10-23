@@ -26,7 +26,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-clap = { version = "4.5.48", features = ["derive"] }
+clap = { version = "4.5.50", features = ["derive"] }
 rust-htslib = { git = "https://github.com/wdecoster/rust-htslib.git" }
 log = "0.4.28"
 env_logger = "0.11.8"
@@ -35,7 +35,7 @@ rayon = "1.11.0"
 human-sort = "0.2.2"
 flate2 = "1.1.4"
 histo_fp = "0.2.1"
-indicatif = { version = "0.18.0", features = ["rayon"] }
+indicatif = { version = "0.18.1", features = ["rayon"] }
 itertools = "0.14.0"
 plotly = "0.13.5"
 linfa-clustering = "0.8.0"
@@ -45,7 +45,7 @@ dbscan = "0.3.1"
 url = "2.5.7"
 hts-sys = "2.2.0"
 noodles-bgzf = "0.36.0"
-regex = "1.11.1"
+regex = "1.12.2"
 
 [dev-dependencies]
 ctor = "0.6.0"
