@@ -57,8 +57,15 @@ setup:
 # Install git hooks for automated checks
 install-hooks:
 	@echo "Installing git hooks..."
-	@chmod +x .git/hooks/pre-commit
-	@chmod +x .git/hooks/pre-push
+	@if [ ! -d .git ]; then \
+		echo "❌ Not a git repository (missing .git directory)."; \
+		echo "   Run 'git init' or clone the repo with git to enable hooks."; \
+		exit 1; \
+	fi
+	@mkdir -p .git/hooks
+	@cp -f .githooks/pre-commit .git/hooks/pre-commit
+	@cp -f .githooks/pre-push .git/hooks/pre-push
+	@chmod +x .git/hooks/pre-commit .git/hooks/pre-push
 	@echo "✅ Git hooks installed successfully!"
 	@echo "💡 The hooks will now run automatically on commit and push"
 
