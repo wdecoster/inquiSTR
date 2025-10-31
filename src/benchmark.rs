@@ -359,7 +359,7 @@ pub fn benchmark(
                 // inquiSTR locus was targeted but has NaN values
                 nan_count += 1;
             }
-        } else if tier1_only && all_truth_records.get(key).is_some() {
+        } else if tier1_only && all_truth_records.contains_key(key) {
             // This inquiSTR locus matches a Tier2 variant (not in filtered set, but in full set)
             matched_tier2_only += 1;
         }
@@ -391,7 +391,11 @@ pub fn benchmark(
 
     // Output top 100 loci with largest differences if requested
     if let Some(diff_out_path) = diff_out {
-        let mut differences: Vec<(f64, &(String, u32, u32), f64, f64)> = inquistr_values
+        // Reduce type complexity by using a local type alias for readability
+        type LocusInfo<'a> = &'a (String, u32, u32);
+        type DiffEntry<'a> = (f64, LocusInfo<'a>, f64, f64);
+
+        let mut differences: Vec<DiffEntry> = inquistr_values
             .iter()
             .zip(truth_values.iter())
             .zip(loci_info.iter())

@@ -444,7 +444,16 @@ fn main() {
                 combine_revcomp,
             );
         }
-        Commands::Benchmark { inquistr, vcf, bed, mode, plot, max_plot_length, tier1, diff_out } => {
+        Commands::Benchmark {
+            inquistr,
+            vcf,
+            bed,
+            mode,
+            plot,
+            max_plot_length,
+            tier1,
+            diff_out,
+        } => {
             benchmark::benchmark(inquistr, vcf, bed, mode, plot, max_plot_length, tier1, diff_out);
         }
         Commands::CleanCache { dry_run, all, max_age_days } => {
