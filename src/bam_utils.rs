@@ -92,53 +92,64 @@ fn cleanup_old_cache_files(cache_dir: &PathBuf, max_age_days: u64) {
     }
 }
 
-/// Sets up caching for remote BAM/CRAM index files
-/// Checks if local index exists first, otherwise configures htslib to cache remote indexes
+/// Sets up caching for remote files (both index files and CRAM reference sequences)
+/// Checks if local index exists first, then configures cache directory for reference sequences
 /// Also performs periodic cleanup of old cache files (>30 days)
+///
+/// Note: htslib automatically caches downloaded index files (.bai/.crai) in the current
+/// working directory and reuses them on subsequent runs. CRAM reference sequences are
+/// cached in ~/.cache/inquistr/ via HTS_REF_CACHE.
 pub fn setup_index_caching(bam_path: &str) {
     // Check if caching is explicitly disabled
     if env::var("INQUISTR_NO_CACHE").is_ok() {
-        debug!("Index caching disabled by INQUISTR_NO_CACHE environment variable");
+        debug!("Caching disabled by INQUISTR_NO_CACHE environment variable");
         return;
     }
 
     // First check if there's a local index file in the current directory
     if let Some(local_index) = find_local_index(bam_path) {
-        debug!("Using local index file: {}", local_index.display());
+        debug!("Using existing local index file: {}", local_index.display());
         return;
     }
 
     // Only set up remote caching if the path is a URL
     if let Ok(url) = Url::parse(bam_path) {
         if ["http", "https", "ftp", "s3"].contains(&url.scheme()) {
-            // Only configure if not already set by the user
-            if env::var("HTS_CACHE_LOCATION").is_err() {
-                // Use a cache directory in the user's home or current directory
-                let cache_dir = if let Ok(home) = env::var("HOME") {
-                    PathBuf::from(home).join(".cache").join("inquistr")
-                } else {
-                    PathBuf::from(".inquistr_cache")
-                };
+            debug!(
+                "Remote file detected - index will be downloaded and cached in current directory"
+            );
 
-                // Create the cache directory if it doesn't exist
-                if let Err(e) = std::fs::create_dir_all(&cache_dir) {
-                    warn!("Failed to create cache directory: {}", e);
-                } else {
-                    // Clean up old cache files (older than 30 days by default)
-                    // Can be customized with INQUISTR_CACHE_MAX_AGE_DAYS environment variable
-                    let max_age_days = env::var("INQUISTR_CACHE_MAX_AGE_DAYS")
-                        .ok()
-                        .and_then(|s| s.parse::<u64>().ok())
-                        .unwrap_or(30);
-
-                    cleanup_old_cache_files(&cache_dir, max_age_days);
-
-                    let cache_path = cache_dir.to_string_lossy().to_string();
-                    env::set_var("HTS_CACHE_LOCATION", &cache_path);
-                    debug!("Set HTS_CACHE_LOCATION to: {}", cache_path);
-                }
+            // Set up cache directory for reference sequences (CRAM files)
+            let cache_dir = if let Ok(home) = env::var("HOME") {
+                PathBuf::from(home).join(".cache").join("inquistr")
             } else {
-                debug!("HTS_CACHE_LOCATION already set by user");
+                PathBuf::from(".inquistr_cache")
+            };
+
+            // Create the cache directory if it doesn't exist
+            if let Err(e) = std::fs::create_dir_all(&cache_dir) {
+                warn!("Failed to create cache directory: {}", e);
+                return;
+            }
+
+            // Clean up old cache files (older than 30 days by default)
+            let max_age_days = env::var("INQUISTR_CACHE_MAX_AGE_DAYS")
+                .ok()
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or(30);
+
+            cleanup_old_cache_files(&cache_dir, max_age_days);
+
+            let cache_path = cache_dir.to_string_lossy().to_string();
+
+            // Set htslib caching environment variables for CRAM reference sequences
+            if env::var("HTS_REF_CACHE").is_err() {
+                env::set_var("HTS_REF_CACHE", &cache_path);
+                debug!("Set HTS_REF_CACHE to: {} (for CRAM reference caching)", cache_path);
+            }
+
+            if env::var("REF_CACHE").is_err() {
+                env::set_var("REF_CACHE", &cache_path);
             }
         }
     }
@@ -187,19 +198,20 @@ pub fn get_bam_reader(bamp: &String, reference: &Option<String>) -> bam::Indexed
     // Set up index caching before opening the file
     setup_index_caching(bamp);
 
-    let mut bam = if bamp.starts_with("s3") || bamp.starts_with("https://") {
-        setup_ssl_certificates();
-        bam::IndexedReader::from_url(&Url::parse(bamp.as_str()).expect("Failed to parse s3 URL"))
-            .unwrap_or_else(|err| {
-                error!("Error opening remote BAM file: {err}");
+    let mut bam =
+        if bamp.starts_with("s3") || bamp.starts_with("https://") || bamp.starts_with("ftp://") {
+            setup_ssl_certificates();
+            bam::IndexedReader::from_url(&Url::parse(bamp.as_str()).expect("Failed to parse URL"))
+                .unwrap_or_else(|err| {
+                    error!("Error opening remote BAM file: {err}");
+                    std::process::exit(1);
+                })
+        } else {
+            bam::IndexedReader::from_path(bamp).unwrap_or_else(|err| {
+                error!("Error opening local BAM file: {err}");
                 std::process::exit(1);
             })
-    } else {
-        bam::IndexedReader::from_path(bamp).unwrap_or_else(|err| {
-            error!("Error opening local BAM file: {err}");
-            std::process::exit(1);
-        })
-    };
+        };
     if bamp.ends_with(".cram") {
         debug!("Detected CRAM file, setting CRAM options...");
         bam.set_cram_options(
