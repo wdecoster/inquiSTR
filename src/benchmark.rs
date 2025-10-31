@@ -26,6 +26,7 @@ struct TruthRecord {
     pos: u32,
     h1: f64,
     h2: f64,
+    tier: String,
 }
 
 /// Parse BED file with 9 columns (last 2 are haplotype lengths)
@@ -53,16 +54,22 @@ fn parse_bed_file(
 
         let chromosome = fields[0].to_string();
         let begin: u32 = fields[1].parse()?;
+        let tier = fields[3].to_string();
 
         // Parse the last 2 columns as haplotype lengths and flip their signs
-        let h1: f64 = -fields[7].parse::<f64>()?;
-        let h2: f64 = -fields[8].parse::<f64>()?;
+        // Handle zero specially to avoid -0.0
+        let h1_raw: f64 = fields[7].parse()?;
+        let h1 = if h1_raw == 0.0 { 0.0 } else { -h1_raw };
+
+        let h2_raw: f64 = fields[8].parse()?;
+        let h2 = if h2_raw == 0.0 { 0.0 } else { -h2_raw };
 
         let record = TruthRecord {
             chromosome: chromosome.clone(),
             pos: begin, // Using begin position for matching
             h1,
             h2,
+            tier,
         };
 
         // Use chromosome:begin as key for matching
@@ -178,7 +185,8 @@ fn parse_vcf_file(
             (0.0, 0.0) // No ALT alleles
         };
 
-        let record = TruthRecord { chromosome: chromosome.clone(), pos, h1, h2 };
+        let record =
+            TruthRecord { chromosome: chromosome.clone(), pos, h1, h2, tier: "Tier1".to_string() };
 
         // Use chromosome:pos as key for matching
         let key = format!("{}:{}", chromosome, pos);
@@ -249,6 +257,9 @@ pub fn benchmark(
     bed_file: Option<PathBuf>,
     mode: String,
     plot_file: PathBuf,
+    max_plot_length: f64,
+    tier1_only: bool,
+    diff_out: Option<PathBuf>,
 ) {
     // Validate that exactly one truth file is provided
     match (&vcf_file, &bed_file) {
@@ -297,14 +308,36 @@ pub fn benchmark(
     println!("inquiSTR records loaded: {}", inquistr_records.len());
     println!("Truth records loaded: {}", truth_records.len());
 
+    // Filter truth records by tier if requested, but keep the full set for counting
+    let (truth_records_filtered, all_truth_records) = if tier1_only {
+        let original_count = truth_records.len();
+        let all_truth = truth_records.clone(); // Keep full set for later
+        let filtered: HashMap<String, TruthRecord> = truth_records
+            .into_iter()
+            .filter(|(_, record)| record.tier == "Tier1")
+            .collect();
+        let tier2_count = original_count - filtered.len();
+        println!(
+            "Filtered to Tier1 only: {} Tier1 variants, {} Tier2 variants ignored",
+            filtered.len(),
+            tier2_count
+        );
+        (filtered, all_truth)
+    } else {
+        let cloned = truth_records.clone();
+        (truth_records, cloned)
+    };
+
     // Find matching loci and collect data for correlation
     let mut inquistr_values = Vec::new();
     let mut truth_values = Vec::new();
+    let mut loci_info = Vec::new(); // Store (chromosome, begin, end) for each matched locus
     let mut nan_count = 0;
     let mut matched_loci = Vec::new();
+    let mut matched_tier2_only = 0; // Track inquiSTR loci that only match Tier2 variants
 
     for (key, inquistr_record) in &inquistr_records {
-        if let Some(truth_record) = truth_records.get(key) {
+        if let Some(truth_record) = truth_records_filtered.get(key) {
             // Calculate inquiSTR value (MAX or MIN of H1 and H2)
             let inquistr_alleles = vec![inquistr_record.h1, inquistr_record.h2];
 
@@ -315,20 +348,31 @@ pub fn benchmark(
                 if let Some(truth_value) = select_allele(&truth_alleles, &mode) {
                     inquistr_values.push(inquistr_value);
                     truth_values.push(truth_value);
+                    loci_info.push((
+                        inquistr_record.chromosome.clone(),
+                        inquistr_record.begin,
+                        inquistr_record.end,
+                    ));
                     matched_loci.push(key.clone());
                 }
             } else {
                 // inquiSTR locus was targeted but has NaN values
                 nan_count += 1;
             }
+        } else if tier1_only && all_truth_records.get(key).is_some() {
+            // This inquiSTR locus matches a Tier2 variant (not in filtered set, but in full set)
+            matched_tier2_only += 1;
         }
     }
 
     let matched_count = inquistr_values.len();
-    let inquistr_only = inquistr_records.len() - matched_count - nan_count;
-    let truth_only = truth_records.len() - matched_count;
+    let inquistr_only = inquistr_records.len() - matched_count - nan_count - matched_tier2_only;
+    let truth_only = truth_records_filtered.len() - matched_count;
 
     println!("Loci found in inquiSTR only: {}", inquistr_only);
+    if matched_tier2_only > 0 {
+        println!("Loci found in inquiSTR that match Tier2 variants only: {}", matched_tier2_only);
+    }
     println!("Loci found in truth data only: {}", truth_only);
     println!("Loci found in both: {}", matched_count);
     println!("Loci with NaN in inquiSTR (but found in truth data): {}", nan_count);
@@ -345,18 +389,115 @@ pub fn benchmark(
     println!("Pearson correlation coefficient: {:.4}", correlation);
     println!("R² value: {:.4}", r_squared);
 
-    // Create scatter plot
-    let trace = Scatter::new(inquistr_values.clone(), truth_values.clone())
+    // Output top 100 loci with largest differences if requested
+    if let Some(diff_out_path) = diff_out {
+        let mut differences: Vec<(f64, &(String, u32, u32), f64, f64)> = inquistr_values
+            .iter()
+            .zip(truth_values.iter())
+            .zip(loci_info.iter())
+            .map(|((&inq_val, &truth_val), locus)| {
+                let diff = (inq_val - truth_val).abs();
+                (diff, locus, inq_val, truth_val)
+            })
+            .collect();
+
+        // Sort by absolute difference (largest first)
+        differences.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
+
+        // Take top 100 and write to file
+        let top_100 = differences.iter().take(100);
+
+        match std::fs::File::create(&diff_out_path) {
+            Ok(file) => {
+                use std::io::Write;
+                let mut writer = std::io::BufWriter::new(file);
+
+                // Write header
+                if writeln!(writer, "chromosome\tbegin\tend\tinquistr_genotype\ttruth_genotype\tabsolute_difference").is_err() {
+                    eprintln!("Error writing header to diff output file");
+                } else {
+                    // Write data
+                    let mut count = 0;
+                    for (diff, locus, inq_val, truth_val) in top_100 {
+                        if writeln!(
+                            writer,
+                            "{}\t{}\t{}\t{:.1}\t{:.1}\t{:.1}",
+                            locus.0, locus.1, locus.2, inq_val, truth_val, diff
+                        ).is_err() {
+                            eprintln!("Error writing data to diff output file");
+                            break;
+                        }
+                        count += 1;
+                    }
+                    println!("Top {} loci with largest differences written to: {}", count, diff_out_path.display());
+                }
+            }
+            Err(e) => {
+                eprintln!("Error creating diff output file: {}", e);
+            }
+        }
+    }
+
+    // Filter points for plotting based on max_plot_length
+    let mut plot_inquistr = Vec::new();
+    let mut plot_truth = Vec::new();
+    let mut plot_hover_text = Vec::new();
+    let mut hidden_count = 0;
+
+    for ((inq_val, truth_val), locus) in inquistr_values
+        .iter()
+        .zip(truth_values.iter())
+        .zip(loci_info.iter())
+    {
+        if inq_val.abs() <= max_plot_length && truth_val.abs() <= max_plot_length {
+            plot_inquistr.push(*inq_val);
+            plot_truth.push(*truth_val);
+            plot_hover_text.push(format!(
+                "{}:{}-{}<br>inquiSTR: {:.1}<br>Truth: {:.1}",
+                locus.0, locus.1, locus.2, inq_val, truth_val
+            ));
+        } else {
+            hidden_count += 1;
+        }
+    }
+
+    if hidden_count > 0 {
+        println!(
+            "{} points that are larger than {} are not shown on the plot",
+            hidden_count, max_plot_length
+        );
+    }
+
+    // Determine axis range for square plot
+    let axis_limit = max_plot_length;
+
+    // Create scatter plot with custom hover text
+    let trace = Scatter::new(plot_inquistr.clone(), plot_truth.clone())
         .mode(Mode::Markers)
-        .name("Data points");
+        .name("Data points")
+        .text_array(plot_hover_text)
+        .hover_template("%{text}<extra></extra>");
 
     let layout = Layout::new()
         .title(Title::with_text(format!(
             "inquiSTR vs Truth Genotypes (Mode: {}, R² = {:.4})",
             mode, r_squared
         )))
-        .x_axis(Axis::new().title(Title::with_text("inquiSTR genotypes")))
-        .y_axis(Axis::new().title(Title::with_text("Truth genotypes")));
+        .x_axis(
+            Axis::new()
+                .title(Title::with_text("inquiSTR genotypes"))
+                .range(vec![-axis_limit, axis_limit])
+                .constrain(plotly::layout::AxisConstrain::Domain)
+                .scale_anchor("y"),
+        )
+        .y_axis(
+            Axis::new()
+                .title(Title::with_text("Truth genotypes"))
+                .range(vec![-axis_limit, axis_limit])
+                .scale_anchor("x"),
+        )
+        .width(800)
+        .height(800);
 
     let mut plot = Plot::new();
     plot.add_trace(trace);

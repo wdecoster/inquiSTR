@@ -111,8 +111,6 @@ enum Commands {
         #[clap(short = 't', long, value_parser, default_value_t = 1)]
         threads: usize,
     },
-    /// Search for regions potentially containing a polymorphic repeat
-    Scan {},
     /// Find outliers from TSV
     Outlier {
         /// combined file of calls
@@ -309,6 +307,18 @@ enum Commands {
         /// Output file for correlation plot
         #[clap(short, long, value_parser, required = true)]
         plot: PathBuf,
+
+        /// Maximum length to display on plot (points beyond this are counted but not shown)
+        #[clap(long, value_parser, default_value_t = 5000.0)]
+        max_plot_length: f64,
+
+        /// Only use Tier1 variants from BED file (ignores Tier2 variants)
+        #[clap(long)]
+        tier1: bool,
+
+        /// Create an output file for largest differences between truth and calls
+        #[clap(short, long, value_parser)]
+        diff_out: Option<PathBuf>,
     },
     /// Clean the index cache directory (hidden command)
     #[clap(hide = true)]
@@ -359,9 +369,6 @@ fn main() {
         ),
         Commands::Combine { calls, threads } => {
             combine::combine(calls, threads);
-        }
-        Commands::Scan {} => {
-            unimplemented!();
         }
         Commands::Outlier { combined, minsize, zscore, method, sample, threads } => {
             if !combined.exists() {
@@ -437,8 +444,8 @@ fn main() {
                 combine_revcomp,
             );
         }
-        Commands::Benchmark { inquistr, vcf, bed, mode, plot } => {
-            benchmark::benchmark(inquistr, vcf, bed, mode, plot);
+        Commands::Benchmark { inquistr, vcf, bed, mode, plot, max_plot_length, tier1, diff_out } => {
+            benchmark::benchmark(inquistr, vcf, bed, mode, plot, max_plot_length, tier1, diff_out);
         }
         Commands::CleanCache { dry_run, all, max_age_days } => {
             bam_utils::clean_cache(dry_run, all, max_age_days);
