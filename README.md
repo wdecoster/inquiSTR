@@ -70,6 +70,19 @@ cargo build --release
 # Binary will be in target/release/inquiSTR
 ```
 
+#### System dependencies (Linux)
+
+Building from source requires a C/C++ toolchain and common compression/network libraries used by HTSlib. On Ubuntu/Debian, install:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y build-essential pkg-config clang libclang-dev \
+  zlib1g-dev libbz2-dev liblzma-dev libcurl4-openssl-dev \
+  libdeflate-dev libzstd-dev libssl-dev
+```
+
+These provide standard headers for clang/bindgen (fixes errors like "stddef.h not found") and libraries used by BAM/CRAM support.
+
 ### Using Cargo
 
 ```bash
@@ -415,6 +428,7 @@ inquiSTR unmapped test-data/unmapped.bam --klength 3 --sample-name test_sample
 **Shorthand Notation:**
 
 For repeating sequences, use parentheses with a repeat count:
+
 - `(CT)4` → `CTCTCTCT`
 - `(AG)3` → `AGAGAG`
 - `(CAG)5` → `CAGCAGCAGCAGCAG`
