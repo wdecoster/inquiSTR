@@ -806,10 +806,8 @@ fn canonicalize_kmer_counts(
         let k_idx = k - 2;
         let mut canonical_map = HashMap::new();
 
-        // Iterate through all possible kmers for this k
-        let num_kmers = 4_usize.pow(k as u32);
-        for kmer_idx in 0..num_kmers {
-            let count = kmer_counts[k_idx][kmer_idx];
+        // Iterate through all possible kmers for this k using iterator + enumerate
+        for (kmer_idx, &count) in kmer_counts[k_idx].iter().enumerate() {
             if count > 0 {
                 let kmer_bytes = index_to_kmer_bytes(kmer_idx, k);
                 let canonical_kmer = if combine_revcomp {
