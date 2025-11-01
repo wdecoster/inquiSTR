@@ -58,7 +58,7 @@ fn parse_bed_file(
         let begin: u32 = fields[1].parse()?;
         let end: u32 = fields[2].parse()?;
         let tier = fields[3].to_string();
-        
+
         // Filter by max_locus size if specified
         if let Some(max_size) = max_locus {
             let locus_size = end - begin;
@@ -195,7 +195,7 @@ fn parse_vcf_file(
             .iter()
             .map(|alt| alt.len() as f64 - ref_len)
             .collect();
-        
+
         // Filter by max_locus size if specified
         // For VCF, we use the REF allele length as the locus size
         if let Some(max_size) = max_locus {
@@ -559,7 +559,7 @@ pub fn benchmark(
             std::process::exit(1);
         }
     }
-    
+
     // Output summary in parseable format for scripting
     println!("\n=== BENCHMARK SUMMARY ===");
     println!("LOCI_ASSESSED: {}", matched_count);

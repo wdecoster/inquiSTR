@@ -459,7 +459,17 @@ fn main() {
             diff_out,
             max_locus,
         } => {
-            benchmark::benchmark(inquistr, vcf, bed, mode, plot, max_plot_length, tier1, diff_out, max_locus);
+            benchmark::benchmark(
+                inquistr,
+                vcf,
+                bed,
+                mode,
+                plot,
+                max_plot_length,
+                tier1,
+                diff_out,
+                max_locus,
+            );
         }
         Commands::CleanCache { dry_run, all, max_age_days } => {
             bam_utils::clean_cache(dry_run, all, max_age_days);
