@@ -44,7 +44,7 @@ ndarray = "0.16.1"
 dbscan = "0.3.1"
 url = "2.5.7"
 hts-sys = "2.2.0"
-noodles-bgzf = "0.36.0"
+noodles-bgzf = "0.43.0"
 regex = "1.12.2"
 smallvec = "1.13.2"
 
