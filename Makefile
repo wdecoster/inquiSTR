@@ -9,6 +9,22 @@ all: fmt clippy test build
 build:
 	cargo build --release
 
+# Build a statically-linked Linux binary using MUSL
+.PHONY: build-musl
+build-musl:
+	@echo "Building static MUSL binary (x86_64-unknown-linux-musl)"
+	rustup target add x86_64-unknown-linux-musl >/dev/null 2>&1 || true
+	@if command -v cross >/dev/null 2>&1; then \
+		echo "Using cross for reproducible musl build"; \
+		OPENSSL_STATIC=1 LIBZ_SYS_STATIC=1 BZIP2_STATIC=1 ZSTD_STATIC=1 LZMA_API_STATIC=1 CURL_STATIC=1 \
+		cross build --release --target x86_64-unknown-linux-musl; \
+	else \
+		echo "Using cargo. Ensure musl-gcc is available (sudo apt-get install musl-tools)"; \
+		OPENSSL_STATIC=1 LIBZ_SYS_STATIC=1 BZIP2_STATIC=1 ZSTD_STATIC=1 LZMA_API_STATIC=1 CURL_STATIC=1 \
+		cargo build --release --target x86_64-unknown-linux-musl; \
+	fi
+	@echo "Binary: target/x86_64-unknown-linux-musl/release/inquiSTR"
+
 # Run tests  
 test:
 	cargo test

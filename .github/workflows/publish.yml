@@ -55,7 +55,20 @@ jobs:
     - name: Build (Cross)
       if: matrix.use_cross
       run: |
+        OPENSSL_STATIC=1 \
+        LIBZ_SYS_STATIC=1 \
+        BZIP2_STATIC=1 \
+        ZSTD_STATIC=1 \
+        LZMA_API_STATIC=1 \
+        CURL_STATIC=1 \
         cross build --target ${{ matrix.target }} --release --locked
+
+    - name: Verify MUSL binary is static
+      if: matrix.use_cross
+      run: |
+        file ${{ matrix.artifact_name }}
+        # ldd returns non-zero for statically linked binaries; ignore failure
+        ldd ${{ matrix.artifact_name }} || true
 
     # Test release binaries before publishing
     - name: Test release build

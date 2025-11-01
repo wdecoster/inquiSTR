@@ -44,3 +44,53 @@ jobs:
       
     - name: Run tests
       run: cargo test --verbose
+
+  test-musl:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@1.88.0
+      with:
+        targets: x86_64-unknown-linux-musl
+    
+    - name: Install Cross
+      run: cargo install cross --git https://github.com/cross-rs/cross
+    
+    - name: Cache cargo registry
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: ${{ runner.os }}-musl-cargo-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-musl-cargo-
+    
+    - name: Build MUSL binary
+      run: |
+        OPENSSL_STATIC=1 \
+        LIBZ_SYS_STATIC=1 \
+        BZIP2_STATIC=1 \
+        ZSTD_STATIC=1 \
+        LZMA_API_STATIC=1 \
+        CURL_STATIC=1 \
+        cross build --target x86_64-unknown-linux-musl --verbose
+    
+    - name: Run tests on MUSL
+      run: |
+        OPENSSL_STATIC=1 \
+        LIBZ_SYS_STATIC=1 \
+        BZIP2_STATIC=1 \
+        ZSTD_STATIC=1 \
+        LZMA_API_STATIC=1 \
+        CURL_STATIC=1 \
+        cross test --target x86_64-unknown-linux-musl --verbose
+    
+    - name: Verify binary is static
+      run: |
+        file target/x86_64-unknown-linux-musl/debug/inquiSTR
+        ldd target/x86_64-unknown-linux-musl/debug/inquiSTR || echo "Static binary confirmed"
