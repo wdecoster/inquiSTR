@@ -319,6 +319,10 @@ enum Commands {
         /// Create an output file for largest differences between truth and calls
         #[clap(short, long, value_parser)]
         diff_out: Option<PathBuf>,
+
+        /// Maximum locus size in bp to include in benchmark (filters out large intervals from truth data)
+        #[clap(long, value_parser)]
+        max_locus: Option<u32>,
     },
     /// Clean the index cache directory (hidden command)
     #[clap(hide = true)]
@@ -453,8 +457,9 @@ fn main() {
             max_plot_length,
             tier1,
             diff_out,
+            max_locus,
         } => {
-            benchmark::benchmark(inquistr, vcf, bed, mode, plot, max_plot_length, tier1, diff_out);
+            benchmark::benchmark(inquistr, vcf, bed, mode, plot, max_plot_length, tier1, diff_out, max_locus);
         }
         Commands::CleanCache { dry_run, all, max_age_days } => {
             bam_utils::clean_cache(dry_run, all, max_age_days);

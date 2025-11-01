@@ -32,10 +32,12 @@ struct TruthRecord {
 /// Parse BED file with 9 columns (last 2 are haplotype lengths)
 fn parse_bed_file(
     file_path: &Path,
+    max_locus: Option<u32>,
 ) -> Result<HashMap<String, TruthRecord>, Box<dyn std::error::Error>> {
     let reader = crate::utils::reader(file_path.to_string_lossy().as_ref());
     let mut records = HashMap::new();
     let mut line_count = 0;
+    let mut filtered_count = 0;
 
     for line in reader.lines() {
         let line = line?;
@@ -54,7 +56,17 @@ fn parse_bed_file(
 
         let chromosome = fields[0].to_string();
         let begin: u32 = fields[1].parse()?;
+        let end: u32 = fields[2].parse()?;
         let tier = fields[3].to_string();
+        
+        // Filter by max_locus size if specified
+        if let Some(max_size) = max_locus {
+            let locus_size = end - begin;
+            if locus_size > max_size {
+                filtered_count += 1;
+                continue;
+            }
+        }
 
         // Parse the last 2 columns as haplotype lengths and flip their signs
         // Handle zero specially to avoid -0.0
@@ -77,7 +89,14 @@ fn parse_bed_file(
         records.insert(key, record);
     }
 
-    println!("BED file processed: {} lines, {} records", line_count, records.len());
+    if filtered_count > 0 {
+        println!(
+            "BED file: Filtered out {} intervals larger than {} bp (max-locus limit)",
+            filtered_count,
+            max_locus.unwrap()
+        );
+    }
+    println!("BED file processed: {} lines, {} records retained", line_count, records.len());
 
     Ok(records)
 }
@@ -131,11 +150,13 @@ fn parse_inquistr_file(
 /// Parse VCF file (supports compressed files)
 fn parse_vcf_file(
     file_path: &Path,
+    max_locus: Option<u32>,
 ) -> Result<HashMap<String, TruthRecord>, Box<dyn std::error::Error>> {
     let reader = crate::utils::reader(&file_path.to_string_lossy());
     let mut records = HashMap::new();
     let mut total_variants = 0;
     let mut snp_variants = 0;
+    let mut filtered_count = 0;
 
     for line in reader.lines() {
         let line = line?;
@@ -174,6 +195,15 @@ fn parse_vcf_file(
             .iter()
             .map(|alt| alt.len() as f64 - ref_len)
             .collect();
+        
+        // Filter by max_locus size if specified
+        // For VCF, we use the REF allele length as the locus size
+        if let Some(max_size) = max_locus {
+            if ref_seq.len() as u32 > max_size {
+                filtered_count += 1;
+                continue;
+            }
+        }
 
         // For VCF, we need to determine H1 and H2 from the available ALT alleles
         // Since we don't have phasing info, we'll use the available ALT lengths
@@ -193,6 +223,13 @@ fn parse_vcf_file(
         records.insert(key, record);
     }
 
+    if filtered_count > 0 {
+        println!(
+            "VCF file: Filtered out {} variants with REF length > {} bp (max-locus limit)",
+            filtered_count,
+            max_locus.unwrap()
+        );
+    }
     println!(
         "VCF variants processed: {} total, {} SNPs filtered out, {} STR variants retained",
         total_variants,
@@ -260,6 +297,7 @@ pub fn benchmark(
     max_plot_length: f64,
     tier1_only: bool,
     diff_out: Option<PathBuf>,
+    max_locus: Option<u32>,
 ) {
     // Validate that exactly one truth file is provided
     match (&vcf_file, &bed_file) {
@@ -285,7 +323,7 @@ pub fn benchmark(
 
     let truth_records = if let Some(vcf_path) = vcf_file {
         println!("Loading VCF file: {}", vcf_path.display());
-        match parse_vcf_file(&vcf_path) {
+        match parse_vcf_file(&vcf_path, max_locus) {
             Ok(records) => records,
             Err(e) => {
                 eprintln!("Error parsing VCF file: {}", e);
@@ -294,7 +332,7 @@ pub fn benchmark(
         }
     } else if let Some(bed_path) = bed_file {
         println!("Loading BED file: {}", bed_path.display());
-        match parse_bed_file(&bed_path) {
+        match parse_bed_file(&bed_path, max_locus) {
             Ok(records) => records,
             Err(e) => {
                 eprintln!("Error parsing BED file: {}", e);
@@ -369,13 +407,18 @@ pub fn benchmark(
     let inquistr_only = inquistr_records.len() - matched_count - nan_count - matched_tier2_only;
     let truth_only = truth_records_filtered.len() - matched_count;
 
-    println!("Loci found in inquiSTR only: {}", inquistr_only);
+    println!("\n=== Loci Assessment Summary ===");
+    println!("Total inquiSTR loci: {}", inquistr_records.len());
+    println!("Total truth loci (after max-locus filtering): {}", truth_records_filtered.len());
+    println!("\nBreakdown:");
+    println!("  Loci found in inquiSTR only: {}", inquistr_only);
     if matched_tier2_only > 0 {
-        println!("Loci found in inquiSTR that match Tier2 variants only: {}", matched_tier2_only);
+        println!("  Loci in inquiSTR matching Tier2 variants only: {}", matched_tier2_only);
     }
-    println!("Loci found in truth data only: {}", truth_only);
-    println!("Loci found in both: {}", matched_count);
-    println!("Loci with NaN in inquiSTR (but found in truth data): {}", nan_count);
+    println!("  Loci found in truth data only: {}", truth_only);
+    println!("  Loci with NaN in inquiSTR (excluded): {}", nan_count);
+    println!("\n  Loci successfully matched and assessed: {} ✓", matched_count);
+    println!("===============================\n");
 
     if matched_count == 0 {
         eprintln!("Error: No matching loci found between inquiSTR and truth files");
@@ -516,4 +559,11 @@ pub fn benchmark(
             std::process::exit(1);
         }
     }
+    
+    // Output summary in parseable format for scripting
+    println!("\n=== BENCHMARK SUMMARY ===");
+    println!("LOCI_ASSESSED: {}", matched_count);
+    println!("PEARSON_R: {:.6}", correlation);
+    println!("R_SQUARED: {:.6}", r_squared);
+    println!("=========================");
 }
