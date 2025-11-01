@@ -1,6 +1,6 @@
 [package]
 name = "inquiSTR"
-version = "0.18.0"
+version = "0.18.3"
 edition = "2021"
 rust-version = "1.88.0"
 authors = ["Wouter De Coster <wouter.decoster@gmail.com>"]
@@ -27,7 +27,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
 clap = { version = "4.5.50", features = ["derive"] }
-rust-htslib = { git = "https://github.com/wdecoster/rust-htslib.git" }
+rust-htslib = { path = "../rust-htslib" }
 log = "0.4.28"
 env_logger = "0.11.8"
 bio = "3.0.0"
@@ -46,6 +46,7 @@ url = "2.5.7"
 hts-sys = "2.2.0"
 noodles-bgzf = "0.36.0"
 regex = "1.12.2"
+smallvec = "1.13.2"
 
 [dev-dependencies]
 ctor = "0.6.0"

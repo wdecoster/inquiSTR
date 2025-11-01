@@ -1079,7 +1079,7 @@ dependencies = [
 
 [[package]]
 name = "inquiSTR"
-version = "0.18.0"
+version = "0.18.3"
 dependencies = [
  "bio",
  "clap",
@@ -1101,6 +1101,7 @@ dependencies = [
  "rayon",
  "regex",
  "rust-htslib",
+ "smallvec",
  "url",
 ]
 
@@ -1952,7 +1953,6 @@ checksum = "7a2d987857b319362043e95f5353c0535c1f58eec5336fdfcf626430af7def58"
 [[package]]
 name = "rust-htslib"
 version = "0.50.0"
-source = "git+https://github.com/wdecoster/rust-htslib.git#e9b5c35f97bf3d95b2b69eef35d96630b1a37e09"
 dependencies = [
  "bio-types",
  "byteorder",

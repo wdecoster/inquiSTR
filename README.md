@@ -83,6 +83,41 @@ sudo apt-get install -y build-essential pkg-config clang libclang-dev \
 
 These provide standard headers for clang/bindgen (fixes errors like "stddef.h not found") and libraries used by BAM/CRAM support.
 
+#### Static MUSL build (fully portable Linux binary)
+
+To build a binary that does not depend on your system glibc (useful for older servers or containers):
+
+```bash
+# 1) Install musl toolchain support
+rustup target add x86_64-unknown-linux-musl
+
+# Option A (recommended): use cross for a reproducible build
+cargo install cross   # once
+OPENSSL_STATIC=1 LIBZ_SYS_STATIC=1 BZIP2_STATIC=1 ZSTD_STATIC=1 LZMA_API_STATIC=1 CURL_STATIC=1 \
+  cross build --release --target x86_64-unknown-linux-musl
+
+# Option B: use cargo directly (requires musl-tools on host)
+sudo apt-get install -y musl-tools
+OPENSSL_STATIC=1 LIBZ_SYS_STATIC=1 BZIP2_STATIC=1 ZSTD_STATIC=1 LZMA_API_STATIC=1 CURL_STATIC=1 \
+  cargo build --release --target x86_64-unknown-linux-musl
+
+# Result
+ls -lh target/x86_64-unknown-linux-musl/release/inquiSTR
+```
+
+Alternatively, use the helper:
+
+```bash
+scripts/build_musl.sh
+# or via Makefile
+make build-musl
+```
+
+Notes:
+
+- Building with MUSL avoids glibc version errors (e.g., GLIBC_2.38 not found).
+- The environment variables encourage static linking for transitive C libraries (OpenSSL, zlib, bzip2, lzma, zstd, curl).
+
 ### Using Cargo
 
 ```bash
@@ -160,6 +195,36 @@ inquiSTR call sample.bam -R regions.bed --unphased --sample-name "Sample123"
 
 # Custom batch size (in kb) and threads
 inquiSTR call sample.bam -R regions.bed --batch-size 30 --threads 4
+```
+
+#### CRAM inputs: reference FASTA and FAI index
+
+When using CRAM files, provide the matching reference with `--reference` and ensure a FASTA index (`.fai`) exists next to the FASTA. inquiSTR prefers reading contig names and lengths from the reference `.fai` rather than opening the CRAM early; this is faster and avoids edge-case crashes observed in some CRAM/reference setups.
+
+- Required for CRAM: `--reference genome.fa`
+- Recommended: a corresponding `genome.fa.fai` in the same directory
+- Fallback: if `.fai` is missing, inquiSTR will fall back to contig lengths from the CRAM header (slower and less robust). We strongly recommend providing the `.fai`.
+
+Create the index once with samtools:
+
+```bash
+samtools faidx genome.fa
+```
+
+Notes:
+
+- The `.fai` must match the exact FASTA used to generate your CRAM.
+- Keep the reference FASTA and its `.fai` side by side on local storage. Remote references are not supported for `.fai` loading.
+- For extra diagnostics, you can enable debug logs: `RUST_LOG=debug`.
+
+Examples with CRAM + reference:
+
+```bash
+# Call STRs in CRAM with provided reference (FAI required for best performance/stability)
+inquiSTR call sample.cram --reference genome.fa -R regions.bed
+
+# Single-region call on CRAM
+inquiSTR call sample.cram --reference genome.fa -r chr1:1000-1100
 ```
 
 #### Remote File Access
@@ -424,6 +489,8 @@ inquiSTR unmapped sample.bam --klength 6 --combine-revcomp --threads 8
 # Test with provided example data
 inquiSTR unmapped test-data/unmapped.bam --klength 3 --sample-name test_sample
 ```
+
+CRAM note: as with `inquiSTR call`, providing `--reference genome.fa` with a matching `genome.fa.fai` is strongly recommended. Create the index with `samtools faidx genome.fa`.
 
 **Shorthand Notation:**
 

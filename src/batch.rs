@@ -3,10 +3,19 @@ use log::{error, warn};
 use rust_htslib::bam::ext::BamRecordExtensions;
 use rust_htslib::bam::Read;
 use std::collections::HashMap;
+use std::sync::Mutex;
 
-use crate::bam_utils::{get_bam_reader, is_accidental_2d};
+use crate::bam_utils::{get_bam_reader, get_bam_reader_with_validation, is_accidental_2d};
 use crate::call::{median_str_length, Call, Genotype};
 use crate::repeats::RepeatInterval;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+// Global mutex to serialize BAM/CRAM reader creation and fetch operations
+// This prevents concurrent htslib index operations that can cause segfaults in cram_index_free
+static BAM_READER_LOCK: Mutex<()> = Mutex::new(());
+
+// Track whether phasing validation has been performed (only needed once, on first batch)
+static PHASING_VALIDATED: AtomicBool = AtomicBool::new(false);
 
 /// Represents a batch of nearby repeats to be processed together
 /// Batches are created within chromosome boundaries and within distance threshold
@@ -35,6 +44,8 @@ impl Batch {
 /// Create batches from repeats, grouping nearby repeats within chromosome boundaries
 /// Batches are created within configurable distance threshold to optimize I/O
 pub fn create_batches(repeats: Vec<RepeatInterval>, batch_distance_threshold: u32) -> Vec<Batch> {
+    let total_repeats = repeats.len();
+
     // Group repeats by chromosome first
     let mut by_chromosome: HashMap<String, Vec<RepeatInterval>> = HashMap::new();
 
@@ -51,10 +62,12 @@ pub fn create_batches(repeats: Vec<RepeatInterval>, batch_distance_threshold: u3
     }
 
     // Create batches within each chromosome
-    let mut all_batches = Vec::new();
+    // Estimate number of batches (assume ~50 repeats per batch on average)
+    let estimated_batches = total_repeats / 50 + 1;
+    let mut all_batches = Vec::with_capacity(estimated_batches);
 
     for (chromosome, chrom_repeats) in by_chromosome {
-        let mut current_batch = Vec::new();
+        let mut current_batch = Vec::with_capacity(50);
         let mut current_end = 0u32;
 
         for repeat in chrom_repeats {
@@ -100,93 +113,121 @@ pub fn process_batch_worker(
     support: usize,
     unphased: bool,
 ) -> Vec<Genotype> {
-    let mut bam = get_bam_reader(bamp, reference);
+    // Serialize BAM reader creation and fetch to prevent concurrent htslib index operations
+    // This prevents segfaults in cram_index_free when multiple threads open the same CRAM
+    // On the first batch (if not unphased), also validate phasing using the same reader
+    let mut bam = {
+        let _guard = BAM_READER_LOCK.lock().unwrap();
+
+        // Check if we need to validate phasing (only once, on first batch)
+        let need_validation = !unphased && !PHASING_VALIDATED.load(Ordering::Relaxed);
+
+        if need_validation {
+            PHASING_VALIDATED.store(true, Ordering::Relaxed);
+            get_bam_reader_with_validation(bamp, reference)
+        } else {
+            get_bam_reader(bamp, reference)
+        }
+    };
     let mut results = Vec::new();
 
-    // Fetch the entire batch region once
-    if let Some(tid) = bam.header().tid(batch.chromosome.as_bytes()) {
-        if let Err(e) = bam.fetch((tid, batch.start, batch.end)) {
-            warn!(
-                "Failed to fetch batch region {}:{}-{}: {}",
-                batch.chromosome, batch.start, batch.end, e
-            );
-            return results;
-        }
+    // Serialize both header access and fetch for CRAM stability
+    // (accessing header and then fetch without lock can cause issues with CRAM internal state)
+    let fetch_result = {
+        let _guard = BAM_READER_LOCK.lock().unwrap();
 
-        // Smart overlap filtering: only store reads that intersect with STR targets
-        let target_intervals_with_idx: Vec<(u32, u32, usize)> = batch
-            .repeats
-            .iter()
-            .enumerate()
-            .map(|(idx, repeat)| (repeat.start.saturating_sub(100), repeat.end + 100, idx))
-            .collect();
+        let tid = match bam.header().tid(batch.chromosome.as_bytes()) {
+            Some(t) => t,
+            None => {
+                warn!("Chromosome {} not found in BAM header", batch.chromosome);
+                return results;
+            }
+        };
 
-        let mut batch_reads = Vec::new();
+        bam.fetch((tid, batch.start, batch.end))
+    };
 
-        for record_result in bam.rc_records() {
-            match record_result {
-                Ok(record) => {
-                    let read_start = record.reference_start() as u32;
-                    let read_end = record.reference_end() as u32;
-                    let mapq = record.mapq();
+    if let Err(e) = fetch_result {
+        warn!(
+            "Failed to fetch batch region {}:{}-{}: {}",
+            batch.chromosome, batch.start, batch.end, e
+        );
+        return results;
+    }
 
-                    // Skip low quality reads early
-                    if mapq <= 10 {
-                        continue;
-                    }
+    // Smart overlap filtering: only store reads that intersect with STR targets
+    let target_intervals_with_idx: Vec<(u32, u32, usize)> = batch
+        .repeats
+        .iter()
+        .enumerate()
+        .map(|(idx, repeat)| (repeat.start.saturating_sub(100), repeat.end + 100, idx))
+        .collect();
 
-                    // Check if read overlaps with any target interval
-                    let overlapping_targets: Vec<_> = target_intervals_with_idx
-                        .iter()
-                        .filter(|&&(target_start, target_end, _)| {
-                            read_start < target_end && read_end > target_start
-                        })
-                        .copied()
-                        .collect();
+    // Pre-allocate with estimated capacity (assume ~20-30 reads per target on average)
+    let estimated_reads = batch.repeats.len() * 25;
+    let mut batch_reads = Vec::with_capacity(estimated_reads);
 
-                    if !overlapping_targets.is_empty() {
-                        // Create ReadInfo with pre-computed STR calls for overlapping targets
-                        let read_info = ReadInfo::from_record_with_targets(
-                            (*record).clone(),
-                            minlen,
-                            &overlapping_targets,
-                            &batch.repeats,
-                        );
-                        batch_reads.push(read_info);
+    for record_result in bam.rc_records() {
+        match record_result {
+            Ok(record) => {
+                let read_start = record.reference_start() as u32;
+                let read_end = record.reference_end() as u32;
+                let mapq = record.mapq();
+
+                // Skip low quality reads early
+                if mapq <= 10 {
+                    continue;
+                }
+
+                // Check if read overlaps with any target interval
+                // Use a small stack buffer to avoid heap allocation for common case (most reads hit 1-3 targets)
+                let mut overlapping_targets_buf: smallvec::SmallVec<[(u32, u32, usize); 8]> =
+                    smallvec::SmallVec::new();
+                for &interval in &target_intervals_with_idx {
+                    let (target_start, target_end, _) = interval;
+                    if read_start < target_end && read_end > target_start {
+                        overlapping_targets_buf.push(interval);
                     }
                 }
-                Err(e) => {
-                    let error_str = e.to_string();
-                    if error_str.contains("CRC32 failure") || error_str.contains("truncated record")
-                    {
-                        error!("CRAM format error in batch {}: {}. This usually indicates that the reference genome doesn't match the CRAM file or CRAM index is corrupted.", batch.chromosome, error_str);
-                    } else {
-                        error!("Error reading BAM record in batch {}: {}", batch.chromosome, e);
-                    }
-                    std::process::exit(1);
+
+                if !overlapping_targets_buf.is_empty() {
+                    // Create ReadInfo with pre-computed STR calls for overlapping targets
+                    let read_info = ReadInfo::from_record_with_targets(
+                        (*record).clone(),
+                        minlen,
+                        &overlapping_targets_buf,
+                        &batch.repeats,
+                    );
+                    batch_reads.push(read_info);
                 }
             }
-        }
-
-        // Process each target in the batch using the lightweight read info
-        for repeat in &batch.repeats {
-            let result =
-                process_target_from_read_info(&batch_reads, repeat, minlen, support, unphased);
-
-            match result {
-                Ok((genotype, _had_hp_tags)) => {
-                    results.push(genotype);
+            Err(e) => {
+                let error_str = e.to_string();
+                if error_str.contains("CRC32 failure") || error_str.contains("truncated record") {
+                    error!("CRAM format error in batch {}: {}. This usually indicates that the reference genome doesn't match the CRAM file or CRAM index is corrupted.", batch.chromosome, error_str);
+                } else {
+                    error!("Error reading BAM record in batch {}: {}", batch.chromosome, e);
                 }
-                Err(_e) => {
-                    // Output NaN genotype for failed targets (matches original behavior)
-                    let failed_genotype =
-                        Genotype { repeat: repeat.clone(), phase1: f64::NAN, phase2: f64::NAN };
-                    results.push(failed_genotype);
-                }
+                std::process::exit(1);
             }
         }
-    } else {
-        warn!("Chromosome {} not found in BAM header", batch.chromosome);
+    }
+
+    // Process each target in the batch using the lightweight read info
+    for repeat in &batch.repeats {
+        let result = process_target_from_read_info(&batch_reads, repeat, minlen, support, unphased);
+
+        match result {
+            Ok((genotype, _had_hp_tags)) => {
+                results.push(genotype);
+            }
+            Err(_e) => {
+                // Output NaN genotype for failed targets (matches original behavior)
+                let failed_genotype =
+                    Genotype { repeat: repeat.clone(), phase1: f64::NAN, phase2: f64::NAN };
+                results.push(failed_genotype);
+            }
+        }
     }
 
     results
@@ -247,6 +288,7 @@ impl ReadInfo {
     }
 
     /// Get pre-computed STR call for a specific target region
+    #[inline]
     fn get_str_call_for_region(&self, target_start: u32, target_end: u32) -> Option<Call> {
         self.str_calls
             .iter()

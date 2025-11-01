@@ -9,19 +9,42 @@ use std::env;
 use std::path::PathBuf;
 use url::Url;
 
-/// Get chromosome lengths from BAM header
+/// Get chromosome lengths; for CRAM prefer .fai from the provided reference to avoid early CRAM opens
 pub fn get_chrom_lengths_from_bam_header(
     bam: String,
     reference: &Option<String>,
 ) -> HashMap<String, u64> {
-    let bam = get_bam_reader(&bam, reference);
-    let header = bam::Header::from_template(bam.header());
+    // Prefer FAI for CRAM to avoid opening CRAM before main processing
+    if bam.ends_with(".cram") {
+        if let Some(ref_path) = reference {
+            if let Some(map) = read_fai_lengths(ref_path) {
+                if !map.is_empty() {
+                    debug!(
+                        "get_chrom_lengths_from_bam_header: using reference FAI for chrom lengths ({} entries)",
+                        map.len()
+                    );
+                    return map;
+                }
+            }
+            warn!(
+                "Reference FAI not found or empty for '{}', falling back to CRAM header read",
+                ref_path
+            );
+        } else {
+            warn!("CRAM input without --reference provided; falling back to CRAM header read");
+        }
+    }
+
+    debug!("get_chrom_lengths_from_bam_header: opening file to read header");
+    let reader = get_bam_reader(&bam, reference);
+    let header = bam::Header::from_template(reader.header());
+
     let mut chrom_lengts = HashMap::new();
     for (key, records) in header.to_hashmap() {
+        if key != "SQ" {
+            continue;
+        }
         for record in records {
-            if key != "SQ" {
-                continue;
-            }
             chrom_lengts.insert(
                 record["SN"].clone(),
                 record["LN"]
@@ -31,7 +54,46 @@ pub fn get_chrom_lengths_from_bam_header(
         }
     }
 
+    debug!(
+        "get_chrom_lengths_from_bam_header: completed successfully, found {} chromosomes",
+        chrom_lengts.len()
+    );
     chrom_lengts
+}
+
+/// Read chromosome lengths from a .fai next to the reference FASTA
+fn read_fai_lengths(reference_fasta: &str) -> Option<HashMap<String, u64>> {
+    let fai_path = if reference_fasta.ends_with(".fai") {
+        PathBuf::from(reference_fasta)
+    } else {
+        PathBuf::from(format!("{}.fai", reference_fasta))
+    };
+
+    if !fai_path.exists() {
+        debug!("FAI file not found: {}", fai_path.display());
+        return None;
+    }
+
+    let mut map = HashMap::new();
+    let content = match std::fs::read_to_string(&fai_path) {
+        Ok(s) => s,
+        Err(e) => {
+            warn!("Failed to read FAI file {}: {}", fai_path.display(), e);
+            return None;
+        }
+    };
+    for line in content.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let mut fields = line.split('\t');
+        if let (Some(name), Some(len_str)) = (fields.next(), fields.next()) {
+            if let Ok(len) = len_str.parse::<u64>() {
+                map.insert(name.to_string(), len);
+            }
+        }
+    }
+    Some(map)
 }
 
 /// Check if a local index file exists for the given BAM/CRAM file
@@ -193,6 +255,23 @@ fn setup_ssl_certificates() {
 /// Note: This returns IndexedReader for compatibility with existing code, but we should
 /// consider using Reader for sequential access
 pub fn get_bam_reader(bamp: &String, reference: &Option<String>) -> bam::IndexedReader {
+    get_bam_reader_internal(bamp, reference, false)
+}
+
+/// Create a BAM reader with phasing validation (for first batch in non-unphased mode)
+pub fn get_bam_reader_with_validation(
+    bamp: &String,
+    reference: &Option<String>,
+) -> bam::IndexedReader {
+    get_bam_reader_internal(bamp, reference, true)
+}
+
+/// Internal function to create a BAM reader with optional phasing validation
+fn get_bam_reader_internal(
+    bamp: &String,
+    reference: &Option<String>,
+    validate_phasing: bool,
+) -> bam::IndexedReader {
     debug!("Opening BAM/CRAM file: {}", bamp);
 
     // Set up index caching before opening the file
@@ -240,7 +319,121 @@ pub fn get_bam_reader(bamp: &String, reference: &Option<String>) -> bam::Indexed
         }
     }
 
+    debug!("Finished setting up CRAM/BAM reader, validate_phasing={}", validate_phasing);
+
+    // If validation is requested, check for phasing in first reads
+    if validate_phasing {
+        debug!("Performing phasing validation on IndexedReader...");
+        debug!("About to call validate_phasing_on_reader");
+        if let Err(e) = validate_phasing_on_reader(&mut bam, 10000) {
+            error!("ERROR: {}", e);
+            std::process::exit(1);
+        }
+        debug!("validate_phasing_on_reader completed successfully");
+    }
+
+    debug!("Returning BAM reader from get_bam_reader_internal");
     bam
+}
+
+/// Validate phasing using an existing IndexedReader (avoids opening file twice)
+fn validate_phasing_on_reader(
+    bam: &mut bam::IndexedReader,
+    max_reads: usize,
+) -> Result<(), String> {
+    debug!(
+        "Starting HP tag validation on existing reader, scanning up to {} reads...",
+        max_reads
+    );
+
+    let mut reads_checked = 0;
+
+    debug!("About to get header from reader");
+    // Get the header to find the first chromosome/contig
+    let header = bam.header().clone();
+    debug!("Header cloned successfully");
+
+    let target_names = header.target_names();
+    debug!("Got {} target names from header", target_names.len());
+
+    if target_names.is_empty() {
+        return Err("BAM/CRAM file has no reference sequences in header".to_string());
+    }
+
+    // Try to fetch from all chromosomes until we find HP tags or reach max_reads
+    // No limit on chromosome count - we return immediately when HP tag is found
+    debug!("Starting loop through chromosomes");
+    for (tid, target_name) in target_names.iter().enumerate() {
+        let chrom = String::from_utf8_lossy(target_name);
+        debug!("Attempting to fetch reads from chromosome: {} (tid={})", chrom, tid);
+
+        // Fetch reads from this chromosome (entire chromosome - we'll stop after max_reads anyway)
+        debug!("Calling bam.fetch for tid={}", tid);
+        match bam.fetch((tid as i32, 0, i32::MAX)) {
+            Ok(_) => {
+                debug!("Fetch successful for {}, iterating records...", chrom);
+                let mut chrom_reads = 0;
+
+                debug!("About to call bam.records() iterator");
+                // Iterate through fetched records
+                for record_result in bam.records() {
+                    if reads_checked >= max_reads {
+                        debug!("Reached max_reads limit ({}), stopping validation", max_reads);
+                        break;
+                    }
+
+                    match record_result {
+                        Ok(record) => {
+                            chrom_reads += 1;
+
+                            // Check for HP tag
+                            if record.aux(b"HP").is_ok() {
+                                debug!("Found HP tag in read {} on {} (total reads checked: {}), validation successful", 
+                                       chrom_reads, chrom, reads_checked + 1);
+                                return Ok(());
+                            }
+
+                            reads_checked += 1;
+                        }
+                        Err(e) => {
+                            let error_str = e.to_string();
+                            if error_str.contains("CRC32 failure")
+                                || error_str.contains("truncated record")
+                            {
+                                return Err(format!(
+                                    "CRAM format error: {}. This usually indicates that the reference genome doesn't match the CRAM file.",
+                                    error_str
+                                ));
+                            }
+                            warn!("Error reading record during phasing validation: {}", e);
+                            reads_checked += 1;
+                        }
+                    }
+                }
+
+                debug!(
+                    "Checked {} reads on {}, total so far: {}",
+                    chrom_reads, chrom, reads_checked
+                );
+
+                // If we've checked enough reads across chromosomes, stop
+                if reads_checked >= max_reads {
+                    break;
+                }
+            }
+            Err(e) => {
+                debug!("Could not fetch from {}: {}", chrom, e);
+                continue;
+            }
+        }
+    }
+
+    Err(format!(
+        "No phasing information (HP tags) found in the first {} reads. \
+        This suggests the BAM/CRAM file lacks phasing information. \
+        Use the --unphased option if you want to proceed without phasing.",
+        reads_checked
+    ))
 }
 
 /// Create a sequential BAM reader for reading all records
@@ -322,69 +515,82 @@ pub fn validate_phasing_early(
     debug!("Reference path: {:?}", reference);
     debug!("File exists, attempting to open BAM/CRAM reader...");
 
-    let mut seq_bam = get_sequential_bam_reader(&bam_path_string, reference);
-    debug!("Sequential BAM/CRAM reader opened successfully");
+    // Wrap reader creation and usage in a scope to ensure it's dropped before
+    // the main processing opens an IndexedReader to the same file
+    let validation_result = {
+        let mut seq_bam = get_sequential_bam_reader(&bam_path_string, reference);
+        debug!("Sequential BAM/CRAM reader opened successfully");
 
-    // Try to read the header to verify the file is accessible
-    let header = seq_bam.header();
-    let header_text = std::str::from_utf8(header.as_bytes()).unwrap_or("Invalid UTF-8");
-    debug!("Header read successfully, length: {} bytes", header_text.len());
+        // Try to read the header to verify the file is accessible
+        let header = seq_bam.header();
+        let header_text = std::str::from_utf8(header.as_bytes()).unwrap_or("Invalid UTF-8");
+        debug!("Header read successfully, length: {} bytes", header_text.len());
 
-    let mut reads_checked = 0;
-    let records_iterator = seq_bam.records();
-    debug!("Starting HP tag validation, scanning up to {} reads...", max_reads);
+        let mut reads_checked = 0;
+        let records_iterator = seq_bam.records();
+        debug!("Starting HP tag validation, scanning up to {} reads...", max_reads);
 
-    for record_result in records_iterator {
-        if reads_checked >= max_reads {
-            break;
+        let mut result = Err(format!(
+            "No phasing information (HP tags) found in the first {} reads. \
+            This suggests the BAM/CRAM file lacks phasing information. \
+            Use the --unphased option if you want to proceed without phasing.",
+            max_reads
+        ));
+
+        for record_result in records_iterator {
+            if reads_checked >= max_reads {
+                break;
+            }
+
+            match record_result {
+                Ok(record) => {
+                    // Check for HP tag - simple and direct
+                    if record.aux(b"HP").is_ok() {
+                        debug!("Found HP tag in read {}, validation successful", reads_checked + 1);
+                        result = Ok(());
+                        break;
+                    }
+
+                    reads_checked += 1;
+                }
+                Err(e) => {
+                    // Check if this is a CRAM format error indicating incompatible reference
+                    let error_str = e.to_string();
+                    if error_str.contains("CRC32 failure") || error_str.contains("truncated record")
+                    {
+                        error!("CRAM format error detected: {}. This usually indicates that the reference genome doesn't match the CRAM file. Please verify that you're using the correct reference genome.", error_str);
+                        std::process::exit(1);
+                    }
+                    warn!("Error reading record during phasing validation: {}", e);
+                    reads_checked += 1;
+                }
+            }
         }
 
-        match record_result {
-            Ok(record) => {
-                // Check for HP tag - simple and direct
-                if record.aux(b"HP").is_ok() {
-                    debug!("Found HP tag in read {}, validation successful", reads_checked + 1);
-                    return Ok(());
-                }
+        result
+        // seq_bam is explicitly dropped here when this scope ends
+    };
 
-                reads_checked += 1;
-            }
-            Err(e) => {
-                // Check if this is a CRAM format error indicating incompatible reference
-                let error_str = e.to_string();
-                if error_str.contains("CRC32 failure") || error_str.contains("truncated record") {
-                    error!("CRAM format error detected: {}. This usually indicates that the reference genome doesn't match the CRAM file. Please verify that you're using the correct reference genome.", error_str);
-                    std::process::exit(1);
-                }
-                warn!("Error reading record during phasing validation: {}", e);
-                reads_checked += 1;
-            }
-        }
-    }
-
-    // No HP tags found in the first max_reads reads
-    Err(format!(
-        "No phasing information (HP tags) found in the first {} reads. \
-        This suggests the BAM/CRAM file lacks phasing information. \
-        Use the --unphased option if you want to proceed without phasing.",
-        max_reads
-    ))
+    validation_result
 }
 
 /// Checks if read alignment might be an accidental 2D read (ONT artefact)
+///
+/// This function determines if a read is an accidental 2D read, which means that right after
+/// the template strand, the complement strand was also sequenced. This is a common artifact
+/// in ONT data. The read will align in two pieces of similar length to the reference genome,
+/// with the second piece on the opposite strand. In that case, softclipped fragments should
+/// not be considered as they represent the overlap between template and complement.
 pub fn is_accidental_2d(record: &bam::Record) -> bool {
-    // this function will determine if a read is an accidental 2D read
-    // this means that right after the template strand also the complement strand was sequenced
-    // this is a common artifact in ONT data
-    // the read will then align in two pieces of similar length to the reference genome, with the second piece on the opposite strand
-    // in that case, softclipped fragments are not to be considered
-    // An entry in the SA tag consist of rname, POS, strand, CIGAR, mapQ, NM
+    // An entry in the SA tag consists of: rname, POS, strand, CIGAR, mapQ, NM
     let read_strand = if record.is_reverse() { '-' } else { '+' };
     let sa = record.aux(b"SA");
-    // if the SA tag is not present, the read has no supplementary alignments and is thus not an accidental 2D read
+
+    // If the SA tag is not present, the read has no supplementary alignments
     if sa.is_err() {
         return false;
     }
+
     let sa_tag = sa.unwrap();
     let sa_tag = match sa_tag {
         Aux::String(s) => s,
@@ -393,43 +599,53 @@ pub fn is_accidental_2d(record: &bam::Record) -> bool {
             return false;
         }
     };
-    // split the SA tag into its entries, separated by ';', but remove any empty entries
+
+    // Split the SA tag into its entries, separated by ';', but remove any empty entries
     let sa_entries = sa_tag
         .split(';')
         .filter(|x| !x.is_empty())
         .collect::<Vec<&str>>();
-    // while not conclusive, if there are multiple entries in the SA tag, it is likely that the read is not just a 2D read
+
+    // While not conclusive, if there are multiple entries in the SA tag,
+    // it is likely that the read is not just a 2D read
     if sa_entries.len() > 1 {
         return false;
     }
+
     // Ensure we have at least one SA entry
     if sa_entries.is_empty() {
         return false;
     }
+
     let sa_entry = sa_entries[0].split(',').collect::<Vec<&str>>();
+
     // SA entry format: rname,pos,strand,CIGAR,mapQ,NM - need at least 4 fields
     if sa_entry.len() < 4 {
         warn!("Malformed SA tag entry: insufficient fields");
         return false;
     }
-    // check if the read is on the opposite strand. If it is on the same strand, it is not an accidental 2D read
+
+    // Check if the read is on the opposite strand. If it is on the same strand,
+    // it is not an accidental 2D read
     if read_strand == sa_entry[2].chars().next().unwrap() {
         return false;
     }
-    // check if the supplementary alignment overlaps with the original alignment
-    // if it does overlap the read could be an accidental 2D read
-    // alternatively, it could indicate an inverted duplication
-    // but that is not of interst to inquiSTR
+
+    // Check if the supplementary alignment overlaps with the original alignment
+    // If it does overlap, the read could be an accidental 2D read
+    // (alternatively, it could indicate an inverted duplication, but that is not of interest to inquiSTR)
     let start = record.reference_start();
     let end = record.reference_end();
     let sa_start = sa_entry[1].parse::<i64>().unwrap();
     let sa_end = sa_start + cigar_to_rlen(sa_entry[3]);
-    // check if the max of the start values is smaller than the min of the end values
-    // if that is the case, the two alignments overlap
+
+    // Check if the max of the start values is smaller than the min of the end values
+    // If that is the case, the two alignments overlap
     if std::cmp::max(start, sa_start) < std::cmp::min(end, sa_end) {
         debug!("Identified read as accidental 2D read");
         return true;
     }
+
     false
 }
 

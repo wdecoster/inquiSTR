@@ -7,7 +7,7 @@ use std::fmt;
 use std::io::{self, Write};
 use std::path::PathBuf;
 
-use crate::bam_utils::validate_phasing_early;
+// Phasing validation now happens lazily on first batch via get_bam_reader_with_validation
 use crate::batch::{create_batches, process_batch_worker};
 use crate::repeats::{get_targets, RepeatInterval};
 
@@ -96,14 +96,6 @@ pub fn genotype_repeats(
         std::process::exit(1);
     };
 
-    // Early validation: check for phasing information before expensive processing
-    if !unphased {
-        if let Err(err_msg) = validate_phasing_early(&bamp, &reference, 10000) {
-            error!("ERROR: {}", err_msg);
-            std::process::exit(1);
-        }
-    }
-
     let repeats = get_targets(region, region_file, &bamp, max_locus, &reference);
 
     // Unified batch-level producer-consumer approach for both single and multi-threaded
@@ -162,9 +154,10 @@ pub fn genotype_repeats(
     // Create a new progress bar for sorting if we have a large number of results
     if all_genotypes.len() > 10000 {
         let sort_pb = indicatif::ProgressBar::new_spinner();
+        // Use {msg} placeholder instead of invalid Rust-style `{}` in indicatif templates
         sort_pb.set_style(
             indicatif::ProgressStyle::default_spinner()
-                .template("{spinner:.green} Sorting {} results...")
+                .template("{spinner:.green} {msg}")
                 .expect("Failed to set spinner template"),
         );
         sort_pb.set_message(format!("Sorting {} results...", all_genotypes.len()));
@@ -230,6 +223,7 @@ pub fn median_str_length(array: &[Call], support: usize) -> f64 {
     }
 
     // Separate spanning and clipped reads
+    // Pre-size to actual array length since we'll likely use most/all of them
     let mut spanning = Vec::with_capacity(array.len());
     let mut clipped = Vec::with_capacity(array.len());
 

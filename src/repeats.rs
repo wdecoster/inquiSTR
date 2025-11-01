@@ -11,16 +11,31 @@ pub struct RepeatIntervalIterator {
 }
 
 impl RepeatIntervalIterator {
-    // parse a region string
+    // parse a region string in format "chr:start-end"
     pub fn from_string(reg: &str, chrom_lengths: HashMap<String, u64>) -> Self {
-        let chrom = reg.split(':').collect::<Vec<&str>>()[0].to_string();
-        let interval = reg.split(':').collect::<Vec<&str>>()[1];
-        let start: u32 = interval.split('-').collect::<Vec<&str>>()[0]
+        let reg = reg.trim();
+
+        // Validate format
+        let parts: Vec<&str> = reg.split(':').collect();
+        if parts.len() != 2 {
+            panic!("Invalid region format '{}'. Expected format: chr:start-end", reg);
+        }
+
+        let chrom = parts[0].to_string();
+        let interval = parts[1];
+
+        let interval_parts: Vec<&str> = interval.split('-').collect();
+        if interval_parts.len() != 2 {
+            panic!("Invalid region format '{}'. Expected format: chr:start-end", reg);
+        }
+
+        let start: u32 = interval_parts[0]
             .parse()
-            .unwrap();
-        let end: u32 = interval.split('-').collect::<Vec<&str>>()[1]
+            .unwrap_or_else(|_| panic!("Invalid start position in region '{}'", reg));
+        let end: u32 = interval_parts[1]
             .parse()
-            .unwrap();
+            .unwrap_or_else(|_| panic!("Invalid end position in region '{}'", reg));
+
         let repeat = RepeatInterval::new_interval(chrom, start, end, &chrom_lengths)
             .expect("Failed to create repeat interval");
         RepeatIntervalIterator { current_index: 0, data: vec![repeat], num_intervals: 1 }
