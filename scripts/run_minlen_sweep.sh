@@ -41,76 +41,75 @@ mkdir -p "$OUTDIR"
 echo "Running inquiSTR call sweep: minlen ${START_MINLEN}..${END_MINLEN}"
 echo "Output directory: $OUTDIR"
 
-autoskip() {
-  local out="$1"
-  if [ -s "$out" ]; then
-    echo "  -> Skipping, output exists: $out"
-    return 0
-  fi
-  return 1
-}
-
 # Create results file for tabular output
 RESULTS_TABLE="$OUTDIR/benchmark_results.tsv"
-echo -e "minlen\tloci_assessed\tpearson_r\tr_squared" > "$RESULTS_TABLE"
+echo -e "minlen\tloci_assessed\tzero_pairs\tnonzero_loci\tr_all\tr2_all\tr_nonzero\tr2_nonzero" > "$RESULTS_TABLE"
 
 for MINLEN in $(seq "$START_MINLEN" "$END_MINLEN"); do
   OUT_FILE="$OUTDIR/calls_minlen_${MINLEN}.inq"
-  BENCHMARK_FILE="$OUTDIR/benchmark_minlen_${MINLEN}.json"
+  BENCHMARK_FILE="$OUTDIR/benchmark_minlen_${MINLEN}.txt"
   
-  echo "[minlen=$MINLEN] Running inquiSTR call..."
-  if autoskip "$OUT_FILE"; then
-    # If call output exists, check if benchmark exists too
-    if [ ! -f "$BENCHMARK_FILE" ]; then
-      echo "  -> Call output exists, but running benchmark..."
-    else
-      echo "  -> Both outputs exist, skipping"
-      continue
+  # Check if both outputs already exist
+  if [ -s "$OUT_FILE" ] && [ -s "$BENCHMARK_FILE" ]; then
+    echo "[minlen=$MINLEN] Both call and benchmark outputs exist, skipping"
+    continue
+  fi
+  
+  # Run inquiSTR call if needed
+  if [ ! -s "$OUT_FILE" ]; then
+    echo "[minlen=$MINLEN] Running inquiSTR call..."
+    if [ "${VERBOSE:-0}" != "0" ]; then
+      echo "+ $INQUISTR_BIN call \"$INPUT_CRAM\" \\
+        -R \"$REGION_FILE\" \\
+        --reference \"$REFERENCE\" \\
+        --max-locus \"$MAX_LOCUS\" \\
+        --threads \"$THREADS\" \\
+        --minlen \"$MINLEN\" > \"$OUT_FILE\""
     fi
+    
+    "$INQUISTR_BIN" call "$INPUT_CRAM" \
+      -R "$REGION_FILE" \
+      --reference "$REFERENCE" \
+      --max-locus "$MAX_LOCUS" \
+      --threads "$THREADS" \
+      --minlen "$MINLEN" \
+      > "$OUT_FILE"
+    echo "  -> Wrote: $OUT_FILE"
+  else
+    echo "[minlen=$MINLEN] Call output exists: $OUT_FILE"
   fi
   
-  if [ "${VERBOSE:-0}" != "0" ]; then
-    echo "+ $INQUISTR_BIN call \"$INPUT_CRAM\" \\
-      -R \"$REGION_FILE\" \\
-      --reference \"$REFERENCE\" \\
-      --max-locus \"$MAX_LOCUS\" \\
-      --threads \"$THREADS\" \\
-      --minlen \"$MINLEN\" > \"$OUT_FILE\""
-  fi
-  
-  # Run inquiSTR call
-  "$INQUISTR_BIN" call "$INPUT_CRAM" \
-    -R "$REGION_FILE" \
-    --reference "$REFERENCE" \
-    --max-locus "$MAX_LOCUS" \
-    --threads "$THREADS" \
-    --minlen "$MINLEN" \
-    > "$OUT_FILE"
-  echo "  -> Wrote: $OUT_FILE"
-  
-  # Run inquiSTR benchmark
-  echo "[minlen=$MINLEN] Running inquiSTR benchmark..."
+  # Run inquiSTR benchmark if needed
   PLOT_FILE="$OUTDIR/plot_minlen_${MINLEN}.html"
-  if [ "${VERBOSE:-0}" != "0" ]; then
-    echo "+ $INQUISTR_BIN benchmark \"$OUT_FILE\" \\
-      --bed \"$REGION_FILE\" \\
-      --max-locus \"$MAX_LOCUS\" \\
-      --plot \"$PLOT_FILE\" > \"$BENCHMARK_FILE\""
+  if [ ! -s "$BENCHMARK_FILE" ]; then
+    echo "[minlen=$MINLEN] Running inquiSTR benchmark..."
+    if [ "${VERBOSE:-0}" != "0" ]; then
+      echo "+ $INQUISTR_BIN benchmark \"$OUT_FILE\" \\
+        --bed \"$REGION_FILE\" \\
+        --max-locus \"$MAX_LOCUS\" \\
+        --plot \"$PLOT_FILE\" > \"$BENCHMARK_FILE\""
+    fi
+    
+    "$INQUISTR_BIN" benchmark "$OUT_FILE" \
+      --bed "$REGION_FILE" \
+      --max-locus "$MAX_LOCUS" \
+      --plot "$PLOT_FILE" \
+      > "$BENCHMARK_FILE"
+    echo "  -> Wrote: $BENCHMARK_FILE and $PLOT_FILE"
+  else
+    echo "[minlen=$MINLEN] Benchmark output exists: $BENCHMARK_FILE"
   fi
-  
-  "$INQUISTR_BIN" benchmark "$OUT_FILE" \
-    --bed "$REGION_FILE" \
-    --max-locus "$MAX_LOCUS" \
-    --plot "$PLOT_FILE" \
-    > "$BENCHMARK_FILE"
-  echo "  -> Wrote: $BENCHMARK_FILE and $PLOT_FILE"
   
   # Extract metrics from benchmark output and append to results table
   if [ -f "$BENCHMARK_FILE" ]; then
     LOCI=$(grep -oP 'LOCI_ASSESSED:\s*\K[0-9]+' "$BENCHMARK_FILE" || echo "N/A")
-    PEARSON_R=$(grep -oP 'PEARSON_R:\s*\K[0-9.-]+' "$BENCHMARK_FILE" || echo "N/A")
-    R_SQUARED=$(grep -oP 'R_SQUARED:\s*\K[0-9.]+' "$BENCHMARK_FILE" || echo "N/A")
-    echo -e "$MINLEN\t$LOCI\t$PEARSON_R\t$R_SQUARED" >> "$RESULTS_TABLE"
+    ZERO_PAIRS=$(grep -oP 'ZERO_ZERO_PAIRS:\s*\K[0-9]+' "$BENCHMARK_FILE" || echo "N/A")
+    NONZERO=$(grep -oP 'NONZERO_LOCI:\s*\K[0-9]+' "$BENCHMARK_FILE" || echo "N/A")
+    R_ALL=$(grep -oP 'PEARSON_R_ALL:\s*\K[0-9.-]+' "$BENCHMARK_FILE" || echo "N/A")
+    R2_ALL=$(grep -oP 'R_SQUARED_ALL:\s*\K[0-9.]+' "$BENCHMARK_FILE" || echo "N/A")
+    R_NONZERO=$(grep -oP 'PEARSON_R_NONZERO:\s*\K[0-9.-]+' "$BENCHMARK_FILE" || echo "N/A")
+    R2_NONZERO=$(grep -oP 'R_SQUARED_NONZERO:\s*\K[0-9.]+' "$BENCHMARK_FILE" || echo "N/A")
+    echo -e "$MINLEN\t$LOCI\t$ZERO_PAIRS\t$NONZERO\t$R_ALL\t$R2_ALL\t$R_NONZERO\t$R2_NONZERO" >> "$RESULTS_TABLE"
   fi
 done
 
