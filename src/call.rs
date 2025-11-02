@@ -104,13 +104,16 @@ pub fn genotype_repeats(
     let total_loci = all_repeats.len();
     let batches = create_batches(all_repeats, batch_size_kb * 1000); // Convert kb to basepair
 
-    // Setup progress bar
+    // Setup progress bar with smoothed ETA
     let pb = indicatif::ProgressBar::new(total_loci as u64);
     pb.set_style(
         indicatif::ProgressStyle::default_bar()
             .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} loci ({eta})")
             .expect("Failed to set progress bar template")
     );
+    // Enable steady tick for smoothed ETA calculation (updates every 100ms)
+    // This makes the time estimate converge to accuracy rather than jumping around
+    pb.enable_steady_tick(std::time::Duration::from_millis(100));
 
     // Process batches using producer-consumer pattern with configurable worker count
     let results: Vec<Vec<Genotype>> = if threads > 1 {
