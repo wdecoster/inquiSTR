@@ -599,10 +599,7 @@ pub fn benchmark(
             mode, r_squared_all
         )
     } else {
-        format!(
-            "inquiSTR vs Truth Genotypes (Mode: {}, R² = {:.4})",
-            mode, r_squared_all
-        )
+        format!("inquiSTR vs Truth Genotypes (Mode: {}, R² = {:.4})", mode, r_squared_all)
     };
 
     let layout = Layout::new()
