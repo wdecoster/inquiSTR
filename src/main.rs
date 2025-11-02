@@ -323,6 +323,10 @@ enum Commands {
         /// Maximum locus size in bp to include in benchmark (filters out large intervals from truth data)
         #[clap(long, value_parser)]
         max_locus: Option<u32>,
+
+        /// Exclude zero-zero pairs (unchanged alleles) from correlation and plot
+        #[clap(long)]
+        nonzero: bool,
     },
     /// Clean the index cache directory (hidden command)
     #[clap(hide = true)]
@@ -458,6 +462,7 @@ fn main() {
             tier1,
             diff_out,
             max_locus,
+            nonzero,
         } => {
             benchmark::benchmark(
                 inquistr,
@@ -469,6 +474,7 @@ fn main() {
                 tier1,
                 diff_out,
                 max_locus,
+                nonzero,
             );
         }
         Commands::CleanCache { dry_run, all, max_age_days } => {

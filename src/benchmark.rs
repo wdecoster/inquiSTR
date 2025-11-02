@@ -298,6 +298,7 @@ pub fn benchmark(
     tier1_only: bool,
     diff_out: Option<PathBuf>,
     max_locus: Option<u32>,
+    nonzero: bool,
 ) {
     // Validate that exactly one truth file is provided
     match (&vcf_file, &bed_file) {
@@ -373,6 +374,7 @@ pub fn benchmark(
     let mut nan_count = 0;
     let mut matched_loci = Vec::new();
     let mut matched_tier2_only = 0; // Track inquiSTR loci that only match Tier2 variants
+    let mut zero_zero_filtered = 0; // Track zero-zero pairs filtered out by --nonzero flag
 
     for (key, inquistr_record) in &inquistr_records {
         if let Some(truth_record) = truth_records_filtered.get(key) {
@@ -384,6 +386,12 @@ pub fn benchmark(
                 let truth_alleles = vec![truth_record.h1, truth_record.h2];
 
                 if let Some(truth_value) = select_allele(&truth_alleles, &mode) {
+                    // Skip zero-zero pairs if --nonzero flag is set
+                    if nonzero && inquistr_value == 0.0 && truth_value == 0.0 {
+                        zero_zero_filtered += 1;
+                        continue;
+                    }
+
                     inquistr_values.push(inquistr_value);
                     truth_values.push(truth_value);
                     loci_info.push((
@@ -417,6 +425,9 @@ pub fn benchmark(
     }
     println!("  Loci found in truth data only: {}", truth_only);
     println!("  Loci with NaN in inquiSTR (excluded): {}", nan_count);
+    if nonzero && zero_zero_filtered > 0 {
+        println!("  Zero-zero pairs filtered out (--nonzero): {}", zero_zero_filtered);
+    }
     println!("\n  Loci successfully matched and assessed: {} ✓", matched_count);
     println!("===============================\n");
 
@@ -425,44 +436,67 @@ pub fn benchmark(
         std::process::exit(1);
     }
 
-    // Calculate correlation for all loci
-    let correlation_all = pearson_correlation(&inquistr_values, &truth_values);
-    let r_squared_all = correlation_all * correlation_all;
-
-    // Calculate correlation excluding zero-zero pairs (unchanged alleles)
-    let mut inquistr_nonzero = Vec::new();
-    let mut truth_nonzero = Vec::new();
-    let mut zero_zero_count = 0;
-
-    for (&inq, &truth) in inquistr_values.iter().zip(truth_values.iter()) {
-        if inq == 0.0 && truth == 0.0 {
-            zero_zero_count += 1;
-        } else {
-            inquistr_nonzero.push(inq);
-            truth_nonzero.push(truth);
-        }
-    }
-
-    let correlation_nonzero = if !inquistr_nonzero.is_empty() {
-        pearson_correlation(&inquistr_nonzero, &truth_nonzero)
+    // Calculate correlation - behavior depends on --nonzero flag
+    let (correlation_all, r_squared_all, zero_zero_count) = if nonzero {
+        // When --nonzero is used, data is already filtered, so just calculate correlation
+        let corr = pearson_correlation(&inquistr_values, &truth_values);
+        (corr, corr * corr, zero_zero_filtered)
     } else {
-        f64::NAN
+        // Calculate both all and nonzero correlations for comparison
+        let corr_all = pearson_correlation(&inquistr_values, &truth_values);
+        let r2_all = corr_all * corr_all;
+
+        // Count zero-zero pairs in the data
+        let zero_count = inquistr_values
+            .iter()
+            .zip(truth_values.iter())
+            .filter(|(&inq, &truth)| inq == 0.0 && truth == 0.0)
+            .count();
+
+        (corr_all, r2_all, zero_count)
     };
-    let r_squared_nonzero = correlation_nonzero * correlation_nonzero;
+
+    // For nonzero mode, also calculate what correlation would have been with zeros
+    let (correlation_nonzero, r_squared_nonzero, nonzero_count) = if !nonzero {
+        let mut inquistr_nonzero = Vec::new();
+        let mut truth_nonzero = Vec::new();
+
+        for (&inq, &truth) in inquistr_values.iter().zip(truth_values.iter()) {
+            if !(inq == 0.0 && truth == 0.0) {
+                inquistr_nonzero.push(inq);
+                truth_nonzero.push(truth);
+            }
+        }
+
+        let corr = if !inquistr_nonzero.is_empty() {
+            pearson_correlation(&inquistr_nonzero, &truth_nonzero)
+        } else {
+            f64::NAN
+        };
+        (corr, corr * corr, inquistr_nonzero.len())
+    } else {
+        // In nonzero mode, the "nonzero" values are just the main values
+        (correlation_all, r_squared_all, matched_count)
+    };
 
     println!("\n=== Correlation Analysis ===");
-    println!(
-        "All loci (n={}): R={:.4}, R²={:.4}",
-        matched_count, correlation_all, r_squared_all
-    );
-    if zero_zero_count > 0 {
-        println!("  - Including {} zero-zero pairs (unchanged alleles)", zero_zero_count);
+    if nonzero {
         println!(
-            "Excluding zeros (n={}): R={:.4}, R²={:.4}",
-            inquistr_nonzero.len(),
-            correlation_nonzero,
-            r_squared_nonzero
+            "Nonzero loci only (n={}, {} zero-zero pairs excluded): R={:.4}, R²={:.4}",
+            matched_count, zero_zero_count, correlation_all, r_squared_all
         );
+    } else {
+        println!(
+            "All loci (n={}): R={:.4}, R²={:.4}",
+            matched_count, correlation_all, r_squared_all
+        );
+        if zero_zero_count > 0 {
+            println!("  - Including {} zero-zero pairs (unchanged alleles)", zero_zero_count);
+            println!(
+                "Excluding zeros (n={}): R={:.4}, R²={:.4}",
+                nonzero_count, correlation_nonzero, r_squared_nonzero
+            );
+        }
     }
     println!("============================");
 
@@ -559,11 +593,20 @@ pub fn benchmark(
         .text_array(plot_hover_text)
         .hover_template("%{text}<extra></extra>");
 
-    let layout = Layout::new()
-        .title(Title::with_text(format!(
+    let title_text = if nonzero {
+        format!(
+            "inquiSTR vs Truth Genotypes (Mode: {}, Nonzero only, R² = {:.4})",
+            mode, r_squared_all
+        )
+    } else {
+        format!(
             "inquiSTR vs Truth Genotypes (Mode: {}, R² = {:.4})",
             mode, r_squared_all
-        )))
+        )
+    };
+
+    let layout = Layout::new()
+        .title(Title::with_text(title_text))
         .x_axis(
             Axis::new()
                 .title(Title::with_text("inquiSTR genotypes"))
@@ -596,12 +639,20 @@ pub fn benchmark(
 
     // Output summary in parseable format for scripting
     println!("\n=== BENCHMARK SUMMARY ===");
-    println!("LOCI_ASSESSED: {}", matched_count);
-    println!("ZERO_ZERO_PAIRS: {}", zero_zero_count);
-    println!("NONZERO_LOCI: {}", inquistr_nonzero.len());
-    println!("PEARSON_R_ALL: {:.6}", correlation_all);
-    println!("R_SQUARED_ALL: {:.6}", r_squared_all);
-    println!("PEARSON_R_NONZERO: {:.6}", correlation_nonzero);
-    println!("R_SQUARED_NONZERO: {:.6}", r_squared_nonzero);
+    if nonzero {
+        println!("NONZERO_MODE: true");
+        println!("LOCI_ASSESSED: {}", matched_count);
+        println!("ZERO_ZERO_PAIRS_EXCLUDED: {}", zero_zero_count);
+        println!("PEARSON_R: {:.6}", correlation_all);
+        println!("R_SQUARED: {:.6}", r_squared_all);
+    } else {
+        println!("LOCI_ASSESSED: {}", matched_count);
+        println!("ZERO_ZERO_PAIRS: {}", zero_zero_count);
+        println!("NONZERO_LOCI: {}", nonzero_count);
+        println!("PEARSON_R_ALL: {:.6}", correlation_all);
+        println!("R_SQUARED_ALL: {:.6}", r_squared_all);
+        println!("PEARSON_R_NONZERO: {:.6}", correlation_nonzero);
+        println!("R_SQUARED_NONZERO: {:.6}", r_squared_nonzero);
+    }
     println!("=========================");
 }

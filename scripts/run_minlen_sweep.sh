@@ -43,7 +43,7 @@ echo "Output directory: $OUTDIR"
 
 # Create results file for tabular output
 RESULTS_TABLE="$OUTDIR/benchmark_results.tsv"
-echo -e "minlen\tloci_assessed\tzero_pairs\tnonzero_loci\tr_all\tr2_all\tr_nonzero\tr2_nonzero" > "$RESULTS_TABLE"
+echo -e "minlen\tloci_assessed\tzero_pairs_excluded\tr\tr2" > "$RESULTS_TABLE"
 
 for MINLEN in $(seq "$START_MINLEN" "$END_MINLEN"); do
   OUT_FILE="$OUTDIR/calls_minlen_${MINLEN}.inq"
@@ -81,35 +81,39 @@ for MINLEN in $(seq "$START_MINLEN" "$END_MINLEN"); do
   
   # Run inquiSTR benchmark if needed
   PLOT_FILE="$OUTDIR/plot_minlen_${MINLEN}.html"
+  DIFF_FILE="$OUTDIR/diff_minlen_${MINLEN}.tsv"
   if [ ! -s "$BENCHMARK_FILE" ]; then
     echo "[minlen=$MINLEN] Running inquiSTR benchmark..."
     if [ "${VERBOSE:-0}" != "0" ]; then
       echo "+ $INQUISTR_BIN benchmark \"$OUT_FILE\" \\
         --bed \"$REGION_FILE\" \\
         --max-locus \"$MAX_LOCUS\" \\
-        --plot \"$PLOT_FILE\" > \"$BENCHMARK_FILE\""
+        --plot \"$PLOT_FILE\" \\
+        --diff-out \"$DIFF_FILE\" \\
+        --tier1 \\
+        --nonzero > \"$BENCHMARK_FILE\""
     fi
     
     "$INQUISTR_BIN" benchmark "$OUT_FILE" \
       --bed "$REGION_FILE" \
       --max-locus "$MAX_LOCUS" \
       --plot "$PLOT_FILE" \
+      --diff-out "$DIFF_FILE" \
+      --tier1 \
+      --nonzero \
       > "$BENCHMARK_FILE"
-    echo "  -> Wrote: $BENCHMARK_FILE and $PLOT_FILE"
+    echo "  -> Wrote: $BENCHMARK_FILE, $PLOT_FILE, and $DIFF_FILE"
   else
     echo "[minlen=$MINLEN] Benchmark output exists: $BENCHMARK_FILE"
   fi
   
-  # Extract metrics from benchmark output and append to results table
+  # Extract metrics from benchmark output (nonzero mode format)
   if [ -f "$BENCHMARK_FILE" ]; then
     LOCI=$(grep -oP 'LOCI_ASSESSED:\s*\K[0-9]+' "$BENCHMARK_FILE" || echo "N/A")
-    ZERO_PAIRS=$(grep -oP 'ZERO_ZERO_PAIRS:\s*\K[0-9]+' "$BENCHMARK_FILE" || echo "N/A")
-    NONZERO=$(grep -oP 'NONZERO_LOCI:\s*\K[0-9]+' "$BENCHMARK_FILE" || echo "N/A")
-    R_ALL=$(grep -oP 'PEARSON_R_ALL:\s*\K[0-9.-]+' "$BENCHMARK_FILE" || echo "N/A")
-    R2_ALL=$(grep -oP 'R_SQUARED_ALL:\s*\K[0-9.]+' "$BENCHMARK_FILE" || echo "N/A")
-    R_NONZERO=$(grep -oP 'PEARSON_R_NONZERO:\s*\K[0-9.-]+' "$BENCHMARK_FILE" || echo "N/A")
-    R2_NONZERO=$(grep -oP 'R_SQUARED_NONZERO:\s*\K[0-9.]+' "$BENCHMARK_FILE" || echo "N/A")
-    echo -e "$MINLEN\t$LOCI\t$ZERO_PAIRS\t$NONZERO\t$R_ALL\t$R2_ALL\t$R_NONZERO\t$R2_NONZERO" >> "$RESULTS_TABLE"
+    ZERO_EXCLUDED=$(grep -oP 'ZERO_ZERO_PAIRS_EXCLUDED:\s*\K[0-9]+' "$BENCHMARK_FILE" || echo "N/A")
+    R=$(grep -oP 'PEARSON_R:\s*\K[0-9.-]+' "$BENCHMARK_FILE" || echo "N/A")
+    R2=$(grep -oP 'R_SQUARED:\s*\K[0-9.]+' "$BENCHMARK_FILE" || echo "N/A")
+    echo -e "$MINLEN\t$LOCI\t$ZERO_EXCLUDED\t$R\t$R2" >> "$RESULTS_TABLE"
   fi
 done
 
