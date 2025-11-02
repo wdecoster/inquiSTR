@@ -425,12 +425,46 @@ pub fn benchmark(
         std::process::exit(1);
     }
 
-    // Calculate correlation
-    let correlation = pearson_correlation(&inquistr_values, &truth_values);
-    let r_squared = correlation * correlation;
+    // Calculate correlation for all loci
+    let correlation_all = pearson_correlation(&inquistr_values, &truth_values);
+    let r_squared_all = correlation_all * correlation_all;
 
-    println!("Pearson correlation coefficient: {:.4}", correlation);
-    println!("R² value: {:.4}", r_squared);
+    // Calculate correlation excluding zero-zero pairs (unchanged alleles)
+    let mut inquistr_nonzero = Vec::new();
+    let mut truth_nonzero = Vec::new();
+    let mut zero_zero_count = 0;
+
+    for (&inq, &truth) in inquistr_values.iter().zip(truth_values.iter()) {
+        if inq == 0.0 && truth == 0.0 {
+            zero_zero_count += 1;
+        } else {
+            inquistr_nonzero.push(inq);
+            truth_nonzero.push(truth);
+        }
+    }
+
+    let correlation_nonzero = if !inquistr_nonzero.is_empty() {
+        pearson_correlation(&inquistr_nonzero, &truth_nonzero)
+    } else {
+        f64::NAN
+    };
+    let r_squared_nonzero = correlation_nonzero * correlation_nonzero;
+
+    println!("\n=== Correlation Analysis ===");
+    println!(
+        "All loci (n={}): R={:.4}, R²={:.4}",
+        matched_count, correlation_all, r_squared_all
+    );
+    if zero_zero_count > 0 {
+        println!("  - Including {} zero-zero pairs (unchanged alleles)", zero_zero_count);
+        println!(
+            "Excluding zeros (n={}): R={:.4}, R²={:.4}",
+            inquistr_nonzero.len(),
+            correlation_nonzero,
+            r_squared_nonzero
+        );
+    }
+    println!("============================");
 
     // Output top 100 loci with largest differences if requested
     if let Some(diff_out_path) = diff_out {
@@ -528,7 +562,7 @@ pub fn benchmark(
     let layout = Layout::new()
         .title(Title::with_text(format!(
             "inquiSTR vs Truth Genotypes (Mode: {}, R² = {:.4})",
-            mode, r_squared
+            mode, r_squared_all
         )))
         .x_axis(
             Axis::new()
@@ -563,7 +597,11 @@ pub fn benchmark(
     // Output summary in parseable format for scripting
     println!("\n=== BENCHMARK SUMMARY ===");
     println!("LOCI_ASSESSED: {}", matched_count);
-    println!("PEARSON_R: {:.6}", correlation);
-    println!("R_SQUARED: {:.6}", r_squared);
+    println!("ZERO_ZERO_PAIRS: {}", zero_zero_count);
+    println!("NONZERO_LOCI: {}", inquistr_nonzero.len());
+    println!("PEARSON_R_ALL: {:.6}", correlation_all);
+    println!("R_SQUARED_ALL: {:.6}", r_squared_all);
+    println!("PEARSON_R_NONZERO: {:.6}", correlation_nonzero);
+    println!("R_SQUARED_NONZERO: {:.6}", r_squared_nonzero);
     println!("=========================");
 }
