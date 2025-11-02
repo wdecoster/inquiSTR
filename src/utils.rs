@@ -26,7 +26,7 @@ pub fn reader(filename: &str) -> BufReader<Box<dyn Read>> {
     if filename.ends_with(".gz") && is_bgzip_file(filename) {
         // Handle bgzip files using noodles-bgzf
         let file = File::open(filename).expect("Problem opening bgzip file");
-        let bgzf_reader = bgzf::Reader::new(file);
+        let bgzf_reader = bgzf::io::Reader::new(file);
         BufReader::new(Box::new(bgzf_reader) as Box<dyn Read>)
     } else if filename.ends_with(".gz") {
         // Handle regular gzip files
