@@ -473,10 +473,9 @@ mod tests {
                 .build()
                 .expect("Failed to build HTTP client");
 
-            let response = client
-                .head(url)
-                .send()
-                .unwrap_or_else(|e| panic!("Failed to connect to {} ({}): {}", preset_name, url, e));
+            let response = client.head(url).send().unwrap_or_else(|e| {
+                panic!("Failed to connect to {} ({}): {}", preset_name, url, e)
+            });
 
             assert!(
                 response.status().is_success(),
