@@ -40,7 +40,7 @@ itertools = "0.14.0"
 plotly = "0.13.5"
 linfa-clustering = "0.8.0"
 linfa = "0.8.0"
-ndarray = "0.16.1"
+ndarray = "0.17.1"
 dbscan = "0.3.1"
 url = "2.5.7"
 hts-sys = "2.2.0"
@@ -49,7 +49,7 @@ regex = "1.12.2"
 smallvec = "1.13.2"
 
 [dev-dependencies]
-ctor = "0.6.0"
+ctor = "0.6.1"
 
 # Optimization profiles
 [profile.release]
