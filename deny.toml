@@ -12,6 +12,7 @@ allow = [
     "ISC",
     "Unicode-3.0",  # Unicode License v3 - used by ICU/Unicode crates
     "Zlib",         # zlib License - used by foldhash crate
+    "MPL-2.0",      # Mozilla Public License 2.0 - used by option-ext crate
 ]
 
 # Confidence threshold for detecting licenses
@@ -37,10 +38,8 @@ skip = [
     { name = "rustc-hash", reason = "Bindgen vs other crates use different versions" },
     { name = "wasi", reason = "WASI versions for different platform targets" },
     { name = "getrandom", reason = "Random number generation, version compatibility" },
-    { name = "approx", reason = "Math libraries use different approximation versions" },
     { name = "derive-new", reason = "Derive macro versions for different ecosystems" },
     { name = "hashbrown", reason = "HashMap implementation versions" },
-    { name = "indexmap", reason = "Ordered map versions for different ecosystems" },
     { name = "itertools", reason = "Iterator utilities, ecosystem compatibility" },
     { name = "ndarray", reason = "Linear algebra, version compatibility" },
     { name = "noisy_float", reason = "Floating point handling versions" },
@@ -78,4 +77,6 @@ unknown-git = "warn"
 unknown-registry = "warn"
 
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
-allow-git = []
+allow-git = [
+    "https://github.com/wdecoster/rust-htslib.git",  # Fork with custom modifications
+]
