@@ -291,15 +291,8 @@ fn test_region() {
             pathogenic: false,
             max_locus: None,
         },
-        GenotypeConfig {
-            minlen: 5,
-            support: 3,
-            unphased: true,
-        },
-        ProcessingConfig {
-            threads: 4,
-            batch_size_kb: 50,
-        },
+        GenotypeConfig { minlen: 5, support: 3, unphased: true },
+        ProcessingConfig { threads: 4, batch_size_kb: 50 },
         Some("sample".to_string()),
         None,
     );
@@ -340,15 +333,8 @@ fn test_region_bed() {
             pathogenic: false,
             max_locus: None,
         },
-        GenotypeConfig {
-            minlen: 5,
-            support: 3,
-            unphased: true,
-        },
-        ProcessingConfig {
-            threads: 4,
-            batch_size_kb: 50,
-        },
+        GenotypeConfig { minlen: 5, support: 3, unphased: true },
+        ProcessingConfig { threads: 4, batch_size_kb: 50 },
         Some("sample".to_string()),
         None,
     );
@@ -363,15 +349,8 @@ fn test_unphased() {
             pathogenic: false,
             max_locus: None,
         },
-        GenotypeConfig {
-            minlen: 5,
-            support: 3,
-            unphased: true,
-        },
-        ProcessingConfig {
-            threads: 4,
-            batch_size_kb: 50,
-        },
+        GenotypeConfig { minlen: 5, support: 3, unphased: true },
+        ProcessingConfig { threads: 4, batch_size_kb: 50 },
         Some("sample".to_string()),
         None,
     );
@@ -403,15 +382,8 @@ fn test_phasing_validation_triggers() {
             pathogenic: false,
             max_locus: None,
         },
-        GenotypeConfig {
-            minlen: 5,
-            support: 3,
-            unphased: true,
-        },
-        ProcessingConfig {
-            threads: 1,
-            batch_size_kb: 50,
-        },
+        GenotypeConfig { minlen: 5, support: 3, unphased: true },
+        ProcessingConfig { threads: 1, batch_size_kb: 50 },
         Some("sample".to_string()),
         None,
     );
@@ -438,15 +410,8 @@ fn test_nan_genotype_for_unphased_loci() {
             pathogenic: false,
             max_locus: None,
         },
-        GenotypeConfig {
-            minlen: 5,
-            support: 3,
-            unphased: true,
-        },
-        ProcessingConfig {
-            threads: 1,
-            batch_size_kb: 50,
-        },
+        GenotypeConfig { minlen: 5, support: 3, unphased: true },
+        ProcessingConfig { threads: 1, batch_size_kb: 50 },
         Some("test_sample".to_string()),
         None,
     );

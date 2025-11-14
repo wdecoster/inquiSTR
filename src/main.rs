@@ -401,21 +401,9 @@ fn main() {
             batch_size,
         } => call::genotype_repeats(
             bam,
-            call::TargetConfig {
-                region,
-                region_file,
-                pathogenic,
-                max_locus,
-            },
-            call::GenotypeConfig {
-                minlen,
-                support,
-                unphased,
-            },
-            call::ProcessingConfig {
-                threads,
-                batch_size_kb: batch_size,
-            },
+            call::TargetConfig { region, region_file, pathogenic, max_locus },
+            call::GenotypeConfig { minlen, support, unphased },
+            call::ProcessingConfig { threads, batch_size_kb: batch_size },
             sample_name,
             reference,
         ),
