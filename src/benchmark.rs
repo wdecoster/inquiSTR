@@ -288,6 +288,7 @@ fn pearson_correlation(x: &[f64], y: &[f64]) -> f64 {
 }
 
 /// Main benchmark function
+#[allow(clippy::too_many_arguments)]
 pub fn benchmark(
     inquistr_file: PathBuf,
     vcf_file: Option<PathBuf>,
