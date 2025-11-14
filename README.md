@@ -18,6 +18,7 @@ A toolkit for lightning-fast Short Tandem Repeat (STR) length genotyping and dow
   - [Using Cargo](#using-cargo)
 - [Usage](#usage)
   - [inquiSTR call - STR Genotyping](#inquistr-call---str-genotyping)
+  - [inquiSTR batch - Batch Sample Processing](#inquistr-batch---batch-sample-processing)
   - [inquiSTR combine - Multi-sample Analysis](#inquistr-combine---multi-sample-analysis)
   - [inquiSTR query - Genotype Lookup](#inquistr-query---genotype-lookup)
   - [inquiSTR outlier - Outlier Detection](#inquistr-outlier---outlier-detection)
@@ -133,6 +134,7 @@ Usage: inquiSTR <COMMAND>
 
 Commands:
   call         Call lengths
+  batch        Process multiple samples in batch and combine results
   combine      Combine STR calls or kmer frequencies from multiple samples to a TSV
   outlier      Find outliers from combined STR or kmer data
   query        Lookup genotypes and display
@@ -263,6 +265,74 @@ inquiSTR automatically handles remote BAM/CRAM files with index caching:
 - **User control**: Set `INQUISTR_NO_CACHE=1` to disable caching for one-time analyses
 
 See [INDEX_CACHING.md](INDEX_CACHING.md) for detailed configuration options.
+
+### `inquiSTR batch` - Batch Sample Processing
+
+Process multiple samples in batch and automatically combine results. This is the recommended approach for cohort studies, eliminating the need to manually run `inquiSTR call` followed by `inquiSTR combine`.
+
+```text
+Usage: inquiSTR batch [OPTIONS] --output <OUTPUT> <MANIFEST>
+
+Arguments:
+  <MANIFEST>  TSV manifest file with bam_path (required) and sample_name (optional) columns
+
+Options:
+  -o, --output <OUTPUT>             Output file for combined results
+  -r, --region <REGION>             region string to genotype expansion in
+  -R, --region-file <REGION_FILE>   Bed file with region(s) to genotype expansion(s) in
+      --preset <PRESET>             Use a predefined TR catalog (pathogenic, adotto, or trexplorer)
+  -m, --minlen <MINLEN>             minimal length of insertion/deletion operation [default: 5]
+  -s, --support <SUPPORT>           minimal number of supporting reads [default: 3]
+  -t, --threads <THREADS>           Number of parallel threads to use (per sample) [default: 1]
+  -u, --unphased                    If reads have to be considered unphased
+      --reference <REFERENCE>       reference fasta for cram decoding (applies to all samples)
+      --max-locus <MAX_LOCUS>       maximum locus size to consider
+      --batch-size <BATCH_SIZE>     Batch size in KB for grouping nearby STR targets [default: 50]
+      --save-individual <DIR>       Save individual sample files to this directory (optional)
+      --tmpdir <TMPDIR>             Temporary directory for intermediate files
+  -h, --help                        Print help
+```
+
+**Manifest File Format:**
+
+The manifest file is a tab-separated values (TSV) file with a header row:
+
+```tsv
+bam_path    sample_name
+/path/to/sample1.bam    Patient01
+/path/to/sample2.bam    Patient02
+/path/to/sample3.cram    Control01
+```
+
+- **bam_path** (required): Path to BAM/CRAM file (can be local or remote URL)
+- **sample_name** (optional): Custom sample name. If omitted, extracted from BAM filename
+
+**Examples:**
+
+```bash
+# Basic batch processing with pathogenic STRs
+inquiSTR batch samples.tsv --preset pathogenic --output cohort_results.tsv
+
+# Batch processing with custom regions and save individual files
+inquiSTR batch samples.tsv -R regions.bed --output combined.tsv --save-individual results/
+
+# Unphased data with CRAM files
+inquiSTR batch samples.tsv --preset pathogenic --unphased --reference genome.fa --output results.tsv
+
+# High-performance setup with multiple threads per sample
+inquiSTR batch samples.tsv -R regions.bed --threads 8 --output cohort.tsv
+
+# Use custom temporary directory
+inquiSTR batch samples.tsv --preset adotto --tmpdir /scratch/tmp --output results.tsv
+```
+
+**Key Features:**
+
+- **Sequential processing**: Processes samples one at a time to maximize per-sample parallelization
+- **Automatic cleanup**: Temporary files are cleaned up unless `--save-individual` is specified
+- **Error handling**: Failed samples are skipped with detailed error logging; successful samples are still combined
+- **Progress tracking**: Visual progress bar shows which sample is currently being processed
+- **Flexible temp storage**: Use `--tmpdir`, `$TMPDIR` environment variable, or current directory for temporary files
 
 ### `inquiSTR combine` - Multi-sample Analysis
 

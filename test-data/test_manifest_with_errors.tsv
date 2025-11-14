@@ -1,0 +1,4 @@
+bam_path	sample_name
+test-data/small-test.bam	good_sample
+test-data/nonexistent.bam	bad_sample
+test-data/small-test.bam	

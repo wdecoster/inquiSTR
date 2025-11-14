@@ -29,6 +29,7 @@ use std::path::PathBuf;
 pub mod assoc;
 pub mod bam_utils;
 pub mod batch;
+pub mod batch_process;
 pub mod benchmark;
 pub mod call;
 pub mod combine;
@@ -104,6 +105,65 @@ enum Commands {
         /// Batch size in KB for grouping nearby STR targets (default: 50). Larger values use more memory but reduce I/O operations. Use 20-35 for memory-constrained systems, 80-100 for high-performance setups.
         #[clap(long, value_parser, default_value_t = 50)]
         batch_size: u32,
+    },
+    /// Process multiple samples in batch and combine results
+    #[clap(arg_required_else_help = true)]
+    Batch {
+        /// TSV manifest file with bam_path (required) and sample_name (optional) columns
+        #[clap(value_parser, required = true)]
+        manifest: PathBuf,
+
+        /// Output file for combined results
+        #[clap(short, long, value_parser, required = true)]
+        output: PathBuf,
+
+        /// region string to genotype expansion in
+        #[clap(short, long, value_parser)]
+        region: Option<String>,
+
+        /// Bed file with region(s) to genotype expansion(s) in
+        #[clap(short = 'R', long, value_parser)]
+        region_file: Option<PathBuf>,
+
+        /// Use a predefined TR catalog (pathogenic, adotto, or trexplorer)
+        #[clap(long, value_parser)]
+        preset: Option<call::TRPreset>,
+
+        /// minimal length of insertion/deletion operation
+        #[clap(short, long, value_parser, default_value_t = 5)]
+        minlen: u32,
+
+        /// minimal number of supporting reads
+        #[clap(short, long, value_parser, default_value_t = 3)]
+        support: usize,
+
+        /// Number of parallel threads to use (per sample)
+        #[clap(short, long, value_parser, default_value_t = 1)]
+        threads: usize,
+
+        /// If reads have to be considered unphased
+        #[clap(short, long, value_parser)]
+        unphased: bool,
+
+        /// reference fasta for cram decoding (applies to all samples)
+        #[clap(long, value_parser)]
+        reference: Option<String>,
+
+        /// maximum locus size to consider (intervals larger than this will be filtered out)
+        #[clap(long, value_parser)]
+        max_locus: Option<u32>,
+
+        /// Batch size in KB for grouping nearby STR targets
+        #[clap(long, value_parser, default_value_t = 50)]
+        batch_size: u32,
+
+        /// Save individual sample files to this directory (optional)
+        #[clap(long, value_parser)]
+        save_individual: Option<PathBuf>,
+
+        /// Temporary directory for intermediate files (default: $TMPDIR or current directory)
+        #[clap(long, value_parser)]
+        tmpdir: Option<PathBuf>,
     },
     /// Combine lengths from multiple bams to a TSV, or combine kmer frequency files from unmapped
     Combine {
@@ -405,6 +465,31 @@ fn main() {
             call::GenotypeConfig { minlen, support, unphased },
             call::ProcessingConfig { threads, batch_size_kb: batch_size },
             sample_name,
+            reference,
+        ),
+        Commands::Batch {
+            manifest,
+            output,
+            region,
+            region_file,
+            preset,
+            minlen,
+            support,
+            threads,
+            unphased,
+            reference,
+            max_locus,
+            batch_size,
+            save_individual,
+            tmpdir,
+        } => batch_process::batch_process(
+            manifest,
+            output,
+            save_individual,
+            tmpdir,
+            call::TargetConfig { region, region_file, preset, max_locus },
+            call::GenotypeConfig { minlen, support, unphased },
+            call::ProcessingConfig { threads, batch_size_kb: batch_size },
             reference,
         ),
         Commands::Combine { calls, threads } => {
