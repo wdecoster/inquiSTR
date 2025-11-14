@@ -32,6 +32,7 @@ pub mod batch;
 pub mod benchmark;
 pub mod call;
 pub mod combine;
+pub mod filter;
 pub mod histogram;
 pub mod locus_search;
 pub mod metadata;
@@ -110,6 +111,33 @@ enum Commands {
         /// Number of threads to use for parallel processing
         #[clap(short = 't', long, value_parser, default_value_t = 1)]
         threads: usize,
+    },
+    /// Filter inquiSTR output by various criteria
+    #[clap(arg_required_else_help = true)]
+    Filter {
+        /// Input file from inquiSTR call or inquiSTR combine
+        #[clap(value_parser, required = true)]
+        input: PathBuf,
+
+        /// Minimum allele length (expansion/insertion only, ignores negative values)
+        #[clap(long, value_parser)]
+        minlen: Option<u32>,
+
+        /// Minimum absolute allele length change (uses absolute value)
+        #[clap(long, value_parser)]
+        minchange: Option<u32>,
+
+        /// BED file to filter by overlap (requires both files to be sorted)
+        #[clap(long, value_parser)]
+        bed: Option<PathBuf>,
+
+        /// Minimum call rate (fraction 0.0-1.0) for combined files
+        #[clap(long, value_parser)]
+        call_rate: Option<f64>,
+
+        /// Minimum coefficient of variation (only for combined files)
+        #[clap(long, value_parser)]
+        min_cv: Option<f64>,
     },
     /// Find outliers from TSV
     Outlier {
@@ -327,6 +355,10 @@ enum Commands {
         /// Exclude zero-zero pairs (unchanged alleles) from correlation and plot
         #[clap(long)]
         nonzero: bool,
+
+        /// Tolerance in bp for considering calls as matching (default: 5)
+        #[clap(long, value_parser, default_value_t = 5)]
+        tolerance: u32,
     },
     /// Clean the index cache directory (hidden command)
     #[clap(hide = true)]
@@ -377,6 +409,9 @@ fn main() {
         ),
         Commands::Combine { calls, threads } => {
             combine::combine(calls, threads);
+        }
+        Commands::Filter { input, minlen, minchange, bed, call_rate, min_cv } => {
+            filter::filter(input, minlen, minchange, bed, call_rate, min_cv);
         }
         Commands::Outlier { combined, minsize, zscore, method, sample, threads } => {
             if !combined.exists() {
@@ -463,6 +498,7 @@ fn main() {
             diff_out,
             max_locus,
             nonzero,
+            tolerance,
         } => {
             benchmark::benchmark(
                 inquistr,
@@ -475,6 +511,7 @@ fn main() {
                 diff_out,
                 max_locus,
                 nonzero,
+                tolerance,
             );
         }
         Commands::CleanCache { dry_run, all, max_age_days } => {
