@@ -450,4 +450,110 @@ mod tests {
         // Clean up
         std::fs::remove_file("test_temp_max_locus.bed").expect("Could not remove test file");
     }
+
+    /// Test that all preset catalog URLs are accessible
+    /// This test requires network access and is ignored by default
+    /// Run with: cargo test test_preset_urls -- --ignored
+    #[test]
+    #[ignore]
+    fn test_preset_urls_accessible() {
+        use crate::call::TRPreset;
+
+        let presets = vec![TRPreset::Pathogenic, TRPreset::Adotto, TRPreset::Trexplorer];
+
+        for preset in presets {
+            let (url, _cache_filename) = preset.metadata();
+            let preset_name = preset.display_name();
+
+            eprintln!("Testing URL for {}: {}", preset_name, url);
+
+            // Try to make a HEAD request first (faster and more polite)
+            let client = reqwest::blocking::Client::builder()
+                .timeout(std::time::Duration::from_secs(30))
+                .build()
+                .expect("Failed to build HTTP client");
+
+            let response = client
+                .head(url)
+                .send()
+                .unwrap_or_else(|e| panic!("Failed to connect to {} ({}): {}", preset_name, url, e));
+
+            assert!(
+                response.status().is_success(),
+                "{} URL ({}) returned status: {}",
+                preset_name,
+                url,
+                response.status()
+            );
+
+            eprintln!("✓ {} URL is accessible (status: {})", preset_name, response.status());
+        }
+    }
+
+    /// Test that preset catalog URLs return valid content
+    /// This is a more thorough test that actually downloads a small portion of data
+    /// Run with: cargo test test_preset_urls_content -- --ignored
+    #[test]
+    #[ignore]
+    fn test_preset_urls_content() {
+        use crate::call::TRPreset;
+
+        let presets = vec![TRPreset::Pathogenic, TRPreset::Adotto, TRPreset::Trexplorer];
+
+        for preset in presets {
+            let (url, cache_filename) = preset.metadata();
+            let preset_name = preset.display_name();
+            let is_gzipped = cache_filename.ends_with(".gz");
+
+            eprintln!("Testing content for {}: {}", preset_name, url);
+
+            let client = reqwest::blocking::Client::builder()
+                .timeout(std::time::Duration::from_secs(60))
+                .build()
+                .expect("Failed to build HTTP client");
+
+            let response = client
+                .get(url)
+                .send()
+                .unwrap_or_else(|e| panic!("Failed to download {} ({}): {}", preset_name, url, e));
+
+            assert!(
+                response.status().is_success(),
+                "{} URL ({}) returned status: {}",
+                preset_name,
+                url,
+                response.status()
+            );
+
+            let bytes = response
+                .bytes()
+                .unwrap_or_else(|e| panic!("Failed to read response for {}: {}", preset_name, e));
+
+            assert!(!bytes.is_empty(), "{} returned empty content", preset_name);
+
+            // Verify content type based on file format
+            if is_gzipped {
+                // Check for gzip magic bytes (0x1f 0x8b)
+                assert!(
+                    bytes.len() >= 2 && bytes[0] == 0x1f && bytes[1] == 0x8b,
+                    "{} does not appear to be a valid gzip file",
+                    preset_name
+                );
+                eprintln!("✓ {} content is valid gzip ({} bytes)", preset_name, bytes.len());
+            } else {
+                // For plain BED files, check if it looks like valid BED format
+                let content = String::from_utf8_lossy(&bytes[..std::cmp::min(1000, bytes.len())]);
+                // BED files should have tab-separated columns with chromosome names
+                assert!(
+                    content.lines().any(|line| {
+                        let fields: Vec<&str> = line.split('\t').collect();
+                        fields.len() >= 3 && !line.starts_with('#')
+                    }),
+                    "{} does not appear to be a valid BED file",
+                    preset_name
+                );
+                eprintln!("✓ {} content is valid BED format ({} bytes)", preset_name, bytes.len());
+            }
+        }
+    }
 }

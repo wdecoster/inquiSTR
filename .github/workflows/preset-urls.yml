@@ -1,0 +1,124 @@
+name: Preset URL Validation
+
+on:
+  # Run every Monday at 9:00 AM UTC
+  schedule:
+    - cron: '0 9 * * 1'
+  # Allow manual triggering
+  workflow_dispatch:
+  # Also run on changes to preset-related code
+  push:
+    paths:
+      - 'src/call.rs'
+      - 'src/repeats.rs'
+      - '.github/workflows/preset-urls.yml'
+  pull_request:
+    paths:
+      - 'src/call.rs'
+      - 'src/repeats.rs'
+      - '.github/workflows/preset-urls.yml'
+
+jobs:
+  check-urls:
+    name: Validate Preset Catalog URLs
+    runs-on: ubuntu-latest
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+      
+      - name: Cache cargo index
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/git
+          key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
+      
+      - name: Cache cargo build
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
+      
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            pkg-config \
+            clang \
+            libclang-dev \
+            zlib1g-dev \
+            libbz2-dev \
+            liblzma-dev \
+            libcurl4-openssl-dev \
+            libdeflate-dev \
+            libzstd-dev \
+            libssl-dev
+      
+      - name: Test URL accessibility (HEAD requests)
+        run: cargo test test_preset_urls_accessible -- --ignored --nocapture
+      
+      - name: Test URL content validity
+        run: cargo test test_preset_urls_content -- --ignored --nocapture
+      
+      - name: Create issue on failure
+        if: failure() && github.event_name == 'schedule'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const title = '🚨 Preset Catalog URL Validation Failed';
+            const body = `The weekly check of preset catalog URLs has failed.
+            
+            **Workflow Run:** ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+            **Date:** ${new Date().toISOString()}
+            
+            One or more preset catalog URLs may be inaccessible or returning invalid content:
+            - STRchive pathogenic STRs
+            - ADOTTO TR regions v1.2.1
+            - TR Explorer catalog
+            
+            Please investigate:
+            1. Check if the URLs have changed or moved
+            2. Verify the remote servers are operational
+            3. Update URLs in \`src/call.rs\` if needed
+            4. Test locally with: \`cargo test test_preset_urls -- --ignored\`
+            
+            ## Affected Code
+            - \`src/call.rs\`: TRPreset enum with URLs
+            - \`src/repeats.rs\`: Download and caching logic
+            `;
+            
+            // Check if an issue already exists
+            const issues = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'automated,preset-urls'
+            });
+            
+            if (issues.data.length === 0) {
+              // Create new issue
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: title,
+                body: body,
+                labels: ['bug', 'automated', 'preset-urls', 'url-validation']
+              });
+            } else {
+              // Add comment to existing issue
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issues.data[0].number,
+                body: `Another URL validation failure occurred.\n\n${body}`
+              });
+            }

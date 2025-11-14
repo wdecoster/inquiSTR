@@ -183,9 +183,9 @@ inquiSTR call sample.bam -r chr1:1000-1100
 inquiSTR call sample.bam -R regions.bed
 
 # Use a predefined TR catalog (automatically downloads and caches)
-inquiSTR call sample.bam --preset pathogenic    # STRchive disease-associated STRs
-inquiSTR call sample.bam --preset adotto        # ADOTTO TR regions v1.2.1
-inquiSTR call sample.bam --preset trexplorer    # Broad Institute TR Explorer catalog
+inquiSTR call sample.bam --preset pathogenic    # STRchive disease-associated STRs (75 loci)
+inquiSTR call sample.bam --preset adotto        # ADOTTO TR regions v1.2.1 (1.8M loci)
+inquiSTR call sample.bam --preset trexplorer    # Broad Institute TR Explorer catalog (4.9M loci)
 
 # Filter out large intervals (>10kb) that may span problematic regions
 inquiSTR call sample.bam -R regions.bed --max-locus 10000
@@ -207,9 +207,9 @@ inquiSTR call sample.bam -R regions.bed --batch-size 30 --threads 4
 
 The `--preset` option provides quick access to well-known TR catalogs without manually downloading BED files:
 
-- **pathogenic**: STRchive pathogenic disease-associated STRs - curated database of STRs linked to human diseases
-- **adotto**: ADOTTO TR regions catalog v1.2.1 - comprehensive TR regions from the ADOTTO project
-- **trexplorer**: Broad Institute TR Explorer catalog - genome-wide TR catalog covering 1-1000bp motifs
+- **pathogenic**: STRchive pathogenic disease-associated STRs - curated database of STRs linked to human diseases (**75 loci**)
+- **adotto**: ADOTTO TR regions catalog v1.2.1 - comprehensive TR regions from the ADOTTO project (**1,784,804 loci**)
+- **trexplorer**: Broad Institute TR Explorer catalog - genome-wide TR catalog covering 1-1000bp motifs (**4,863,041 loci**)
 
 **Note**: All preset catalogs are for the **GRCh38/hg38** reference genome.
 
@@ -812,7 +812,24 @@ make pre-push
 
 # Run all CI checks (formatting, linting, tests)
 make ci
+
+# Test preset catalog URLs (requires network access)
+cargo test test_preset_urls -- --ignored --nocapture
 ```
+
+#### URL Validation Tests
+
+The project includes automated tests to validate that preset catalog URLs remain accessible:
+
+```bash
+# Quick accessibility check (HEAD requests only)
+cargo test test_preset_urls_accessible -- --ignored --nocapture
+
+# Thorough content validation (downloads and validates format)
+cargo test test_preset_urls_content -- --ignored --nocapture
+```
+
+These tests are automatically run weekly via GitHub Actions (every Monday at 9:00 AM UTC) to ensure catalog URLs remain valid. If a URL becomes inaccessible, an issue is automatically created.
 
 #### Available Make Targets
 
