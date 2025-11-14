@@ -401,17 +401,23 @@ fn main() {
             batch_size,
         } => call::genotype_repeats(
             bam,
-            region,
-            region_file,
-            pathogenic,
-            minlen,
-            support,
-            threads,
-            unphased,
+            call::TargetConfig {
+                region,
+                region_file,
+                pathogenic,
+                max_locus,
+            },
+            call::GenotypeConfig {
+                minlen,
+                support,
+                unphased,
+            },
+            call::ProcessingConfig {
+                threads,
+                batch_size_kb: batch_size,
+            },
             sample_name,
             reference,
-            max_locus,
-            batch_size,
         ),
         Commands::Combine { calls, threads } => {
             combine::combine(calls, threads);

@@ -109,9 +109,7 @@ pub fn process_batch_worker(
     batch: Batch,
     bamp: &String,
     reference: &Option<String>,
-    minlen: u32,
-    support: usize,
-    unphased: bool,
+    genotype: crate::call::GenotypeConfig,
 ) -> Vec<Genotype> {
     // Serialize BAM reader creation and fetch to prevent concurrent htslib index operations
     // This prevents segfaults in cram_index_free when multiple threads open the same CRAM
@@ -120,7 +118,7 @@ pub fn process_batch_worker(
         let _guard = BAM_READER_LOCK.lock().unwrap();
 
         // Check if we need to validate phasing (only once, on first batch)
-        let need_validation = !unphased && !PHASING_VALIDATED.load(Ordering::Relaxed);
+        let need_validation = !genotype.unphased && !PHASING_VALIDATED.load(Ordering::Relaxed);
 
         if need_validation {
             PHASING_VALIDATED.store(true, Ordering::Relaxed);
@@ -194,7 +192,7 @@ pub fn process_batch_worker(
                     // Create ReadInfo with pre-computed STR calls for overlapping targets
                     let read_info = ReadInfo::from_record_with_targets(
                         (*record).clone(),
-                        minlen,
+                        genotype.minlen,
                         &overlapping_targets_buf,
                         &batch.repeats,
                     );
@@ -215,7 +213,7 @@ pub fn process_batch_worker(
 
     // Process each target in the batch using the lightweight read info
     for repeat in &batch.repeats {
-        let result = process_target_from_read_info(&batch_reads, repeat, minlen, support, unphased);
+        let result = process_target_from_read_info(&batch_reads, repeat, &genotype);
 
         match result {
             Ok((genotype, _had_hp_tags)) => {
@@ -352,14 +350,12 @@ impl ReadInfo {
 fn process_target_from_read_info(
     read_infos: &[ReadInfo],
     repeat: &RepeatInterval,
-    _minlen: u32, // minlen is now unused since calls are pre-computed
-    support: usize,
-    unphased: bool,
+    genotype: &crate::call::GenotypeConfig,
 ) -> Result<(Genotype, bool), String> {
     let start_ext = repeat.start.saturating_sub(10);
     let end_ext = repeat.end + 10;
 
-    if unphased {
+    if genotype.unphased {
         let mut calls = Vec::with_capacity(50);
 
         for read_info in read_infos {
@@ -374,8 +370,8 @@ fn process_target_from_read_info(
             }
         }
 
-        if calls.len() < support {
-            return Err(format!("Insufficient support: {} < {}", calls.len(), support));
+        if calls.len() < genotype.support {
+            return Err(format!("Insufficient support: {} < {}", calls.len(), genotype.support));
         }
 
         calls.sort_unstable_by_key(|call| call.value());
@@ -384,8 +380,8 @@ fn process_target_from_read_info(
         Ok((
             Genotype {
                 repeat: repeat.clone(),
-                phase1: median_str_length(hap1, support),
-                phase2: median_str_length(hap2, support),
+                phase1: median_str_length(hap1, genotype.support),
+                phase2: median_str_length(hap2, genotype.support),
             },
             false,
         )) // unphased mode never has HP tags
@@ -423,8 +419,8 @@ fn process_target_from_read_info(
         }
 
         let total_reads = phase1_calls.len() + phase2_calls.len() + unphased_calls.len();
-        if total_reads < support {
-            return Err(format!("Insufficient support: {total_reads} < {support}"));
+        if total_reads < genotype.support {
+            return Err(format!("Insufficient support: {total_reads} < {}", genotype.support));
         }
 
         phase1_calls.sort_unstable_by_key(|call| call.value());
@@ -437,8 +433,8 @@ fn process_target_from_read_info(
             Ok((
                 Genotype {
                     repeat: repeat.clone(),
-                    phase1: median_str_length(&phase1_calls, support),
-                    phase2: median_str_length(&phase2_calls, support),
+                    phase1: median_str_length(&phase1_calls, genotype.support),
+                    phase2: median_str_length(&phase2_calls, genotype.support),
                 },
                 found_hp_tags,
             ))
@@ -460,8 +456,8 @@ fn process_target_from_read_info(
                 Ok((
                     Genotype {
                         repeat: repeat.clone(),
-                        phase1: median_str_length(hap1, support),
-                        phase2: median_str_length(hap2, support),
+                        phase1: median_str_length(hap1, genotype.support),
+                        phase2: median_str_length(hap2, genotype.support),
                     },
                     found_hp_tags,
                 ))

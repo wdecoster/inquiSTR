@@ -1,5 +1,5 @@
 use bio::io::bed;
-use std::{collections::HashMap, fmt, path::PathBuf};
+use std::{collections::HashMap, fmt};
 
 use crate::bam_utils::get_chrom_lengths_from_bam_header;
 
@@ -274,25 +274,22 @@ impl RepeatInterval {
 
 /// Get targets from region string, region file, or pathogenic STRs
 pub fn get_targets(
-    region: Option<String>,
-    region_file: Option<PathBuf>,
-    pathogenic: bool,
+    targets: crate::call::TargetConfig,
     bam: &str,
-    max_locus: Option<u32>,
     reference: &Option<String>,
 ) -> RepeatIntervalIterator {
     let chrom_lengths = get_chrom_lengths_from_bam_header(bam.to_string(), reference);
-    match (&region, &region_file, pathogenic) {
+    match (&targets.region, &targets.region_file, targets.pathogenic) {
         // a region string
         (Some(region), None, false) => RepeatIntervalIterator::from_string(region, chrom_lengths),
         // a region file
         (None, Some(region_file), false) => RepeatIntervalIterator::from_bed(
             &region_file.to_string_lossy(),
             chrom_lengths,
-            max_locus,
+            targets.max_locus,
         ),
         // pathogenic STRs
-        (None, None, true) => RepeatIntervalIterator::pathogenic(chrom_lengths, max_locus),
+        (None, None, true) => RepeatIntervalIterator::pathogenic(chrom_lengths, targets.max_locus),
         // invalid input
         _ => {
             eprintln!(

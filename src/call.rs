@@ -9,7 +9,38 @@ use std::path::PathBuf;
 
 // Phasing validation now happens lazily on first batch via get_bam_reader_with_validation
 use crate::batch::{create_batches, process_batch_worker};
-use crate::repeats::{get_targets, RepeatInterval};
+use crate::repeats::{get_targets, RepeatInterval, RepeatIntervalIterator};
+
+/// Configuration for target selection (what STRs to genotype)
+#[derive(Clone)]
+pub struct TargetConfig {
+    pub region: Option<String>,
+    pub region_file: Option<PathBuf>,
+    pub pathogenic: bool,
+    pub max_locus: Option<u32>,
+}
+
+impl TargetConfig {
+    /// Get target intervals based on the configuration
+    pub fn get_targets(&self, bam: &str, reference: &Option<String>) -> RepeatIntervalIterator {
+        get_targets(self.clone(), bam, reference)
+    }
+}
+
+/// Configuration for genotyping parameters (how to call STRs)
+#[derive(Clone, Copy)]
+pub struct GenotypeConfig {
+    pub minlen: u32,
+    pub support: usize,
+    pub unphased: bool,
+}
+
+/// Configuration for processing (threads, batching, etc.)
+#[derive(Clone, Copy)]
+pub struct ProcessingConfig {
+    pub threads: usize,
+    pub batch_size_kb: u32,
+}
 
 // This struct keeps the genotype information and allows to compare them and thus sort them on chromosomal location
 pub struct Genotype {
@@ -70,40 +101,31 @@ impl Call {
 
 /// This function genotypes STRs, either from a region string or from a bed file
 /// For a bed file the genotyping is done in parallel
-/// The minlen argument indicates the smallest CIGAR operation that is considered
-/// The max_locus argument indicates the maximum BED interval to genotype
-#[allow(clippy::too_many_arguments)]
 pub fn genotype_repeats(
-    bamp: String,
-    region: Option<String>,
-    region_file: Option<PathBuf>,
-    pathogenic: bool,
-    minlen: u32,
-    support: usize,
-    threads: usize,
-    unphased: bool,
+    bam: String,
+    targets: TargetConfig,
+    genotype: GenotypeConfig,
+    processing: ProcessingConfig,
     sample_name: Option<String>,
     reference: Option<String>,
-    max_locus: Option<u32>,
-    batch_size_kb: u32,
 ) {
     // only test if path.is_file() if the file is local
-    if !PathBuf::from(&bamp).is_file()
-        && !bamp.starts_with("s3")
-        && !bamp.starts_with("https://")
-        && !bamp.starts_with("ftp://")
+    if !PathBuf::from(&bam).is_file()
+        && !bam.starts_with("s3")
+        && !bam.starts_with("https://")
+        && !bam.starts_with("ftp://")
     {
-        error!("ERROR: path to bam file {} is not valid!\n\n", &bamp);
+        error!("ERROR: path to bam file {} is not valid!\n\n", &bam);
         std::process::exit(1);
     };
 
-    let repeats = get_targets(region, region_file, pathogenic, &bamp, max_locus, &reference);
+    let repeats = targets.get_targets(&bam, &reference);
 
     // Unified batch-level producer-consumer approach for both single and multi-threaded
     // Batch size is configurable for performance optimization
     let all_repeats: Vec<RepeatInterval> = repeats.collect();
     let total_loci = all_repeats.len();
-    let batches = create_batches(all_repeats, batch_size_kb * 1000); // Convert kb to basepair
+    let batches = create_batches(all_repeats, processing.batch_size_kb * 1000); // Convert kb to basepair
 
     // Setup progress bar with smoothed ETA
     let pb = indicatif::ProgressBar::new(total_loci as u64);
@@ -117,10 +139,10 @@ pub fn genotype_repeats(
     pb.enable_steady_tick(std::time::Duration::from_millis(100));
 
     // Process batches using producer-consumer pattern with configurable worker count
-    let results: Vec<Vec<Genotype>> = if threads > 1 {
+    let results: Vec<Vec<Genotype>> = if processing.threads > 1 {
         // Multi-threaded: Process batches in parallel
         let thread_pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(threads)
+            .num_threads(processing.threads)
             .build()
             .expect("Failed to build thread pool");
 
@@ -129,8 +151,7 @@ pub fn genotype_repeats(
                 .into_par_iter()
                 .map(|batch| {
                     let batch_size = batch.repeats.len();
-                    let results =
-                        process_batch_worker(batch, &bamp, &reference, minlen, support, unphased);
+                    let results = process_batch_worker(batch, &bam, &reference, genotype);
                     pb.inc(batch_size as u64);
                     results
                 })
@@ -142,8 +163,7 @@ pub fn genotype_repeats(
             .into_iter()
             .map(|batch| {
                 let batch_size = batch.repeats.len();
-                let results =
-                    process_batch_worker(batch, &bamp, &reference, minlen, support, unphased);
+                let results = process_batch_worker(batch, &bam, &reference, genotype);
                 pb.inc(batch_size as u64);
                 results
             })
@@ -176,7 +196,7 @@ pub fn genotype_repeats(
     let stdout = io::stdout();
     let mut handle = io::BufWriter::new(stdout);
     // Use either the sample_name provided as command line argument or extract one from the path
-    let sample = sample_name.unwrap_or_else(|| extract_sample_name_from_path(&bamp));
+    let sample = sample_name.unwrap_or_else(|| extract_sample_name_from_path(&bam));
 
     let file_header = format!("chromosome\tbegin\tend\t{sample}_H1\t{sample}_H2");
     writeln!(handle, "{file_header}").expect("Failed writing the header.");
@@ -265,17 +285,23 @@ pub fn median_str_length(array: &[Call], support: usize) -> f64 {
 fn test_region() {
     genotype_repeats(
         String::from("test-data/small-test.bam"),
-        Some("chr7:154778571-154779363".to_string()),
-        None,
-        false, // No pathogenic mode for tests
-        5,
-        3,
-        4,
-        true, // Use unphased mode for test since test BAM likely doesn't have phasing
+        TargetConfig {
+            region: Some("chr7:154778571-154779363".to_string()),
+            region_file: None,
+            pathogenic: false,
+            max_locus: None,
+        },
+        GenotypeConfig {
+            minlen: 5,
+            support: 3,
+            unphased: true,
+        },
+        ProcessingConfig {
+            threads: 4,
+            batch_size_kb: 50,
+        },
         Some("sample".to_string()),
         None,
-        None, // No max_locus filter for tests
-        50,   // Default batch size for tests
     );
 }
 
@@ -284,17 +310,23 @@ fn test_region() {
 fn test_region_from_url() {
     genotype_repeats(
         String::from("https://ftp.1000genomes.ebi.ac.uk/vol1/ftp/data_collections/1KG_ONT_VIENNA/hg38/HG00096.hg38.cram"),
-        Some("chr7:154778571-154779363".to_string()),
-        None,
-        false, // No pathogenic mode for tests
-        5,
-        3,
-        4,
-        true, // Use unphased mode for test to avoid phasing validation issues
+        TargetConfig {
+            region: Some("chr7:154778571-154779363".to_string()),
+            region_file: None,
+            pathogenic: false,
+            max_locus: None,
+        },
+        GenotypeConfig {
+            minlen: 5,
+            support: 3,
+            unphased: true,
+        },
+        ProcessingConfig {
+            threads: 4,
+            batch_size_kb: 50,
+        },
         Some("sample".to_string()),
         Some(String::from("https://ftp.1000genomes.ebi.ac.uk/vol1/ftp/technical/reference/GRCh38_reference_genome/GRCh38_full_analysis_set_plus_decoy_hla.fa")),
-        None, // No max_locus filter for tests
-        50,   // Default batch size for tests
     );
 }
 
@@ -302,34 +334,46 @@ fn test_region_from_url() {
 fn test_region_bed() {
     genotype_repeats(
         String::from("test-data/small-test.bam"),
-        None,
-        Some(PathBuf::from("test-data/test.bed")),
-        false, // No pathogenic mode for tests
-        5,
-        3,
-        4,
-        true, // Use unphased mode for test
+        TargetConfig {
+            region: None,
+            region_file: Some(PathBuf::from("test-data/test.bed")),
+            pathogenic: false,
+            max_locus: None,
+        },
+        GenotypeConfig {
+            minlen: 5,
+            support: 3,
+            unphased: true,
+        },
+        ProcessingConfig {
+            threads: 4,
+            batch_size_kb: 50,
+        },
         Some("sample".to_string()),
         None,
-        None, // No max_locus filter for tests
-        50,   // Default batch size for tests
     );
 }
 #[test]
 fn test_unphased() {
     genotype_repeats(
         String::from("test-data/small-test.bam"),
-        None,
-        Some(PathBuf::from("test-data/test.bed")),
-        false, // No pathogenic mode for tests
-        5,
-        3,
-        4,
-        true,
+        TargetConfig {
+            region: None,
+            region_file: Some(PathBuf::from("test-data/test.bed")),
+            pathogenic: false,
+            max_locus: None,
+        },
+        GenotypeConfig {
+            minlen: 5,
+            support: 3,
+            unphased: true,
+        },
+        ProcessingConfig {
+            threads: 4,
+            batch_size_kb: 50,
+        },
         Some("sample".to_string()),
         None,
-        None, // No max_locus filter for tests
-        50,   // Default batch size for tests
     );
 }
 
@@ -353,17 +397,23 @@ fn test_phasing_validation_triggers() {
     // Since test-data/small-test.bam likely lacks HP tags, we use unphased mode:
     genotype_repeats(
         String::from("test-data/small-test.bam"),
-        Some("chr7:154778571-154779363".to_string()),
-        None,
-        false, // No pathogenic mode for tests
-        5,
-        3,
-        1,    // single-threaded
-        true, // unphased mode - required since test BAM lacks HP tags
+        TargetConfig {
+            region: Some("chr7:154778571-154779363".to_string()),
+            region_file: None,
+            pathogenic: false,
+            max_locus: None,
+        },
+        GenotypeConfig {
+            minlen: 5,
+            support: 3,
+            unphased: true,
+        },
+        ProcessingConfig {
+            threads: 1,
+            batch_size_kb: 50,
+        },
         Some("sample".to_string()),
         None,
-        None, // No max_locus filter for tests
-        50,   // Default batch size for tests
     );
 }
 
@@ -382,17 +432,23 @@ fn test_nan_genotype_for_unphased_loci() {
     // Test with small-test.bam which likely has no phased reads for this locus
     genotype_repeats(
         String::from("test-data/small-test.bam"),
-        None,
-        Some(std::path::PathBuf::from("test_temp_nan_fix.bed")),
-        false, // No pathogenic mode for tests
-        5,
-        3,
-        1,
-        true, // unphased mode - required since test BAM lacks HP tags
+        TargetConfig {
+            region: None,
+            region_file: Some(std::path::PathBuf::from("test_temp_nan_fix.bed")),
+            pathogenic: false,
+            max_locus: None,
+        },
+        GenotypeConfig {
+            minlen: 5,
+            support: 3,
+            unphased: true,
+        },
+        ProcessingConfig {
+            threads: 1,
+            batch_size_kb: 50,
+        },
         Some("test_sample".to_string()),
         None,
-        None, // No max_locus filter
-        50,   // Default batch size for tests
     );
 
     // Clean up
