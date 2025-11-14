@@ -77,6 +77,7 @@ pub fn genotype_repeats(
     bamp: String,
     region: Option<String>,
     region_file: Option<PathBuf>,
+    pathogenic: bool,
     minlen: u32,
     support: usize,
     threads: usize,
@@ -96,7 +97,7 @@ pub fn genotype_repeats(
         std::process::exit(1);
     };
 
-    let repeats = get_targets(region, region_file, &bamp, max_locus, &reference);
+    let repeats = get_targets(region, region_file, pathogenic, &bamp, max_locus, &reference);
 
     // Unified batch-level producer-consumer approach for both single and multi-threaded
     // Batch size is configurable for performance optimization
@@ -266,6 +267,7 @@ fn test_region() {
         String::from("test-data/small-test.bam"),
         Some("chr7:154778571-154779363".to_string()),
         None,
+        false, // No pathogenic mode for tests
         5,
         3,
         4,
@@ -284,6 +286,7 @@ fn test_region_from_url() {
         String::from("https://ftp.1000genomes.ebi.ac.uk/vol1/ftp/data_collections/1KG_ONT_VIENNA/hg38/HG00096.hg38.cram"),
         Some("chr7:154778571-154779363".to_string()),
         None,
+        false, // No pathogenic mode for tests
         5,
         3,
         4,
@@ -301,6 +304,7 @@ fn test_region_bed() {
         String::from("test-data/small-test.bam"),
         None,
         Some(PathBuf::from("test-data/test.bed")),
+        false, // No pathogenic mode for tests
         5,
         3,
         4,
@@ -317,6 +321,7 @@ fn test_unphased() {
         String::from("test-data/small-test.bam"),
         None,
         Some(PathBuf::from("test-data/test.bed")),
+        false, // No pathogenic mode for tests
         5,
         3,
         4,
@@ -350,6 +355,7 @@ fn test_phasing_validation_triggers() {
         String::from("test-data/small-test.bam"),
         Some("chr7:154778571-154779363".to_string()),
         None,
+        false, // No pathogenic mode for tests
         5,
         3,
         1,    // single-threaded
@@ -378,6 +384,7 @@ fn test_nan_genotype_for_unphased_loci() {
         String::from("test-data/small-test.bam"),
         None,
         Some(std::path::PathBuf::from("test_temp_nan_fix.bed")),
+        false, // No pathogenic mode for tests
         5,
         3,
         1,

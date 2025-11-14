@@ -69,6 +69,10 @@ enum Commands {
         #[clap(short = 'R', long, value_parser)]
         region_file: Option<PathBuf>,
 
+        /// Genotype the pathogenic STRs from STRchive
+        #[clap(long, value_parser)]
+        pathogenic: bool,
+
         /// minimal length of insertion/deletion operation
         #[clap(short, long, value_parser, default_value_t = 5)]
         minlen: u32,
@@ -386,6 +390,7 @@ fn main() {
             bam,
             region,
             region_file,
+            pathogenic,
             minlen,
             support,
             threads,
@@ -398,6 +403,7 @@ fn main() {
             bam,
             region,
             region_file,
+            pathogenic,
             minlen,
             support,
             threads,

@@ -47,6 +47,8 @@ hts-sys = "2.2.0"
 noodles-bgzf = "0.43.0"
 regex = "1.12.2"
 smallvec = "1.13.2"
+reqwest = { version = "0.12.15", features = ["blocking", "json"] }
+dirs = "6.0.0"
 
 [dev-dependencies]
 ctor = "0.6.1"
