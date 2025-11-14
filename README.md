@@ -338,6 +338,8 @@ inquiSTR batch samples.tsv --preset adotto --tmpdir /scratch/tmp --output result
 
 Combine data from multiple samples with `inquiSTR combine`. This command supports both STR call files (from `inquiSTR call`) and kmer frequency files (from `inquiSTR unmapped`), automatically detecting the input format.
 
+**Incremental Cohort Building:** You can add new samples to an existing combined file by providing both the combined file and new individual files. This enables efficient cohort expansion without reprocessing all samples.
+
 ```text
 Usage: inquiSTR combine [OPTIONS] <CALLS>...
 
@@ -355,6 +357,9 @@ Options:
 # Combine STR calls from multiple samples
 inquiSTR combine sample1.inq sample2.inq sample3.inq > str_combined.tsv
 
+# Add new samples to an existing combined file (incremental cohort building)
+inquiSTR combine str_combined.tsv sample4.inq sample5.inq > expanded_cohort.tsv
+
 # Combine kmer frequency files from unmapped analysis
 inquiSTR combine sample1_kmers.tsv sample2_kmers.tsv sample3_kmers.tsv > kmer_combined.tsv
 
@@ -364,6 +369,8 @@ inquiSTR combine *.inq > cohort_combined.tsv
 # Use multiple threads 
 inquiSTR combine *.inq --threads 8 > combined.tsv
 ```
+
+**Note:** When combining files, you can mix one combined file with any number of individual files. Multiple combined files cannot be combined together.
 
 ### `inquiSTR query` - Genotype Lookup
 
