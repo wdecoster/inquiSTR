@@ -1,5 +1,5 @@
+use clap::ValueEnum;
 use human_sort::compare as human_compare;
-
 use log::error;
 use rayon::prelude::*;
 use std::cmp::Ordering;
@@ -11,12 +11,62 @@ use std::path::PathBuf;
 use crate::batch::{create_batches, process_batch_worker};
 use crate::repeats::{get_targets, RepeatInterval, RepeatIntervalIterator};
 
+/// Predefined tandem repeat (TR) catalogs for genotyping
+///
+/// These presets allow quick access to well-known TR catalogs without manually
+/// downloading and specifying BED files. Downloaded catalogs are cached locally
+/// for 7 days to avoid repeated downloads.
+///
+/// # Adding new presets
+/// To add a new TR catalog preset:
+/// 1. Add a new variant to this enum with a descriptive doc comment
+/// 2. Add its metadata (URL, cache filename) to the `TRPreset::metadata()` method
+/// 3. Update tests if needed
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum TRPreset {
+    /// STRchive pathogenic disease-associated STRs
+    Pathogenic,
+    /// ADOTTO TR regions catalog v1.2.1
+    Adotto,
+    /// Broad Institute TR Explorer catalog (1-1000bp motifs)
+    Trexplorer,
+}
+
+impl TRPreset {
+    /// Get metadata for this preset (URL and cache filename)
+    pub fn metadata(&self) -> (&'static str, &'static str) {
+        match self {
+            TRPreset::Pathogenic => (
+                "https://raw.githubusercontent.com/dashnowlab/STRchive/refs/heads/main/data/catalogs/STRchive-disease-loci.hg38.longTR.bed",
+                "STRchive-disease-loci.hg38.TRGT.bed",
+            ),
+            TRPreset::Adotto => (
+                "https://zenodo.org/records/13987414/files/adotto_TRregions_v1.2.1.bed.gz",
+                "adotto_TRregions_v1.2.1.bed.gz",
+            ),
+            TRPreset::Trexplorer => (
+                "https://github.com/broadinstitute/tandem-repeat-catalog/releases/download/v1.0/repeat_catalog_v1.hg38.1_to_1000bp_motifs.bed.gz",
+                "repeat_catalog_v1.hg38.1_to_1000bp_motifs.bed.gz",
+            ),
+        }
+    }
+
+    /// Get a human-readable name for this preset
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            TRPreset::Pathogenic => "STRchive pathogenic STRs",
+            TRPreset::Adotto => "ADOTTO TR regions v1.2.1",
+            TRPreset::Trexplorer => "TR Explorer catalog (1-1000bp motifs)",
+        }
+    }
+}
+
 /// Configuration for target selection (what STRs to genotype)
 #[derive(Clone)]
 pub struct TargetConfig {
     pub region: Option<String>,
     pub region_file: Option<PathBuf>,
-    pub pathogenic: bool,
+    pub preset: Option<TRPreset>,
     pub max_locus: Option<u32>,
 }
 
@@ -288,7 +338,7 @@ fn test_region() {
         TargetConfig {
             region: Some("chr7:154778571-154779363".to_string()),
             region_file: None,
-            pathogenic: false,
+            preset: None,
             max_locus: None,
         },
         GenotypeConfig { minlen: 5, support: 3, unphased: true },
@@ -306,7 +356,7 @@ fn test_region_from_url() {
         TargetConfig {
             region: Some("chr7:154778571-154779363".to_string()),
             region_file: None,
-            pathogenic: false,
+            preset: None,
             max_locus: None,
         },
         GenotypeConfig {
@@ -330,7 +380,7 @@ fn test_region_bed() {
         TargetConfig {
             region: None,
             region_file: Some(PathBuf::from("test-data/test.bed")),
-            pathogenic: false,
+            preset: None,
             max_locus: None,
         },
         GenotypeConfig { minlen: 5, support: 3, unphased: true },
@@ -346,7 +396,7 @@ fn test_unphased() {
         TargetConfig {
             region: None,
             region_file: Some(PathBuf::from("test-data/test.bed")),
-            pathogenic: false,
+            preset: None,
             max_locus: None,
         },
         GenotypeConfig { minlen: 5, support: 3, unphased: true },
@@ -379,7 +429,7 @@ fn test_phasing_validation_triggers() {
         TargetConfig {
             region: Some("chr7:154778571-154779363".to_string()),
             region_file: None,
-            pathogenic: false,
+            preset: None,
             max_locus: None,
         },
         GenotypeConfig { minlen: 5, support: 3, unphased: true },
@@ -407,7 +457,7 @@ fn test_nan_genotype_for_unphased_loci() {
         TargetConfig {
             region: None,
             region_file: Some(std::path::PathBuf::from("test_temp_nan_fix.bed")),
-            pathogenic: false,
+            preset: None,
             max_locus: None,
         },
         GenotypeConfig { minlen: 5, support: 3, unphased: true },

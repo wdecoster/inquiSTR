@@ -161,6 +161,7 @@ Arguments:
 Options:
   -r, --region <REGION>            region string to genotype expansion in
   -R, --region-file <REGION_FILE>  Bed file with region(s) to genotype expansion(s) in
+      --preset <PRESET>            Use a predefined TR catalog: pathogenic, adotto, or trexplorer
   -m, --minlen <MINLEN>            minimal length of insertion/deletion operation [default: 5]
   -s, --support <SUPPORT>          minimal number of supporting reads [default: 3]
   -t, --threads <THREADS>          Number of parallel threads to use [default: 1]
@@ -181,6 +182,11 @@ inquiSTR call sample.bam -r chr1:1000-1100
 # Multiple regions from BED file
 inquiSTR call sample.bam -R regions.bed
 
+# Use a predefined TR catalog (automatically downloads and caches)
+inquiSTR call sample.bam --preset pathogenic    # STRchive disease-associated STRs
+inquiSTR call sample.bam --preset adotto        # ADOTTO TR regions v1.2.1
+inquiSTR call sample.bam --preset trexplorer    # Broad Institute TR Explorer catalog
+
 # Filter out large intervals (>10kb) that may span problematic regions
 inquiSTR call sample.bam -R regions.bed --max-locus 10000
 
@@ -196,6 +202,26 @@ inquiSTR call sample.bam -R regions.bed --unphased --sample-name "Sample123"
 # Custom batch size (in kb) and threads
 inquiSTR call sample.bam -R regions.bed --batch-size 30 --threads 4
 ```
+
+#### Predefined TR Catalogs
+
+The `--preset` option provides quick access to well-known TR catalogs without manually downloading BED files:
+
+- **pathogenic**: STRchive pathogenic disease-associated STRs - curated database of STRs linked to human diseases
+- **adotto**: ADOTTO TR regions catalog v1.2.1 - comprehensive TR regions from the ADOTTO project
+- **trexplorer**: Broad Institute TR Explorer catalog - genome-wide TR catalog covering 1-1000bp motifs
+
+**Note**: All preset catalogs are for the **GRCh38/hg38** reference genome.
+
+Catalogs are automatically downloaded on first use and cached locally for 7 days in `~/.cache/inquistr/`. If a download fails but a cached version exists (even if expired), inquiSTR will use the cached version with a warning.
+
+Adding new preset catalogs is straightforward - see the [developer documentation](src/call.rs) for details on extending the `TRPreset` enum.
+
+<!-- TODO: Add references for preset catalogs
+- STRchive: [citation needed]
+- ADOTTO: [citation needed]
+- TR Explorer: [citation needed]
+-->
 
 #### CRAM inputs: reference FASTA and FAI index
 

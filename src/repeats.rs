@@ -76,17 +76,32 @@ impl RepeatIntervalIterator {
         RepeatIntervalIterator { current_index: 0, data: data.clone(), num_intervals: data.len() }
     }
 
-    pub fn pathogenic(chrom_lengths: HashMap<String, u64>, max_locus: Option<u32>) -> Self {
+    /// Download and cache a predefined TR catalog preset
+    ///
+    /// This method handles downloading TR catalogs from remote URLs, caching them
+    /// locally for 7 days, and handling network failures gracefully by falling back
+    /// to cached versions when available.
+    pub fn from_preset(
+        preset: crate::call::TRPreset,
+        chrom_lengths: HashMap<String, u64>,
+        max_locus: Option<u32>,
+    ) -> Self {
+        let (url, cache_filename) = preset.metadata();
+        let preset_name = preset.display_name();
+
         let cache_dir = dirs::cache_dir()
             .unwrap_or_else(std::env::temp_dir)
             .join("inquistr");
 
         // Create cache directory if it doesn't exist
-        std::fs::create_dir_all(&cache_dir).expect("Failed to create cache directory");
+        if let Err(e) = std::fs::create_dir_all(&cache_dir) {
+            eprintln!("ERROR: Failed to create cache directory {}: {}", cache_dir.display(), e);
+            std::process::exit(1);
+        }
 
-        let cache_file = cache_dir.join("STRchive-disease-loci.hg38.TRGT.bed");
+        let cache_file = cache_dir.join(cache_filename);
 
-        // Check if cached file exists and is recent (e.g., less than 7 days old)
+        // Check if cached file exists and is recent (less than 7 days old)
         let needs_download = if cache_file.exists() {
             match std::fs::metadata(&cache_file) {
                 Ok(metadata) => {
@@ -107,45 +122,138 @@ impl RepeatIntervalIterator {
 
         // Download if needed
         if needs_download {
-            eprintln!("Downloading pathogenic STR database...");
-            let url = "https://raw.githubusercontent.com/dashnowlab/STRchive/refs/heads/main/data/catalogs/STRchive-disease-loci.hg38.longTR.bed";
+            eprintln!("Downloading {} catalog...", preset_name);
             match reqwest::blocking::get(url) {
                 Ok(resp) => {
-                    match resp.text() {
-                        Ok(body) => {
-                            if let Err(e) = std::fs::write(&cache_file, &body) {
-                                eprintln!(
-                                    "Warning: Failed to cache pathogenic repeats data: {}",
-                                    e
-                                );
-                                // Continue with in-memory data
-                                return Self::from_string_data(&body, chrom_lengths, max_locus);
-                            }
+                    if !resp.status().is_success() {
+                        let status = resp.status();
+                        // Fall back to cache if download fails
+                        if cache_file.exists() {
                             eprintln!(
-                                "Cached pathogenic STR database to: {}",
-                                cache_file.display()
+                                "Warning: Download returned status {}, using cached version",
+                                status
                             );
-                        }
-                        Err(e) => {
-                            eprintln!("Failed to read response body: {}", e);
+                        } else {
+                            eprintln!(
+                                "ERROR: Failed to download {} catalog: HTTP status {}",
+                                preset_name, status
+                            );
+                            eprintln!(
+                                "The catalog URL may have changed. Please check for updates or report this issue."
+                            );
                             std::process::exit(1);
+                        }
+                    } else {
+                        match resp.bytes() {
+                            Ok(body) => {
+                                if let Err(e) = std::fs::write(&cache_file, &body) {
+                                    eprintln!(
+                                        "Warning: Failed to cache {} catalog: {}",
+                                        preset_name, e
+                                    );
+                                    // Continue with in-memory data - decompress if gzipped
+                                    if cache_filename.ends_with(".gz") {
+                                        match Self::decompress_gzip(&body) {
+                                            Ok(decompressed) => {
+                                                return Self::from_string_data(
+                                                    &decompressed,
+                                                    chrom_lengths,
+                                                    max_locus,
+                                                );
+                                            }
+                                            Err(e) => {
+                                                eprintln!("ERROR: Failed to decompress gzipped catalog: {}", e);
+                                                std::process::exit(1);
+                                            }
+                                        }
+                                    } else {
+                                        let text = String::from_utf8_lossy(&body).to_string();
+                                        return Self::from_string_data(
+                                            &text,
+                                            chrom_lengths,
+                                            max_locus,
+                                        );
+                                    }
+                                }
+                                eprintln!(
+                                    "Cached {} catalog to: {}",
+                                    preset_name,
+                                    cache_file.display()
+                                );
+                            }
+                            Err(e) => {
+                                // Fall back to cache if reading response fails
+                                if cache_file.exists() {
+                                    eprintln!("Warning: Failed to read response body ({}), using cached version", e);
+                                } else {
+                                    eprintln!(
+                                        "ERROR: Failed to download {} catalog: {}",
+                                        preset_name, e
+                                    );
+                                    eprintln!(
+                                        "Please check your network connection and try again."
+                                    );
+                                    std::process::exit(1);
+                                }
+                            }
                         }
                     }
                 }
                 Err(e) => {
                     // If download fails but we have a cached version, use it even if old
                     if cache_file.exists() {
-                        eprintln!("Download failed, using cached version: {}", e);
+                        eprintln!("Warning: Download failed ({}), using cached version", e);
                     } else {
-                        eprintln!("Failed to download pathogenic repeats database: {}", e);
+                        eprintln!("ERROR: Failed to download {} catalog: {}", preset_name, e);
+                        eprintln!("Please check your network connection and try again.");
+                        eprintln!("URL: {}", url);
                         std::process::exit(1);
                     }
                 }
             }
         }
 
-        // Read from cached file
-        Self::from_bed(&cache_file.to_string_lossy(), chrom_lengths, max_locus)
+        // Read from cached file (possibly gzipped)
+        if cache_filename.ends_with(".gz") {
+            Self::from_gzipped_bed(&cache_file.to_string_lossy(), chrom_lengths, max_locus)
+        } else {
+            Self::from_bed(&cache_file.to_string_lossy(), chrom_lengths, max_locus)
+        }
+    }
+
+    /// Decompress gzipped data
+    fn decompress_gzip(data: &[u8]) -> Result<String, std::io::Error> {
+        use flate2::read::GzDecoder;
+        use std::io::Read;
+
+        let mut decoder = GzDecoder::new(data);
+        let mut decompressed = String::new();
+        decoder.read_to_string(&mut decompressed)?;
+        Ok(decompressed)
+    }
+
+    /// Read from a gzipped BED file
+    fn from_gzipped_bed(
+        path: &str,
+        chrom_lengths: HashMap<String, u64>,
+        max_locus: Option<u32>,
+    ) -> Self {
+        use flate2::read::GzDecoder;
+        use std::io::Read;
+
+        let file = std::fs::File::open(path).unwrap_or_else(|e| {
+            eprintln!("ERROR: Failed to open gzipped BED file {}: {}", path, e);
+            std::process::exit(1);
+        });
+
+        let mut decoder = GzDecoder::new(file);
+        let mut contents = String::new();
+        decoder.read_to_string(&mut contents).unwrap_or_else(|e| {
+            eprintln!("ERROR: Failed to decompress gzipped BED file {}: {}", path, e);
+            std::process::exit(1);
+        });
+
+        Self::from_string_data(&contents, chrom_lengths, max_locus)
     }
 
     // Helper function to process data from string (for fallback)
@@ -272,28 +380,30 @@ impl RepeatInterval {
     }
 }
 
-/// Get targets from region string, region file, or pathogenic STRs
+/// Get targets from region string, region file, or preset catalog
 pub fn get_targets(
     targets: crate::call::TargetConfig,
     bam: &str,
     reference: &Option<String>,
 ) -> RepeatIntervalIterator {
     let chrom_lengths = get_chrom_lengths_from_bam_header(bam.to_string(), reference);
-    match (&targets.region, &targets.region_file, targets.pathogenic) {
+    match (&targets.region, &targets.region_file, &targets.preset) {
         // a region string
-        (Some(region), None, false) => RepeatIntervalIterator::from_string(region, chrom_lengths),
+        (Some(region), None, None) => RepeatIntervalIterator::from_string(region, chrom_lengths),
         // a region file
-        (None, Some(region_file), false) => RepeatIntervalIterator::from_bed(
+        (None, Some(region_file), None) => RepeatIntervalIterator::from_bed(
             &region_file.to_string_lossy(),
             chrom_lengths,
             targets.max_locus,
         ),
-        // pathogenic STRs
-        (None, None, true) => RepeatIntervalIterator::pathogenic(chrom_lengths, targets.max_locus),
+        // preset catalog
+        (None, None, Some(preset)) => {
+            RepeatIntervalIterator::from_preset(*preset, chrom_lengths, targets.max_locus)
+        }
         // invalid input
         _ => {
             eprintln!(
-                "ERROR: Specify a region string (-r), a region_file (-R), or --pathogenic!\n"
+                "ERROR: Specify a region string (-r), a region_file (-R), or --preset <pathogenic|adotto|trexplorer>!\n"
             );
             std::process::exit(1);
         }

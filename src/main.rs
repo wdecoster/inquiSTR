@@ -69,9 +69,9 @@ enum Commands {
         #[clap(short = 'R', long, value_parser)]
         region_file: Option<PathBuf>,
 
-        /// Genotype the pathogenic STRs from STRchive
+        /// Use a predefined TR catalog (pathogenic, adotto, or trexplorer)
         #[clap(long, value_parser)]
-        pathogenic: bool,
+        preset: Option<call::TRPreset>,
 
         /// minimal length of insertion/deletion operation
         #[clap(short, long, value_parser, default_value_t = 5)]
@@ -390,7 +390,7 @@ fn main() {
             bam,
             region,
             region_file,
-            pathogenic,
+            preset,
             minlen,
             support,
             threads,
@@ -401,7 +401,7 @@ fn main() {
             batch_size,
         } => call::genotype_repeats(
             bam,
-            call::TargetConfig { region, region_file, pathogenic, max_locus },
+            call::TargetConfig { region, region_file, preset, max_locus },
             call::GenotypeConfig { minlen, support, unphased },
             call::ProcessingConfig { threads, batch_size_kb: batch_size },
             sample_name,
