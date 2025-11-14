@@ -299,6 +299,7 @@ pub fn benchmark(
     diff_out: Option<PathBuf>,
     max_locus: Option<u32>,
     nonzero: bool,
+    tolerance: u32,
 ) {
     // Validate that exactly one truth file is provided
     match (&vcf_file, &bed_file) {
@@ -500,6 +501,31 @@ pub fn benchmark(
     }
     println!("============================");
 
+    // Calculate exact matches and matches within tolerance
+    let mut exact_matches = 0;
+    let mut within_tolerance = 0;
+
+    for (&inq_val, &truth_val) in inquistr_values.iter().zip(truth_values.iter()) {
+        let diff = (inq_val - truth_val).abs();
+        if diff == 0.0 {
+            exact_matches += 1;
+            within_tolerance += 1; // Exact matches are also within tolerance
+        } else if diff <= tolerance as f64 {
+            within_tolerance += 1;
+        }
+    }
+
+    let exact_percent = (exact_matches as f64 / matched_count as f64) * 100.0;
+    let within_tolerance_percent = (within_tolerance as f64 / matched_count as f64) * 100.0;
+
+    println!("\n=== Accuracy Analysis ===");
+    println!("Exact matches: {} ({:.2}%)", exact_matches, exact_percent);
+    println!(
+        "Within {} bp tolerance: {} ({:.2}%)",
+        tolerance, within_tolerance, within_tolerance_percent
+    );
+    println!("=========================");
+
     // Output top 100 loci with largest differences if requested
     if let Some(diff_out_path) = diff_out {
         // Reduce type complexity by using a local type alias for readability
@@ -651,5 +677,10 @@ pub fn benchmark(
         println!("PEARSON_R_NONZERO: {:.6}", correlation_nonzero);
         println!("R_SQUARED_NONZERO: {:.6}", r_squared_nonzero);
     }
+    println!("EXACT_MATCHES: {}", exact_matches);
+    println!("EXACT_MATCHES_PERCENT: {:.2}", exact_percent);
+    println!("WITHIN_TOLERANCE: {}", within_tolerance);
+    println!("WITHIN_TOLERANCE_PERCENT: {:.2}", within_tolerance_percent);
+    println!("TOLERANCE_BP: {}", tolerance);
     println!("=========================");
 }
