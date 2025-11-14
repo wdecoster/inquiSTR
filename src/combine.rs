@@ -62,23 +62,25 @@ fn is_kmer_file(file_path: &Path) -> bool {
 /// Combined STR files have 4+ columns: chr, start, end, sample1_H1, sample1_H2, sample2_H1, sample2_H2, ...
 fn is_combined_str_file(file: &Path) -> bool {
     let mut file_reader = reader(&file.to_string_lossy()).lines();
-    
+
     // Get first line (must be header)
     let first_line = match file_reader.next() {
         Some(Ok(line)) => line,
         Some(Err(e)) => panic!("Error reading file {}: {}", file.display(), e),
         None => panic!("File {} is empty", file.display()),
     };
-    
+
     // Validate that file has a header
     if first_line.split('\t').next() != Some("chromosome") {
         eprintln!("Error: File {} does not have a valid header.", file.display());
-        eprintln!("Expected first column to be 'chromosome', got '{}'", 
-            first_line.split('\t').next().unwrap_or("<empty>"));
+        eprintln!(
+            "Expected first column to be 'chromosome', got '{}'",
+            first_line.split('\t').next().unwrap_or("<empty>")
+        );
         eprintln!("\nAll STR files must have headers starting with 'chromosome'.");
         std::process::exit(1);
     }
-    
+
     // Check the next line to determine column count
     match file_reader.next() {
         Some(Ok(second_line)) => second_line.split('\t').count() > 5,
@@ -154,7 +156,7 @@ fn combine_str_files(calls: Vec<PathBuf>, _actual_threads: usize) {
     // Detect if any files are combined files (have more than 5 columns)
     let mut combined_files = Vec::new();
     let mut individual_files = Vec::new();
-    
+
     for file in &calls {
         if is_combined_str_file(file) {
             combined_files.push(file.clone());
@@ -162,7 +164,7 @@ fn combine_str_files(calls: Vec<PathBuf>, _actual_threads: usize) {
             individual_files.push(file.clone());
         }
     }
-    
+
     // Determine processing path based on file mix
     if !combined_files.is_empty() {
         // If we have any combined files, use the merge logic
@@ -172,16 +174,18 @@ fn combine_str_files(calls: Vec<PathBuf>, _actual_threads: usize) {
                 combined_files.len(),
                 combined_files.iter().map(|f| f.display().to_string()).collect::<Vec<_>>().join(", ")
             );
-            eprintln!("\nTo merge these cohorts, you can add individual samples to one combined file:");
+            eprintln!(
+                "\nTo merge these cohorts, you can add individual samples to one combined file:"
+            );
             eprintln!("  inquiSTR combine {} sample1.inq sample2.inq", combined_files[0].display());
             std::process::exit(1);
         }
-        
+
         eprintln!(
             "Detected 1 combined file and {} individual file(s) - merging cohorts",
             individual_files.len()
         );
-        
+
         merge_combined_and_individual_str_files(combined_files[0].clone(), individual_files);
     } else {
         // All files are individual files - use original logic
@@ -220,18 +224,18 @@ fn combine_kmer_files(calls: Vec<PathBuf>, _actual_threads: usize) {
 /// Merge a combined STR file with individual STR files
 fn merge_combined_and_individual_str_files(combined_file: PathBuf, individual_files: Vec<PathBuf>) {
     use std::collections::HashMap;
-    
+
     // Read the combined file into memory
     let mut combined_reader = reader(&combined_file.to_string_lossy()).lines();
-    
+
     // Read combined file header
     let combined_header = combined_reader
         .next()
         .unwrap_or_else(|| panic!("Combined file {} is empty", combined_file.display()))
         .unwrap_or_else(|e| panic!("Error reading combined file header: {}", e));
-    
+
     let has_combined_header = combined_header.split('\t').next() == Some("chromosome");
-    
+
     // Read individual file headers
     let individual_headers: Vec<String> = if individual_files.is_empty() {
         Vec::new()
@@ -247,21 +251,22 @@ fn merge_combined_and_individual_str_files(combined_file: PathBuf, individual_fi
             })
             .collect()
     };
-    
+
     let has_individual_headers = if !individual_headers.is_empty() {
         individual_headers[0].split('\t').next() == Some("chromosome")
     } else {
         false
     };
-    
+
     // Validate header consistency
     if has_combined_header != has_individual_headers {
-        panic!("Header mismatch: combined file has {} header, but individual files have {} headers",
+        panic!(
+            "Header mismatch: combined file has {} header, but individual files have {} headers",
             if has_combined_header { "a" } else { "no" },
             if has_individual_headers { "a" } else { "no" }
         );
     }
-    
+
     // Output merged header
     if has_combined_header {
         let combined_header_fields: Vec<&str> = combined_header.split('\t').collect();
@@ -270,10 +275,10 @@ fn merge_combined_and_individual_str_files(combined_file: PathBuf, individual_fi
             combined_header_fields[1], // begin
             combined_header_fields[2], // end
         ];
-        
+
         // Add all sample columns from combined file
         merged_header.extend(&combined_header_fields[3..]);
-        
+
         // Add sample columns from individual files
         for header in &individual_headers {
             let fields: Vec<&str> = header.split('\t').collect();
@@ -282,33 +287,33 @@ fn merge_combined_and_individual_str_files(combined_file: PathBuf, individual_fi
             }
             merged_header.extend(&fields[3..]);
         }
-        
+
         println!("{}", merged_header.join("\t"));
     } else {
         eprintln!("Warning: No headers detected in files");
     }
-    
+
     // Read combined file data into HashMap
     let mut combined_data: HashMap<String, String> = HashMap::new();
-    
+
     for (line_num, line_result) in combined_reader.enumerate() {
         let line = line_result.unwrap_or_else(|e| panic!("Error reading combined file: {}", e));
         let fields: Vec<&str> = line.split('\t').collect();
         if fields.len() < 5 {
             panic!("Invalid combined file data line {}: {}", line_num, line);
         }
-        
+
         // Use chr:start-end as key
         let key = format!("{}:{}−{}", fields[0], fields[1], fields[2]);
         combined_data.insert(key, line);
     }
-    
+
     if combined_data.is_empty() {
         panic!("Combined file contains no data lines");
     }
-    
+
     eprintln!("Loaded {} loci from combined file", combined_data.len());
-    
+
     // Open individual file readers
     let mut individual_readers: Vec<_> = individual_files
         .iter()
@@ -320,72 +325,88 @@ fn merge_combined_and_individual_str_files(combined_file: PathBuf, individual_fi
             file_reader
         })
         .collect();
-    
+
     // Process each line from all individual files simultaneously
     let mut processed_lines = 0;
     loop {
         let mut all_done = true;
         let mut individual_lines = Vec::new();
-        
+
         for (file_idx, reader) in individual_readers.iter_mut().enumerate() {
             match reader.next() {
                 Some(Ok(line)) => {
                     individual_lines.push(line);
                     all_done = false;
                 }
-                Some(Err(e)) => panic!("Error reading file {}: {}", individual_files[file_idx].display(), e),
+                Some(Err(e)) => {
+                    panic!("Error reading file {}: {}", individual_files[file_idx].display(), e)
+                }
                 None => {}
             }
         }
-        
+
         if all_done {
             break;
         }
-        
+
         if individual_lines.len() != individual_files.len() {
-            panic!("Individual files have different number of data lines at line {}", processed_lines);
+            panic!(
+                "Individual files have different number of data lines at line {}",
+                processed_lines
+            );
         }
-        
+
         // Validate all individual files agree on coordinates
         let first_fields: Vec<&str> = individual_lines[0].split('\t').collect();
         if first_fields.len() < 5 {
             panic!("Invalid individual file data line: {}", individual_lines[0]);
         }
-        
+
         let (chr, start, end) = (first_fields[0], first_fields[1], first_fields[2]);
-        
+
         for (file_idx, line) in individual_lines.iter().enumerate().skip(1) {
             let fields: Vec<&str> = line.split('\t').collect();
             if fields[0] != chr || fields[1] != start || fields[2] != end {
                 panic!(
                     "Coordinate mismatch at line {}: file 0 has {}:{}-{}, file {} has {}:{}-{}",
-                    processed_lines, chr, start, end, file_idx + 1, fields[0], fields[1], fields[2]
+                    processed_lines,
+                    chr,
+                    start,
+                    end,
+                    file_idx + 1,
+                    fields[0],
+                    fields[1],
+                    fields[2]
                 );
             }
         }
-        
+
         // Look up this locus in combined data
         let key = format!("{}:{}−{}", chr, start, end);
-        let combined_line = combined_data.get(&key)
-            .unwrap_or_else(|| panic!("Locus {}:{}-{} found in individual files but not in combined file", chr, start, end));
-        
+        let combined_line = combined_data.get(&key).unwrap_or_else(|| {
+            panic!(
+                "Locus {}:{}-{} found in individual files but not in combined file",
+                chr, start, end
+            )
+        });
+
         // Build merged line
         let combined_fields: Vec<&str> = combined_line.split('\t').collect();
         let mut merged_fields = vec![chr, start, end];
-        
+
         // Add combined file sample columns
         merged_fields.extend(&combined_fields[3..]);
-        
+
         // Add individual file sample columns
         for line in &individual_lines {
             let fields: Vec<&str> = line.split('\t').collect();
             merged_fields.extend(&fields[3..]);
         }
-        
+
         println!("{}", merged_fields.join("\t"));
         processed_lines += 1;
     }
-    
+
     eprintln!("Processed {} loci", processed_lines);
     eprintln!(
         "Completed merging 1 combined file with {} individual file(s)",
