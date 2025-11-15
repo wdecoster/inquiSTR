@@ -8,7 +8,7 @@ use std::io::{self, Write};
 use std::path::PathBuf;
 
 // Phasing validation now happens lazily on first batch via get_bam_reader_with_validation
-use crate::batch::{create_batches, process_batch_worker};
+use crate::locus_batching::{create_batches, process_batch_worker};
 use crate::repeats::{get_targets, RepeatInterval, RepeatIntervalIterator};
 
 /// Predefined tandem repeat (TR) catalogs for genotyping
@@ -86,10 +86,11 @@ pub struct GenotypeConfig {
 }
 
 /// Configuration for processing (threads, batching, etc.)
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct ProcessingConfig {
     pub threads: usize,
     pub batch_size_kb: u32,
+    pub output_vcf: Option<PathBuf>,
 }
 
 // This struct keeps the genotype information and allows to compare them and thus sort them on chromosomal location
@@ -243,11 +244,18 @@ pub fn genotype_repeats(
     }
 
     // Output results in consistent format
-    let stdout = io::stdout();
-    let mut handle = io::BufWriter::new(stdout);
     // Use either the sample_name provided as command line argument or extract one from the path
     let sample = sample_name.unwrap_or_else(|| extract_sample_name_from_path(&bam));
 
+    // Write VCF if requested
+    if let Some(vcf_path) = &processing.output_vcf {
+        write_vcf(vcf_path, &all_genotypes, &sample, &reference);
+        eprintln!("VCF output written to {}", vcf_path.display());
+    }
+
+    // Write TSV to stdout
+    let stdout = io::stdout();
+    let mut handle = io::BufWriter::new(stdout);
     let file_header = format!("chromosome\tbegin\tend\t{sample}_H1\t{sample}_H2");
     writeln!(handle, "{file_header}").expect("Failed writing the header.");
     for genotype in &all_genotypes {
@@ -285,6 +293,96 @@ fn extract_sample_name_from_path(path: &str) -> String {
     }
 
     result
+}
+
+/// Write genotypes to VCF format
+fn write_vcf(vcf_path: &PathBuf, genotypes: &[Genotype], sample: &str, reference: &Option<String>) {
+    use std::fs::File;
+    use std::io::BufWriter;
+
+    let file = File::create(vcf_path).expect("Failed to create VCF file");
+    let mut writer = BufWriter::new(file);
+
+    // Write VCF header
+    writeln!(writer, "##fileformat=VCFv4.3").expect("Failed writing VCF header");
+    writeln!(writer, "##source=inquiSTR").expect("Failed writing VCF header");
+
+    // Add reference if provided
+    if let Some(ref_path) = reference {
+        writeln!(writer, "##reference={}", ref_path).expect("Failed writing VCF header");
+    }
+
+    // Add INFO fields
+    writeln!(
+        writer,
+        "##INFO=<ID=END,Number=1,Type=Integer,Description=\"End position of the variant\">"
+    )
+    .expect("Failed writing VCF header");
+    writeln!(
+        writer,
+        "##INFO=<ID=SVTYPE,Number=1,Type=String,Description=\"Type of structural variant\">"
+    )
+    .expect("Failed writing VCF header");
+    writeln!(writer, "##INFO=<ID=SVLEN,Number=.,Type=Integer,Description=\"Difference in length between REF and ALT alleles\">").expect("Failed writing VCF header");
+
+    // Add FORMAT fields
+    writeln!(writer, "##FORMAT=<ID=GT,Number=1,Type=String,Description=\"Genotype\">")
+        .expect("Failed writing VCF header");
+    writeln!(writer, "##FORMAT=<ID=AL,Number=.,Type=Float,Description=\"Allele length (relative to reference)\">").expect("Failed writing VCF header");
+
+    // Add ALT definition for STR
+    writeln!(writer, "##ALT=<ID=STR,Description=\"Short Tandem Repeat\">")
+        .expect("Failed writing VCF header");
+
+    // Write column headers
+    writeln!(writer, "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t{}", sample)
+        .expect("Failed writing VCF header");
+
+    // Write variant records
+    for (idx, genotype) in genotypes.iter().enumerate() {
+        let chrom = &genotype.repeat.chrom;
+        let pos = genotype.repeat.start + 1; // VCF is 1-based
+        let end = genotype.repeat.end;
+        let id = format!("STR_{}", idx + 1);
+
+        // Determine genotype and allele lengths
+        let (gt, al1, al2) = if genotype.phase1.is_nan() && genotype.phase2.is_nan() {
+            ("./.".to_string(), ".".to_string(), ".".to_string())
+        } else if genotype.phase1.is_nan() {
+            ("./1".to_string(), ".".to_string(), format!("{:.0}", genotype.phase2))
+        } else if genotype.phase2.is_nan() {
+            ("0/.".to_string(), format!("{:.0}", genotype.phase1), ".".to_string())
+        } else {
+            (
+                "0|1".to_string(),
+                format!("{:.0}", genotype.phase1),
+                format!("{:.0}", genotype.phase2),
+            )
+        };
+
+        // Calculate SVLEN (using max of the two alleles for simplicity)
+        let svlen = if !genotype.phase1.is_nan() && !genotype.phase2.is_nan() {
+            let max_len = genotype.phase1.max(genotype.phase2) as i64;
+            format!("{}", max_len)
+        } else if !genotype.phase1.is_nan() {
+            format!("{:.0}", genotype.phase1)
+        } else if !genotype.phase2.is_nan() {
+            format!("{:.0}", genotype.phase2)
+        } else {
+            ".".to_string()
+        };
+
+        let info = format!("END={};SVTYPE=STR;SVLEN={}", end, svlen);
+        let format_str = "GT:AL";
+        let sample_data = format!("{}:{},{}", gt, al1, al2);
+
+        writeln!(
+            writer,
+            "{}\t{}\t{}\tN\t<STR>\t.\tPASS\t{}\t{}\t{}",
+            chrom, pos, id, info, format_str, sample_data
+        )
+        .expect("Failed writing VCF record");
+    }
 }
 
 /// Take the median of the lengths of the STRs, relative to the reference genome
@@ -342,7 +440,7 @@ fn test_region() {
             max_locus: None,
         },
         GenotypeConfig { minlen: 5, support: 3, unphased: true },
-        ProcessingConfig { threads: 4, batch_size_kb: 50 },
+        ProcessingConfig { threads: 4, batch_size_kb: 50, output_vcf: None },
         Some("sample".to_string()),
         None,
     );
@@ -367,6 +465,7 @@ fn test_region_from_url() {
         ProcessingConfig {
             threads: 4,
             batch_size_kb: 50,
+            output_vcf: None,
         },
         Some("sample".to_string()),
         Some(String::from("https://ftp.1000genomes.ebi.ac.uk/vol1/ftp/technical/reference/GRCh38_reference_genome/GRCh38_full_analysis_set_plus_decoy_hla.fa")),
@@ -384,7 +483,7 @@ fn test_region_bed() {
             max_locus: None,
         },
         GenotypeConfig { minlen: 5, support: 3, unphased: true },
-        ProcessingConfig { threads: 4, batch_size_kb: 50 },
+        ProcessingConfig { threads: 4, batch_size_kb: 50, output_vcf: None },
         Some("sample".to_string()),
         None,
     );
@@ -400,7 +499,7 @@ fn test_unphased() {
             max_locus: None,
         },
         GenotypeConfig { minlen: 5, support: 3, unphased: true },
-        ProcessingConfig { threads: 4, batch_size_kb: 50 },
+        ProcessingConfig { threads: 4, batch_size_kb: 50, output_vcf: None },
         Some("sample".to_string()),
         None,
     );
@@ -433,7 +532,7 @@ fn test_phasing_validation_triggers() {
             max_locus: None,
         },
         GenotypeConfig { minlen: 5, support: 3, unphased: true },
-        ProcessingConfig { threads: 1, batch_size_kb: 50 },
+        ProcessingConfig { threads: 1, batch_size_kb: 50, output_vcf: None },
         Some("sample".to_string()),
         None,
     );
@@ -461,7 +560,7 @@ fn test_nan_genotype_for_unphased_loci() {
             max_locus: None,
         },
         GenotypeConfig { minlen: 5, support: 3, unphased: true },
-        ProcessingConfig { threads: 1, batch_size_kb: 50 },
+        ProcessingConfig { threads: 1, batch_size_kb: 50, output_vcf: None },
         Some("test_sample".to_string()),
         None,
     );

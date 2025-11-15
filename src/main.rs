@@ -28,13 +28,13 @@ use std::path::PathBuf;
 
 pub mod assoc;
 pub mod bam_utils;
-pub mod batch;
 pub mod batch_process;
 pub mod benchmark;
 pub mod call;
 pub mod combine;
 pub mod filter;
 pub mod histogram;
+pub mod locus_batching;
 pub mod locus_search;
 pub mod metadata;
 pub mod outlier;
@@ -105,6 +105,10 @@ enum Commands {
         /// Batch size in KB for grouping nearby STR targets (default: 50). Larger values use more memory but reduce I/O operations. Use 20-35 for memory-constrained systems, 80-100 for high-performance setups.
         #[clap(long, value_parser, default_value_t = 50)]
         batch_size: u32,
+
+        /// Output VCF file path (optional, TSV still written to stdout)
+        #[clap(long, value_parser)]
+        vcf: Option<PathBuf>,
     },
     /// Process multiple samples in batch and combine results
     #[clap(arg_required_else_help = true)]
@@ -459,11 +463,12 @@ fn main() {
             reference,
             max_locus,
             batch_size,
+            vcf,
         } => call::genotype_repeats(
             bam,
             call::TargetConfig { region, region_file, preset, max_locus },
             call::GenotypeConfig { minlen, support, unphased },
-            call::ProcessingConfig { threads, batch_size_kb: batch_size },
+            call::ProcessingConfig { threads, batch_size_kb: batch_size, output_vcf: vcf },
             sample_name,
             reference,
         ),
@@ -489,7 +494,7 @@ fn main() {
             tmpdir,
             call::TargetConfig { region, region_file, preset, max_locus },
             call::GenotypeConfig { minlen, support, unphased },
-            call::ProcessingConfig { threads, batch_size_kb: batch_size },
+            call::ProcessingConfig { threads, batch_size_kb: batch_size, output_vcf: None },
             reference,
         ),
         Commands::Combine { calls, threads } => {

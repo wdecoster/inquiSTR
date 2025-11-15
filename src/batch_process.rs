@@ -129,7 +129,7 @@ fn process_sample(
             sample.bam_path.clone(),
             target_config.clone(),
             *genotype_config,
-            *processing_config,
+            processing_config.clone(),
             Some(sample.sample_name.clone()),
             reference.clone(),
         );
