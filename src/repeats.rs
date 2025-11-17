@@ -490,14 +490,16 @@ mod tests {
     }
 
     /// Test that preset catalog URLs return valid content
-    /// This is a more thorough test that actually downloads a small portion of data
+    /// This is a more thorough test that actually downloads the full files
     /// Run with: cargo test test_preset_urls_content -- --ignored
+    /// Note: ADOTTO and TRexplorer are large files (90MB+ and 38MB+) and may take time to download
     #[test]
     #[ignore]
     fn test_preset_urls_content() {
         use crate::call::TRPreset;
 
         let presets = vec![TRPreset::Pathogenic, TRPreset::Adotto, TRPreset::Trexplorer];
+        let mut failed_presets = Vec::new();
 
         for preset in presets {
             let (url, cache_filename) = preset.metadata();
@@ -507,52 +509,85 @@ mod tests {
             eprintln!("Testing content for {}: {}", preset_name, url);
 
             let client = reqwest::blocking::Client::builder()
-                .timeout(std::time::Duration::from_secs(60))
+                .timeout(std::time::Duration::from_secs(180)) // Increased to 3 minutes for large files
+                .connect_timeout(std::time::Duration::from_secs(30))
                 .build()
                 .expect("Failed to build HTTP client");
 
-            let response = client
-                .get(url)
-                .send()
-                .unwrap_or_else(|e| panic!("Failed to download {} ({}): {}", preset_name, url, e));
+            let response = match client.get(url).send() {
+                Ok(r) => r,
+                Err(e) => {
+                    let error_msg = format!("Failed to download {} ({}): {}", preset_name, url, e);
+                    eprintln!("✗ {}", error_msg);
+                    failed_presets.push((preset_name.to_string(), error_msg));
+                    continue;
+                }
+            };
 
-            assert!(
-                response.status().is_success(),
-                "{} URL ({}) returned status: {}",
-                preset_name,
-                url,
-                response.status()
-            );
+            if !response.status().is_success() {
+                let error_msg = format!("{} URL ({}) returned status: {}", preset_name, url, response.status());
+                eprintln!("✗ {}", error_msg);
+                failed_presets.push((preset_name.to_string(), error_msg));
+                continue;
+            }
 
-            let bytes = response
-                .bytes()
-                .unwrap_or_else(|e| panic!("Failed to read response for {}: {}", preset_name, e));
+            let bytes = match response.bytes() {
+                Ok(b) => b,
+                Err(e) => {
+                    let error_msg = format!("Failed to read response for {} ({}): {}", preset_name, url, e);
+                    eprintln!("✗ {}", error_msg);
+                    failed_presets.push((preset_name.to_string(), error_msg));
+                    continue;
+                }
+            };
 
-            assert!(!bytes.is_empty(), "{} returned empty content", preset_name);
+            if bytes.is_empty() {
+                let error_msg = format!("{} returned empty content", preset_name);
+                eprintln!("✗ {}", error_msg);
+                failed_presets.push((preset_name.to_string(), error_msg));
+                continue;
+            }
 
             // Verify content type based on file format
             if is_gzipped {
                 // Check for gzip magic bytes (0x1f 0x8b)
-                assert!(
-                    bytes.len() >= 2 && bytes[0] == 0x1f && bytes[1] == 0x8b,
-                    "{} does not appear to be a valid gzip file",
-                    preset_name
-                );
+                if bytes.len() < 2 || bytes[0] != 0x1f || bytes[1] != 0x8b {
+                    let error_msg = format!("{} does not appear to be a valid gzip file", preset_name);
+                    eprintln!("✗ {}", error_msg);
+                    failed_presets.push((preset_name.to_string(), error_msg));
+                    continue;
+                }
                 eprintln!("✓ {} content is valid gzip ({} bytes)", preset_name, bytes.len());
             } else {
                 // For plain BED files, check if it looks like valid BED format
                 let content = String::from_utf8_lossy(&bytes[..std::cmp::min(1000, bytes.len())]);
                 // BED files should have tab-separated columns with chromosome names
-                assert!(
-                    content.lines().any(|line| {
-                        let fields: Vec<&str> = line.split('\t').collect();
-                        fields.len() >= 3 && !line.starts_with('#')
-                    }),
-                    "{} does not appear to be a valid BED file",
-                    preset_name
-                );
+                let is_valid_bed = content.lines().any(|line| {
+                    let fields: Vec<&str> = line.split('\t').collect();
+                    fields.len() >= 3 && !line.starts_with('#')
+                });
+                if !is_valid_bed {
+                    let error_msg = format!("{} does not appear to be a valid BED file", preset_name);
+                    eprintln!("✗ {}", error_msg);
+                    failed_presets.push((preset_name.to_string(), error_msg));
+                    continue;
+                }
                 eprintln!("✓ {} content is valid BED format ({} bytes)", preset_name, bytes.len());
             }
+        }
+
+        // Report all failures at once with detailed information
+        if !failed_presets.is_empty() {
+            let failure_summary: Vec<String> = failed_presets
+                .iter()
+                .map(|(name, msg)| format!("  - {}: {}", name, msg))
+                .collect();
+            panic!(
+                "\n\n{} preset catalog(s) failed validation:\n{}\n\nFailed presets: {}\n",
+                failed_presets.len(),
+                failure_summary.join("\n"),
+                failed_presets.iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>().join(", ")
+            );
         }
     }
 }

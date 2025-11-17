@@ -67,26 +67,55 @@ jobs:
         run: cargo test test_preset_urls_accessible -- --ignored --nocapture
       
       - name: Test URL content validity
-        run: cargo test test_preset_urls_content -- --ignored --nocapture
+        id: test_content
+        run: |
+          set +e  # Don't exit on error
+          OUTPUT=$(cargo test test_preset_urls_content -- --ignored --nocapture 2>&1)
+          EXIT_CODE=$?
+          echo "$OUTPUT"
+          
+          # Extract failed presets from output if test failed
+          if [ $EXIT_CODE -ne 0 ]; then
+            FAILED=$(echo "$OUTPUT" | grep "Failed presets:" | sed 's/.*Failed presets: //')
+            echo "failed_presets=$FAILED" >> $GITHUB_OUTPUT
+            echo "test_output<<EOF" >> $GITHUB_OUTPUT
+            echo "$OUTPUT" >> $GITHUB_OUTPUT
+            echo "EOF" >> $GITHUB_OUTPUT
+            exit $EXIT_CODE
+          fi
+        continue-on-error: true
       
       - name: Create issue on failure
         if: failure() && github.event_name == 'schedule'
         uses: actions/github-script@v7
         with:
           script: |
+            const failedPresets = '${{ steps.test_content.outputs.failed_presets }}' || 'Unknown';
+            const testOutput = `${{ steps.test_content.outputs.test_output }}`;
+            
             const title = '🚨 Preset Catalog URL Validation Failed';
             const body = `The weekly check of preset catalog URLs has failed.
             
             **Workflow Run:** ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
             **Date:** ${new Date().toISOString()}
+            **Failed Presets:** ${failedPresets}
             
-            One or more preset catalog URLs may be inaccessible or returning invalid content:
-            - STRchive pathogenic STRs
-            - ADOTTO TR regions v1.2.1
-            - TR Explorer catalog
+            ## Preset Catalog URLs
+            - **STRchive pathogenic STRs:** https://raw.githubusercontent.com/dashnowlab/STRchive/refs/heads/main/data/catalogs/STRchive-disease-loci.hg38.longTR.bed
+            - **ADOTTO TR regions v1.2.1:** https://zenodo.org/records/13987414/files/adotto_TRregions_v1.2.1.bed.gz
+            - **TR Explorer catalog:** https://github.com/broadinstitute/tandem-repeat-catalog/releases/download/v1.0/repeat_catalog_v1.hg38.1_to_1000bp_motifs.bed.gz
             
-            Please investigate:
-            1. Check if the URLs have changed or moved
+            ## Test Output
+            <details>
+            <summary>Full test output</summary>
+            
+            \`\`\`
+            ${testOutput.substring(0, 4000)}
+            \`\`\`
+            </details>
+            
+            ## Action Required
+            1. Check if the URLs have changed or moved (especially ${failedPresets})
             2. Verify the remote servers are operational
             3. Update URLs in \`src/call.rs\` if needed
             4. Test locally with: \`cargo test test_preset_urls -- --ignored\`
