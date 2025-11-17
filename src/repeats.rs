@@ -525,7 +525,8 @@ mod tests {
             };
 
             if !response.status().is_success() {
-                let error_msg = format!("{} URL ({}) returned status: {}", preset_name, url, response.status());
+                let error_msg =
+                    format!("{} URL ({}) returned status: {}", preset_name, url, response.status());
                 eprintln!("✗ {}", error_msg);
                 failed_presets.push((preset_name.to_string(), error_msg));
                 continue;
@@ -534,7 +535,8 @@ mod tests {
             let bytes = match response.bytes() {
                 Ok(b) => b,
                 Err(e) => {
-                    let error_msg = format!("Failed to read response for {} ({}): {}", preset_name, url, e);
+                    let error_msg =
+                        format!("Failed to read response for {} ({}): {}", preset_name, url, e);
                     eprintln!("✗ {}", error_msg);
                     failed_presets.push((preset_name.to_string(), error_msg));
                     continue;
@@ -552,7 +554,8 @@ mod tests {
             if is_gzipped {
                 // Check for gzip magic bytes (0x1f 0x8b)
                 if bytes.len() < 2 || bytes[0] != 0x1f || bytes[1] != 0x8b {
-                    let error_msg = format!("{} does not appear to be a valid gzip file", preset_name);
+                    let error_msg =
+                        format!("{} does not appear to be a valid gzip file", preset_name);
                     eprintln!("✗ {}", error_msg);
                     failed_presets.push((preset_name.to_string(), error_msg));
                     continue;
@@ -567,7 +570,8 @@ mod tests {
                     fields.len() >= 3 && !line.starts_with('#')
                 });
                 if !is_valid_bed {
-                    let error_msg = format!("{} does not appear to be a valid BED file", preset_name);
+                    let error_msg =
+                        format!("{} does not appear to be a valid BED file", preset_name);
                     eprintln!("✗ {}", error_msg);
                     failed_presets.push((preset_name.to_string(), error_msg));
                     continue;
@@ -586,7 +590,11 @@ mod tests {
                 "\n\n{} preset catalog(s) failed validation:\n{}\n\nFailed presets: {}\n",
                 failed_presets.len(),
                 failure_summary.join("\n"),
-                failed_presets.iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>().join(", ")
+                failed_presets
+                    .iter()
+                    .map(|(name, _)| name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
             );
         }
     }
