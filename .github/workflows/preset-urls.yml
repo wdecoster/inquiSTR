@@ -6,17 +6,6 @@ on:
     - cron: '0 9 * * 1'
   # Allow manual triggering
   workflow_dispatch:
-  # Also run on changes to preset-related code
-  push:
-    paths:
-      - 'src/call.rs'
-      - 'src/repeats.rs'
-      - '.github/workflows/preset-urls.yml'
-  pull_request:
-    paths:
-      - 'src/call.rs'
-      - 'src/repeats.rs'
-      - '.github/workflows/preset-urls.yml'
 
 jobs:
   check-urls:

@@ -4,6 +4,11 @@ on:
   push:
     branches: [ "main" ]
     tags: [ "v*" ]
+    paths:
+      - 'src/**'
+      - 'Cargo.toml'
+      - 'README.md'
+      - '.github/workflows/docs.yml'
   workflow_dispatch:
 
 permissions:
