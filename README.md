@@ -214,9 +214,9 @@ inquiSTR call sample.bam -R regions.bed --batch-size 30 --threads 4
 
 The `--preset` option provides quick access to well-known TR catalogs without manually downloading BED files:
 
-- **pathogenic**: STRchive pathogenic disease-associated STRs - curated database of STRs linked to human diseases (**75 loci**)
-- **adotto**: ADOTTO TR regions catalog v1.2.1 - comprehensive TR regions from the ADOTTO project (**1,784,804 loci**)
-- **trexplorer**: Broad Institute TR Explorer catalog - genome-wide TR catalog covering 1-1000bp motifs (**4,863,041 loci**)
+- **pathogenic**: STRchive pathogenic disease-associated STRs - curated database of STRs linked to human diseases (**75 loci**). See also [Hiatt et al., 2025](https://genomemedicine.biomedcentral.com/articles/10.1186/s13073-025-01454-4)
+- **adotto**: ADOTTO TR regions catalog v1.2.1 - comprehensive TR regions from the ADOTTO project (**1,784,804 loci**). See also [English et al., 2025](https://www.nature.com/articles/s41587-024-02225-z)
+- **trexplorer**: Broad Institute TR Explorer catalog - genome-wide TR catalog covering 1-1000bp motifs (**4,863,041 loci**). See also [Weisburd et al., 2025](https://www.biorxiv.org/content/10.1101/2024.10.04.615514v2)
 
 **Note**: All preset catalogs are for the **GRCh38/hg38** reference genome.
 
