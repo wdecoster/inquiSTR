@@ -62,7 +62,7 @@ fn parse_manifest(manifest_path: &Path) -> Result<Vec<SampleInfo>, String> {
     let header_fields: Vec<&str> = header.split('\t').collect();
     if header_fields.is_empty() || header_fields[0] != "bam_path" {
         return Err(format!(
-            "Invalid header. Expected 'bam_path' as first column, got: '{}'",
+            "Invalid header. Expected 'bam_path\tsample_name' (tab-separated), got: '{}'",
             header
         ));
     }
