@@ -43,6 +43,7 @@ pub mod outlier;
 pub mod pca;
 pub mod plot;
 pub mod query;
+pub mod relate;
 pub mod repeats;
 pub mod sample_info;
 pub mod unmapped;
@@ -455,6 +456,21 @@ enum Commands {
         #[clap(long, value_parser, default_value_t = 5)]
         tolerance: u32,
     },
+    /// Compute relatedness between samples
+    #[clap(arg_required_else_help = true)]
+    Relate {
+        /// Combined file of STR calls from inquiSTR combine command
+        #[clap(value_parser, required = true)]
+        combined: PathBuf,
+
+        /// Output file for relatedness matrix
+        #[clap(short, long, value_parser, required = true)]
+        output: PathBuf,
+
+        /// Number of threads to use for parallel processing
+        #[clap(short, long, value_parser, default_value_t = 1)]
+        threads: usize,
+    },
     /// Clean the index cache directory (hidden command)
     #[clap(hide = true)]
     CleanCache {
@@ -664,6 +680,9 @@ fn main() {
                 nonzero,
                 tolerance,
             );
+        }
+        Commands::Relate { combined, output, threads } => {
+            relate::compute_relatedness(combined, output, threads);
         }
         Commands::CleanCache { dry_run, all, max_age_days } => {
             bam_utils::clean_cache(dry_run, all, max_age_days);

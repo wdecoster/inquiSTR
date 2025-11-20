@@ -28,6 +28,7 @@ A toolkit for lightning-fast Short Tandem Repeat (STR) length genotyping and dow
   - [inquiSTR unmapped - Kmer Frequency Analysis](#inquistr-unmapped---kmer-frequency-analysis)
   - [inquiSTR benchmark - Validate STR Calls](#inquistr-benchmark---validate-str-calls)
   - [inquiSTR pca - Principal Component Analysis](#inquistr-pca---principal-component-analysis)
+  - [inquiSTR relate - Compute Sample Relatedness](#inquistr-relate---compute-sample-relatedness)
   - [inquiSTR association - Statistical Association Testing](#inquistr-association---statistical-association-testing)
 - [Legacy R Script Usage](#legacy-r-script-usage)
 - [Development](#️-development)
@@ -144,6 +145,7 @@ Commands:
   histogram    Generate histograms for specific repeats
   plot         Show a histogram with multiple groups for a specific repeat
   pca          Perform Principal Component Analysis on combined STR data
+  relate       Compute relatedness between samples
   association  Perform statistical association testing for STRs
   unmapped     Count kmer frequencies in unmapped reads
   benchmark    Benchmark inquiSTR calls against truth VCF or BED files
@@ -893,6 +895,67 @@ inquiSTR pca combined.tsv --aggregation sum --threads 4 --output total_burden_pc
 # Compute more principal components (only first 2 are plotted)
 inquiSTR pca combined.tsv --components 20 --output detailed_pca.html
 ```
+
+### `inquiSTR relate` - Compute Sample Relatedness
+
+Compute relatedness (kinship coefficient) between all pairs of samples using STR genotype data. This command identifies sample relationships such as duplicates, parent-child, siblings, and more distant relatives by calculating the proportion of shared alleles across all STR loci.
+
+```text
+Usage: inquiSTR relate [OPTIONS] --output <OUTPUT> <COMBINED>
+
+Arguments:
+  <COMBINED>  Combined file of STR calls from inquiSTR combine command
+
+Options:
+  -o, --output <OUTPUT>    Output file for relatedness matrix
+  -t, --threads <THREADS>  Number of threads to use for parallel processing [default: 1]
+  -h, --help               Print help
+```
+
+**Method:**
+
+The relatedness coefficient is computed using Identity-by-State (IBS):
+
+- For each locus, count matching alleles between two samples (0, 1, or 2 matches)
+- Relatedness = (IBS2 + 0.5 × IBS1) / n_loci
+- Only informative loci (where both samples have valid calls) are used
+
+**Expected Relatedness Values:**
+
+- **1.0**: Identical twins / duplicate samples
+- **0.5**: Parent-child / full siblings
+- **0.25**: Half-siblings / grandparent-grandchild
+- **0.125**: First cousins
+- **0.0**: Unrelated individuals
+
+**Output Format:**
+
+TSV file with columns:
+
+- `sample1`, `sample2`: Sample pair names
+- `relatedness`: Coefficient (0-1), sorted descending
+- `n_loci`: Number of informative loci used
+- `ibs0`, `ibs1`, `ibs2`: Counts of loci with 0, 1, or 2 shared alleles
+
+**Examples:**
+
+```bash
+# Compute relatedness for all sample pairs
+inquiSTR relate combined.tsv --output relatedness.tsv
+
+# Use multiple threads for large datasets
+inquiSTR relate combined.tsv --output relatedness.tsv --threads 8
+
+# Identify potential duplicates or close relatives
+inquiSTR relate combined.tsv --output relatedness.tsv | awk '$3 > 0.4'
+```
+
+**Use Cases:**
+
+- Quality control: Detect sample swaps or duplicates
+- Validate pedigrees: Confirm expected relationships
+- Population structure: Identify cryptic relatedness
+- Forensic analysis: Determine familial relationships
 
 ### `inquiSTR association` - Statistical Association Testing
 
