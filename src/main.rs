@@ -549,6 +549,7 @@ fn main() {
             call::ProcessingConfig { threads, batch_size_kb: batch_size, output_vcf: vcf },
             sample_name,
             reference,
+            true, // show_progress
         ),
         Commands::Batch { common, mode, str_args, unmapped_args } => {
             let config = batch_process::BatchConfig {
@@ -675,6 +676,7 @@ fn main() {
                 threads,
                 target_kmer,
                 combine_revcomp,
+                true, // show_progress
             );
         }
         Commands::Benchmark {

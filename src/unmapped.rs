@@ -13,6 +13,7 @@ use std::path::Path;
 use url::Url;
 
 /// Count kmer frequencies in unmapped reads from a BAM/CRAM file
+#[allow(clippy::too_many_arguments)]
 pub fn count_unmapped_kmers(
     bam_path: String,
     klength: usize,
@@ -21,6 +22,7 @@ pub fn count_unmapped_kmers(
     threads: usize,
     target_kmer: Option<String>,
     combine_revcomp: bool,
+    show_progress: bool,
 ) {
     info!("Starting kmer counting for unmapped reads");
     info!("BAM file: {}", bam_path);
@@ -33,7 +35,15 @@ pub fn count_unmapped_kmers(
     if let Some(ref target) = target_kmer {
         info!("Target kmer: {}", target);
         // If target kmer is specified, only count that specific kmer
-        count_target_kmer(&bam_path, target, sample_name, &reference, threads, combine_revcomp);
+        count_target_kmer(
+            &bam_path,
+            target,
+            sample_name,
+            &reference,
+            threads,
+            combine_revcomp,
+            show_progress,
+        );
         return;
     }
 
@@ -60,8 +70,13 @@ pub fn count_unmapped_kmers(
     let counts_from_index = get_counts_from_index(&bam_path);
 
     // Stream unmapped reads and count kmers in batches
-    let (kmer_counts, total_reads) =
-        stream_unmapped_reads_and_count_kmers(&bam_path, &reference, counts_from_index, klength);
+    let (kmer_counts, total_reads) = stream_unmapped_reads_and_count_kmers(
+        &bam_path,
+        &reference,
+        counts_from_index,
+        klength,
+        show_progress,
+    );
 
     info!("Total reads in file: {}", total_reads);
     info!("Processed unmapped reads with streaming approach");
@@ -149,6 +164,7 @@ fn stream_unmapped_reads_and_count_kmers(
     reference: &Option<String>,
     counts_from_index: Option<(u64, u64)>,
     klength: usize,
+    show_progress: bool,
 ) -> (Vec<Vec<u64>>, u64) {
     info!("Starting streaming kmer counting for unmapped reads");
 
@@ -161,23 +177,27 @@ fn stream_unmapped_reads_and_count_kmers(
 
     // Progress tracking
     let total_unmapped_expected = counts_from_index.map(|(unmapped, _)| unmapped);
-    let progress = if let Some(expected) = total_unmapped_expected {
-        let pb = ProgressBar::new(expected);
-        pb.set_style(
-            ProgressStyle::default_bar()
-                .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} unmapped reads ({percent}%)")
-                .expect("Invalid progress template")
-        );
-        Some(pb)
+    let progress = if show_progress {
+        if let Some(expected) = total_unmapped_expected {
+            let pb = ProgressBar::new(expected);
+            pb.set_style(
+                ProgressStyle::default_bar()
+                    .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} unmapped reads ({percent}%)")
+                    .expect("Invalid progress template")
+            );
+            Some(pb)
+        } else {
+            let pb = ProgressBar::new_spinner();
+            pb.set_style(
+                ProgressStyle::default_spinner()
+                    .template("{spinner:.green} [{elapsed_precise}] Processing reads: {msg}")
+                    .expect("Invalid progress template"),
+            );
+            pb.set_message("0 reads processed");
+            Some(pb)
+        }
     } else {
-        let pb = ProgressBar::new_spinner();
-        pb.set_style(
-            ProgressStyle::default_spinner()
-                .template("{spinner:.green} [{elapsed_precise}] Processing reads: {msg}")
-                .expect("Invalid progress template"),
-        );
-        pb.set_message("0 reads processed");
-        Some(pb)
+        None
     };
 
     // Collect unmapped sequences in batches
@@ -567,6 +587,7 @@ fn count_target_kmer(
     reference: &Option<String>,
     threads: usize,
     combine_revcomp: bool,
+    show_progress: bool,
 ) {
     // Expand shorthand notation if present (e.g., (CT)4 -> CTCTCTCT)
     let expanded_kmer = match expand_kmer_shorthand(target_kmer) {
@@ -644,8 +665,13 @@ fn count_target_kmer(
     let counts_from_index = get_counts_from_index(bam_path);
 
     // Stream unmapped reads and count target kmer
-    let (total_count, total_reads) =
-        stream_and_count_target_kmer(bam_path, reference, counts_from_index, &rotations);
+    let (total_count, total_reads) = stream_and_count_target_kmer(
+        bam_path,
+        reference,
+        counts_from_index,
+        &rotations,
+        show_progress,
+    );
 
     // Output results
     println!("# file_type=target_kmer");
@@ -675,19 +701,24 @@ fn stream_and_count_target_kmer(
     reference: &Option<String>,
     counts_from_index: Option<(u64, u64)>,
     rotations: &[Vec<u8>],
+    show_progress: bool,
 ) -> (u64, u64) {
     const BATCH_SIZE: usize = 10000;
 
     // Set up progress bar
-    let progress_bar = if let Some((unmapped_count, _)) = counts_from_index {
-        let pb = ProgressBar::new(unmapped_count);
-        pb.set_style(
-            ProgressStyle::default_bar()
-                .template("[{elapsed_precise}] {bar:40.cyan/blue} {pos}/{len} reads ({eta})")
-                .expect("Failed to set progress bar template")
-                .progress_chars("=>-"),
-        );
-        Some(pb)
+    let progress_bar = if show_progress {
+        if let Some((unmapped_count, _)) = counts_from_index {
+            let pb = ProgressBar::new(unmapped_count);
+            pb.set_style(
+                ProgressStyle::default_bar()
+                    .template("[{elapsed_precise}] {bar:40.cyan/blue} {pos}/{len} reads ({eta})")
+                    .expect("Failed to set progress bar template")
+                    .progress_chars("=>-"),
+            );
+            Some(pb)
+        } else {
+            None
+        }
     } else {
         None
     };

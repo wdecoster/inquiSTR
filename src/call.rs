@@ -166,6 +166,7 @@ pub fn genotype_repeats(
     processing: ProcessingConfig,
     sample_name: Option<String>,
     reference: Option<String>,
+    show_progress: bool,
 ) {
     // only test if path.is_file() if the file is local
     if !PathBuf::from(&bam).is_file()
@@ -186,15 +187,20 @@ pub fn genotype_repeats(
     let batches = create_batches(all_repeats, processing.batch_size_kb * 1000); // Convert kb to basepair
 
     // Setup progress bar with smoothed ETA
-    let pb = indicatif::ProgressBar::new(total_loci as u64);
-    pb.set_style(
-        indicatif::ProgressStyle::default_bar()
-            .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} loci ({eta})")
-            .expect("Failed to set progress bar template")
-    );
-    // Enable steady tick for smoothed ETA calculation (updates every 100ms)
-    // This makes the time estimate converge to accuracy rather than jumping around
-    pb.enable_steady_tick(std::time::Duration::from_millis(100));
+    let pb = if show_progress {
+        let pb = indicatif::ProgressBar::new(total_loci as u64);
+        pb.set_style(
+            indicatif::ProgressStyle::default_bar()
+                .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} loci ({eta})")
+                .expect("Failed to set progress bar template")
+        );
+        // Enable steady tick for smoothed ETA calculation (updates every 100ms)
+        // This makes the time estimate converge to accuracy rather than jumping around
+        pb.enable_steady_tick(std::time::Duration::from_millis(100));
+        Some(pb)
+    } else {
+        None
+    };
 
     // Process batches using producer-consumer pattern with configurable worker count
     let results: Vec<Vec<Genotype>> = if processing.threads > 1 {
@@ -210,7 +216,9 @@ pub fn genotype_repeats(
                 .map(|batch| {
                     let batch_size = batch.repeats.len();
                     let results = process_batch_worker(batch, &bam, &reference, genotype);
-                    pb.inc(batch_size as u64);
+                    if let Some(ref pb) = pb {
+                        pb.inc(batch_size as u64);
+                    }
                     results
                 })
                 .collect()
@@ -222,19 +230,23 @@ pub fn genotype_repeats(
             .map(|batch| {
                 let batch_size = batch.repeats.len();
                 let results = process_batch_worker(batch, &bam, &reference, genotype);
-                pb.inc(batch_size as u64);
+                if let Some(ref pb) = pb {
+                    pb.inc(batch_size as u64);
+                }
                 results
             })
             .collect()
     };
 
-    pb.finish_with_message("Processing completed, sorting results...");
+    if let Some(ref pb) = pb {
+        pb.finish_with_message("Processing completed, sorting results...");
+    }
 
     // Collect and sort all results
     let mut all_genotypes: Vec<Genotype> = results.into_iter().flatten().collect();
 
     // Create a new progress bar for sorting if we have a large number of results
-    if all_genotypes.len() > 10000 {
+    if show_progress && all_genotypes.len() > 10000 {
         let sort_pb = indicatif::ProgressBar::new_spinner();
         // Use {msg} placeholder instead of invalid Rust-style `{}` in indicatif templates
         sort_pb.set_style(
@@ -457,6 +469,7 @@ fn test_region() {
         ProcessingConfig { threads: 4, batch_size_kb: 50, output_vcf: None },
         Some("sample".to_string()),
         None,
+        true, // show_progress
     );
 }
 
@@ -483,6 +496,7 @@ fn test_region_from_url() {
         },
         Some("sample".to_string()),
         Some(String::from("https://ftp.1000genomes.ebi.ac.uk/vol1/ftp/technical/reference/GRCh38_reference_genome/GRCh38_full_analysis_set_plus_decoy_hla.fa")),
+        true, // show_progress
     );
 }
 
@@ -500,6 +514,7 @@ fn test_region_bed() {
         ProcessingConfig { threads: 4, batch_size_kb: 50, output_vcf: None },
         Some("sample".to_string()),
         None,
+        true, // show_progress
     );
 }
 #[test]
@@ -516,6 +531,7 @@ fn test_unphased() {
         ProcessingConfig { threads: 4, batch_size_kb: 50, output_vcf: None },
         Some("sample".to_string()),
         None,
+        true, // show_progress
     );
 }
 
@@ -549,6 +565,7 @@ fn test_phasing_validation_triggers() {
         ProcessingConfig { threads: 1, batch_size_kb: 50, output_vcf: None },
         Some("sample".to_string()),
         None,
+        true, // show_progress
     );
 }
 
@@ -577,6 +594,7 @@ fn test_nan_genotype_for_unphased_loci() {
         ProcessingConfig { threads: 1, batch_size_kb: 50, output_vcf: None },
         Some("test_sample".to_string()),
         None,
+        true, // show_progress
     );
 
     // Clean up

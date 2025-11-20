@@ -166,6 +166,7 @@ fn process_sample(
             processing_config.clone(),
             Some(sample.sample_name.clone()),
             reference.clone(),
+            false, // Don't show progress - batch mode has its own progress bar
         );
     }));
 
@@ -219,6 +220,7 @@ fn process_sample_unmapped(
             processing_config.threads,
             unmapped_config.target_kmer.clone(),
             unmapped_config.combine_revcomp,
+            false, // Don't show progress - batch mode has its own progress bar
         );
     }));
 
