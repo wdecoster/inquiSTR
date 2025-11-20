@@ -27,9 +27,7 @@ inquiSTR outlier combined.tsv --output outliers.txt
 inquiSTR association combined.tsv --phenotype phenotypes.txt --output results.tsv
 ```
 
-**Common presets**: `pathogenic` (75 disease loci), `adotto` (1.8M loci), `trexplorer` (4.9M loci), `codis` (20 forensic markers)
-
-For detailed options and additional commands, see the full documentation below.
+For detailed options, presets and additional commands, see the full documentation below.
 
 ## Table of Contents
 
