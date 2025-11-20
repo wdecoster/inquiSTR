@@ -6,7 +6,7 @@
 [![Documentation](https://docs.rs/inquiSTR/badge.svg)](https://docs.rs/inquiSTR)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-A toolkit for lightning-fast Short Tandem Repeat (STR) length genotyping and downstream analysis from long-read sequencing data. inquiSTR works with Oxford Nanopore Technologies and PacBio BAM/CRAM files and supports both phased and unphased data.
+A toolkit for lightning-fast Short Tandem Repeat (STR) length genotyping and downstream analysis from long-read sequencing data. inquiSTR works with Oxford Nanopore Technologies and PacBio BAM/CRAM files and supports both phased and unphased data. With subcommands for combining results across samples for cohort studies with statistical association testing, outlier detection, relatedness assssment and visualization. inquiSTR provides seamless access to remote files via HTTP/HTTPS/FTP/S3 URLs with automatic index caching and makes efficient use of multi-core systems through parallelized code.
 
 ## Quick Start
 
@@ -34,8 +34,6 @@ For detailed options and additional commands, see the full documentation below.
 ## Table of Contents
 
 - [Quick Start](#quick-start)
-- [Features](#features)
-  - [Remote File Access](#remote-file-access)
 - [Installation](#-installation)
   - [Pre-built Binaries](#pre-built-binaries-recommended)
   - [From Source](#from-source)
@@ -59,15 +57,6 @@ For detailed options and additional commands, see the full documentation below.
   - [Development Setup](#development-setup)
   - [Code Quality](#code-quality)
   - [Contributing](#contributing)
-
-## Features
-
-- **STR length genotyping**: Determine repeat lengths at specific genomic loci
-- **Phased analysis**: Use HP tags from phased BAM/CRAM files to analyze haplotypes separately
-- **Multi-sample analysis**: Combine results across samples for cohort studies
-- **Association testing**: Perform statistical analysis of STR variations
-- **Remote file support**: Seamless access to HTTP/HTTPS/FTP/S3 URLs with automatic index caching
-- **Parallelized code**: Efficient use of multi-core systems
 
 ## 📦 Installation
 
@@ -287,17 +276,6 @@ inquiSTR call sample.cram --reference genome.fa -R regions.bed
 # Single-region call on CRAM
 inquiSTR call sample.cram --reference genome.fa -r chr1:1000-1100
 ```
-
-#### Remote File Access
-
-inquiSTR automatically handles remote BAM/CRAM files with index caching:
-
-- **Auto-caching**: Downloaded indexes are cached at `~/.cache/inquistr/` for instant reuse
-- **Local-first**: Checks current directory for index files before downloading
-- **Auto-cleanup**: Removes cached files older than 30 days to prevent bloat
-- **User control**: Set `INQUISTR_NO_CACHE=1` to disable caching for one-time analyses
-
-See [INDEX_CACHING.md](docs/INDEX_CACHING.md) for detailed configuration options.
 
 ### `inquiSTR batch` - Batch Sample Processing
 
