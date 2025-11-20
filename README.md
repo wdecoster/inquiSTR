@@ -1087,7 +1087,7 @@ inquiSTR association \
 
 ## Legacy R Script Usage
 
-For advanced users who prefer direct script access, the association testing functionality is also available as a standalone R script `STR_regression.R` in the scripts folder. Detailed examples are provided in [STR_regression_examples.md](docs/STR_regression_examples.md).
+The recommended approach is to use `inquiSTR association`, however, for advanced users who prefer direct script access, the association testing functionality is also available as a standalone R script `STR_regression.R` in the scripts folder. Detailed examples are provided in [STR_regression_examples.md](docs/STR_regression_examples.md).
 
 ## 🛠️ Development
 
