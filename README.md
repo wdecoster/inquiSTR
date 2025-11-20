@@ -8,8 +8,32 @@
 
 A toolkit for lightning-fast Short Tandem Repeat (STR) length genotyping and downstream analysis from long-read sequencing data. inquiSTR works with Oxford Nanopore Technologies and PacBio BAM/CRAM files and supports both phased and unphased data.
 
+## Quick Start
+
+```bash
+# 1. Genotype a single sample at pathogenic STR loci
+inquiSTR call sample.bam --preset pathogenic --output sample.inq
+
+# 2. Combine results for cohort analysis
+inquiSTR combine *.inq --output combined.tsv
+
+# 3. Or process multiple samples in batch
+inquiSTR batch samples.txt --preset pathogenic --threads 16
+
+# 4. Identify statistical outliers
+inquiSTR outlier combined.tsv --output outliers.txt
+
+# 5. Run association test (case vs control)
+inquiSTR association combined.tsv --phenotype phenotypes.txt --output results.tsv
+```
+
+**Common presets**: `pathogenic` (75 disease loci), `adotto` (1.8M loci), `trexplorer` (4.9M loci), `codis` (20 forensic markers)
+
+For detailed options and additional commands, see the full documentation below.
+
 ## Table of Contents
 
+- [Quick Start](#quick-start)
 - [Features](#features)
   - [Remote File Access](#remote-file-access)
 - [Installation](#-installation)
