@@ -269,7 +269,7 @@ inquiSTR automatically handles remote BAM/CRAM files with index caching:
 - **Auto-cleanup**: Removes cached files older than 30 days to prevent bloat
 - **User control**: Set `INQUISTR_NO_CACHE=1` to disable caching for one-time analyses
 
-See [INDEX_CACHING.md](INDEX_CACHING.md) for detailed configuration options.
+See [INDEX_CACHING.md](docs/INDEX_CACHING.md) for detailed configuration options.
 
 ### `inquiSTR batch` - Batch Sample Processing
 
@@ -1022,7 +1022,7 @@ inquiSTR association \
 
 ## Legacy R Script Usage
 
-For advanced users who prefer direct script access, the association testing functionality is also available as a standalone R script `STR_regression.R` in the scripts folder. Detailed examples are provided in [STR_regression_examples.md](STR_regression_examples.md).
+For advanced users who prefer direct script access, the association testing functionality is also available as a standalone R script `STR_regression.R` in the scripts folder. Detailed examples are provided in [STR_regression_examples.md](docs/STR_regression_examples.md).
 
 ## 🛠️ Development
 
