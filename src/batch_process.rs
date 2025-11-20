@@ -382,13 +382,16 @@ pub fn batch_process(config: BatchConfig, mode: BatchMode) {
         BatchMode::UnmappedKmer { processing_config, .. } => processing_config.threads,
         BatchMode::StrGenotyping { processing_config, .. } => processing_config.threads,
     };
-    
+
     let parallel_samples = config.parallel_samples;
     let threads_per_sample = (total_threads / parallel_samples).max(1);
-    
+
     if parallel_samples > 1 {
         eprintln!("Parallel processing: {} samples at a time", parallel_samples);
-        eprintln!("Thread allocation: {} threads total, {} threads per sample", total_threads, threads_per_sample);
+        eprintln!(
+            "Thread allocation: {} threads total, {} threads per sample",
+            total_threads, threads_per_sample
+        );
     }
 
     match &mode {
@@ -526,15 +529,13 @@ pub fn batch_process(config: BatchConfig, mode: BatchMode) {
 
     // Create adjusted mode with threads per sample
     let adjusted_mode = match mode {
-        BatchMode::UnmappedKmer { unmapped_config, processing_config } => {
-            BatchMode::UnmappedKmer {
-                unmapped_config,
-                processing_config: ProcessingConfig {
-                    threads: threads_per_sample,
-                    ..processing_config
-                },
-            }
-        }
+        BatchMode::UnmappedKmer { unmapped_config, processing_config } => BatchMode::UnmappedKmer {
+            unmapped_config,
+            processing_config: ProcessingConfig {
+                threads: threads_per_sample,
+                ..processing_config
+            },
+        },
         BatchMode::StrGenotyping { target_config, genotype_config, processing_config } => {
             BatchMode::StrGenotyping {
                 target_config,
@@ -562,26 +563,29 @@ pub fn batch_process(config: BatchConfig, mode: BatchMode) {
         );
 
         for sample in &samples {
-        pb.set_message(format!("Processing {}", sample.sample_name));
+            pb.set_message(format!("Processing {}", sample.sample_name));
 
-        let individual_file = individual_dir.join(format!("{}.inq", sample.sample_name));
+            let individual_file = individual_dir.join(format!("{}.inq", sample.sample_name));
 
-        // Pre-validate BAM file exists (for local files)
-        if !sample.bam_path.starts_with("http://")
-            && !sample.bam_path.starts_with("https://")
-            && !sample.bam_path.starts_with("ftp://")
-            && !sample.bam_path.starts_with("s3://")
-            && !std::path::Path::new(&sample.bam_path).exists()
-        {
-            eprintln!(
-                "\nERROR: Failed to process sample '{}': BAM file does not exist",
-                sample.sample_name
-            );
-            eprintln!("       BAM file: {}", sample.bam_path);
-            failed_samples.lock().unwrap().push(sample.sample_name.clone());
-            pb.inc(1);
-            continue;
-        }
+            // Pre-validate BAM file exists (for local files)
+            if !sample.bam_path.starts_with("http://")
+                && !sample.bam_path.starts_with("https://")
+                && !sample.bam_path.starts_with("ftp://")
+                && !sample.bam_path.starts_with("s3://")
+                && !std::path::Path::new(&sample.bam_path).exists()
+            {
+                eprintln!(
+                    "\nERROR: Failed to process sample '{}': BAM file does not exist",
+                    sample.sample_name
+                );
+                eprintln!("       BAM file: {}", sample.bam_path);
+                failed_samples
+                    .lock()
+                    .unwrap()
+                    .push(sample.sample_name.clone());
+                pb.inc(1);
+                continue;
+            }
 
             let result = match &adjusted_mode {
                 BatchMode::UnmappedKmer { unmapped_config, processing_config } => {
@@ -612,7 +616,10 @@ pub fn batch_process(config: BatchConfig, mode: BatchMode) {
                 Err(e) => {
                     eprintln!("\nERROR: Failed to process sample '{}': {}", sample.sample_name, e);
                     eprintln!("       BAM file: {}", sample.bam_path);
-                    failed_samples.lock().unwrap().push(sample.sample_name.clone());
+                    failed_samples
+                        .lock()
+                        .unwrap()
+                        .push(sample.sample_name.clone());
                 }
             }
 
@@ -646,7 +653,8 @@ pub fn batch_process(config: BatchConfig, mode: BatchMode) {
                     );
                     pb.set_message(format!("Processing {}", sample.sample_name));
 
-                    let individual_file = individual_dir.join(format!("{}.inq", sample.sample_name));
+                    let individual_file =
+                        individual_dir.join(format!("{}.inq", sample.sample_name));
 
                     // Pre-validate BAM file exists (for local files)
                     if !sample.bam_path.starts_with("http://")
@@ -660,7 +668,10 @@ pub fn batch_process(config: BatchConfig, mode: BatchMode) {
                             sample.sample_name
                         );
                         eprintln!("       BAM file: {}", sample.bam_path);
-                        failed_samples.lock().unwrap().push(sample.sample_name.clone());
+                        failed_samples
+                            .lock()
+                            .unwrap()
+                            .push(sample.sample_name.clone());
                         pb.finish_with_message(format!("✗ {}", sample.sample_name));
                         overall_pb.inc(1);
                         return;
@@ -676,16 +687,18 @@ pub fn batch_process(config: BatchConfig, mode: BatchMode) {
                                 &individual_file,
                             )
                         }
-                        BatchMode::StrGenotyping { target_config, genotype_config, processing_config } => {
-                            process_sample(
-                                sample,
-                                target_config,
-                                genotype_config,
-                                processing_config,
-                                &config.reference,
-                                &individual_file,
-                            )
-                        }
+                        BatchMode::StrGenotyping {
+                            target_config,
+                            genotype_config,
+                            processing_config,
+                        } => process_sample(
+                            sample,
+                            target_config,
+                            genotype_config,
+                            processing_config,
+                            &config.reference,
+                            &individual_file,
+                        ),
                     };
 
                     match result {
@@ -694,9 +707,15 @@ pub fn batch_process(config: BatchConfig, mode: BatchMode) {
                             pb.finish_with_message(format!("✓ {}", sample.sample_name));
                         }
                         Err(e) => {
-                            eprintln!("\nERROR: Failed to process sample '{}': {}", sample.sample_name, e);
+                            eprintln!(
+                                "\nERROR: Failed to process sample '{}': {}",
+                                sample.sample_name, e
+                            );
                             eprintln!("       BAM file: {}", sample.bam_path);
-                            failed_samples.lock().unwrap().push(sample.sample_name.clone());
+                            failed_samples
+                                .lock()
+                                .unwrap()
+                                .push(sample.sample_name.clone());
                             pb.finish_with_message(format!("✗ {}", sample.sample_name));
                         }
                     }
@@ -709,8 +728,14 @@ pub fn batch_process(config: BatchConfig, mode: BatchMode) {
     }
 
     // Extract results from Arc<Mutex<>>
-    let individual_files = Arc::try_unwrap(individual_files).unwrap().into_inner().unwrap();
-    let failed_samples = Arc::try_unwrap(failed_samples).unwrap().into_inner().unwrap();
+    let individual_files = Arc::try_unwrap(individual_files)
+        .unwrap()
+        .into_inner()
+        .unwrap();
+    let failed_samples = Arc::try_unwrap(failed_samples)
+        .unwrap()
+        .into_inner()
+        .unwrap();
 
     // Report failures
     if !failed_samples.is_empty() {
