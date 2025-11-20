@@ -1,8 +1,10 @@
 use crate::call::{GenotypeConfig, ProcessingConfig, TargetConfig};
-use indicatif::{ProgressBar, ProgressStyle};
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use rayon::prelude::*;
 use std::fs;
 use std::io::{self, BufRead};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 /// Configuration for unmapped kmer counting
 #[derive(Debug, Clone)]
@@ -22,6 +24,7 @@ pub struct BatchConfig {
     pub resume: bool,
     pub dry_run: bool,
     pub reference: Option<String>,
+    pub parallel_samples: usize,
 }
 
 /// Mode-specific configuration for batch processing
@@ -374,6 +377,20 @@ fn get_samples_from_combined_kmer_file(file_path: &Path) -> Option<Vec<String>> 
 pub fn batch_process(config: BatchConfig, mode: BatchMode) {
     eprintln!("Starting batch processing...");
 
+    // Get thread count and calculate threads per sample
+    let total_threads = match &mode {
+        BatchMode::UnmappedKmer { processing_config, .. } => processing_config.threads,
+        BatchMode::StrGenotyping { processing_config, .. } => processing_config.threads,
+    };
+    
+    let parallel_samples = config.parallel_samples;
+    let threads_per_sample = (total_threads / parallel_samples).max(1);
+    
+    if parallel_samples > 1 {
+        eprintln!("Parallel processing: {} samples at a time", parallel_samples);
+        eprintln!("Thread allocation: {} threads total, {} threads per sample", total_threads, threads_per_sample);
+    }
+
     match &mode {
         BatchMode::UnmappedKmer { unmapped_config, .. } => {
             eprintln!("Mode: Unmapped kmer counting");
@@ -507,20 +524,44 @@ pub fn batch_process(config: BatchConfig, mode: BatchMode) {
         return;
     }
 
-    // Create progress bar
-    let pb = ProgressBar::new(samples.len() as u64);
-    pb.set_style(
-        ProgressStyle::default_bar()
-            .template("[{elapsed_precise}] {bar:40.cyan/blue} {pos}/{len} (ETA: {eta}) {msg}")
-            .unwrap()
-            .progress_chars("=>-"),
-    );
+    // Create adjusted mode with threads per sample
+    let adjusted_mode = match mode {
+        BatchMode::UnmappedKmer { unmapped_config, processing_config } => {
+            BatchMode::UnmappedKmer {
+                unmapped_config,
+                processing_config: ProcessingConfig {
+                    threads: threads_per_sample,
+                    ..processing_config
+                },
+            }
+        }
+        BatchMode::StrGenotyping { target_config, genotype_config, processing_config } => {
+            BatchMode::StrGenotyping {
+                target_config,
+                genotype_config,
+                processing_config: ProcessingConfig {
+                    threads: threads_per_sample,
+                    ..processing_config
+                },
+            }
+        }
+    };
 
-    let mut individual_files = Vec::new();
-    let mut failed_samples = Vec::new();
+    // Create progress tracking
+    let individual_files = Arc::new(Mutex::new(Vec::new()));
+    let failed_samples = Arc::new(Mutex::new(Vec::new()));
 
-    // Process each sample
-    for sample in &samples {
+    if parallel_samples == 1 {
+        // Sequential processing with simple progress bar
+        let pb = ProgressBar::new(samples.len() as u64);
+        pb.set_style(
+            ProgressStyle::default_bar()
+                .template("[{elapsed_precise}] {bar:40.cyan/blue} {pos}/{len} (ETA: {eta}) {msg}")
+                .unwrap()
+                .progress_chars("=>-"),
+        );
+
+        for sample in &samples {
         pb.set_message(format!("Processing {}", sample.sample_name));
 
         let individual_file = individual_dir.join(format!("{}.inq", sample.sample_name));
@@ -537,48 +578,139 @@ pub fn batch_process(config: BatchConfig, mode: BatchMode) {
                 sample.sample_name
             );
             eprintln!("       BAM file: {}", sample.bam_path);
-            failed_samples.push(sample.sample_name.clone());
+            failed_samples.lock().unwrap().push(sample.sample_name.clone());
             pb.inc(1);
             continue;
         }
 
-        let result = match &mode {
-            BatchMode::UnmappedKmer { unmapped_config, processing_config } => {
-                process_sample_unmapped(
-                    sample,
-                    unmapped_config,
-                    processing_config,
-                    &config.reference,
-                    &individual_file,
-                )
-            }
-            BatchMode::StrGenotyping { target_config, genotype_config, processing_config } => {
-                process_sample(
-                    sample,
-                    target_config,
-                    genotype_config,
-                    processing_config,
-                    &config.reference,
-                    &individual_file,
-                )
-            }
-        };
+            let result = match &adjusted_mode {
+                BatchMode::UnmappedKmer { unmapped_config, processing_config } => {
+                    process_sample_unmapped(
+                        sample,
+                        unmapped_config,
+                        processing_config,
+                        &config.reference,
+                        &individual_file,
+                    )
+                }
+                BatchMode::StrGenotyping { target_config, genotype_config, processing_config } => {
+                    process_sample(
+                        sample,
+                        target_config,
+                        genotype_config,
+                        processing_config,
+                        &config.reference,
+                        &individual_file,
+                    )
+                }
+            };
 
-        match result {
-            Ok(()) => {
-                individual_files.push(individual_file);
+            match result {
+                Ok(()) => {
+                    individual_files.lock().unwrap().push(individual_file);
+                }
+                Err(e) => {
+                    eprintln!("\nERROR: Failed to process sample '{}': {}", sample.sample_name, e);
+                    eprintln!("       BAM file: {}", sample.bam_path);
+                    failed_samples.lock().unwrap().push(sample.sample_name.clone());
+                }
             }
-            Err(e) => {
-                eprintln!("\nERROR: Failed to process sample '{}': {}", sample.sample_name, e);
-                eprintln!("       BAM file: {}", sample.bam_path);
-                failed_samples.push(sample.sample_name.clone());
-            }
+
+            pb.inc(1);
         }
 
-        pb.inc(1);
+        pb.finish_with_message("Sample processing complete");
+    } else {
+        // Parallel processing with multi-progress
+        let multi = MultiProgress::new();
+        let overall_pb = multi.add(ProgressBar::new(samples.len() as u64));
+        overall_pb.set_style(
+            ProgressStyle::default_bar()
+                .template("[{elapsed_precise}] {bar:40.cyan/blue} {pos}/{len} (ETA: {eta}) Overall progress")
+                .unwrap()
+                .progress_chars("=>-"),
+        );
+
+        // Set up rayon thread pool
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(parallel_samples)
+            .build()
+            .unwrap()
+            .install(|| {
+                samples.par_iter().for_each(|sample| {
+                    let pb = multi.add(ProgressBar::new_spinner());
+                    pb.set_style(
+                        ProgressStyle::default_spinner()
+                            .template("{spinner:.green} {msg}")
+                            .unwrap(),
+                    );
+                    pb.set_message(format!("Processing {}", sample.sample_name));
+
+                    let individual_file = individual_dir.join(format!("{}.inq", sample.sample_name));
+
+                    // Pre-validate BAM file exists (for local files)
+                    if !sample.bam_path.starts_with("http://")
+                        && !sample.bam_path.starts_with("https://")
+                        && !sample.bam_path.starts_with("ftp://")
+                        && !sample.bam_path.starts_with("s3://")
+                        && !std::path::Path::new(&sample.bam_path).exists()
+                    {
+                        eprintln!(
+                            "\nERROR: Failed to process sample '{}': BAM file does not exist",
+                            sample.sample_name
+                        );
+                        eprintln!("       BAM file: {}", sample.bam_path);
+                        failed_samples.lock().unwrap().push(sample.sample_name.clone());
+                        pb.finish_with_message(format!("✗ {}", sample.sample_name));
+                        overall_pb.inc(1);
+                        return;
+                    }
+
+                    let result = match &adjusted_mode {
+                        BatchMode::UnmappedKmer { unmapped_config, processing_config } => {
+                            process_sample_unmapped(
+                                sample,
+                                unmapped_config,
+                                processing_config,
+                                &config.reference,
+                                &individual_file,
+                            )
+                        }
+                        BatchMode::StrGenotyping { target_config, genotype_config, processing_config } => {
+                            process_sample(
+                                sample,
+                                target_config,
+                                genotype_config,
+                                processing_config,
+                                &config.reference,
+                                &individual_file,
+                            )
+                        }
+                    };
+
+                    match result {
+                        Ok(()) => {
+                            individual_files.lock().unwrap().push(individual_file);
+                            pb.finish_with_message(format!("✓ {}", sample.sample_name));
+                        }
+                        Err(e) => {
+                            eprintln!("\nERROR: Failed to process sample '{}': {}", sample.sample_name, e);
+                            eprintln!("       BAM file: {}", sample.bam_path);
+                            failed_samples.lock().unwrap().push(sample.sample_name.clone());
+                            pb.finish_with_message(format!("✗ {}", sample.sample_name));
+                        }
+                    }
+
+                    overall_pb.inc(1);
+                });
+            });
+
+        overall_pb.finish_with_message("Sample processing complete");
     }
 
-    pb.finish_with_message("Sample processing complete");
+    // Extract results from Arc<Mutex<>>
+    let individual_files = Arc::try_unwrap(individual_files).unwrap().into_inner().unwrap();
+    let failed_samples = Arc::try_unwrap(failed_samples).unwrap().into_inner().unwrap();
 
     // Report failures
     if !failed_samples.is_empty() {
@@ -594,8 +726,8 @@ pub fn batch_process(config: BatchConfig, mode: BatchMode) {
         std::process::exit(1);
     }
 
-    // Get thread count from mode
-    let threads = match &mode {
+    // Get thread count from adjusted_mode
+    let threads = match &adjusted_mode {
         BatchMode::UnmappedKmer { processing_config, .. } => processing_config.threads,
         BatchMode::StrGenotyping { processing_config, .. } => processing_config.threads,
     };

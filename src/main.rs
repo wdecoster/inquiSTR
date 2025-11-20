@@ -40,9 +40,13 @@ struct BatchCommonArgs {
     #[clap(short, long, value_parser, required = true)]
     output: PathBuf,
 
-    /// Number of parallel threads to use (per sample)
+    /// Number of parallel threads to use (total, divided among parallel samples)
     #[clap(short, long, value_parser, default_value_t = 1)]
     threads: usize,
+
+    /// Number of samples to process in parallel (threads will be divided among them)
+    #[clap(long, value_parser, default_value_t = 1)]
+    parallel_samples: usize,
 
     /// Reference fasta for CRAM decoding (applies to all samples)
     #[clap(long, value_parser)]
@@ -560,6 +564,7 @@ fn main() {
                 resume: common.resume,
                 dry_run: common.dry_run,
                 reference: common.reference,
+                parallel_samples: common.parallel_samples,
             };
 
             let batch_mode = if mode.unmapped {
