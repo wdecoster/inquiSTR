@@ -167,7 +167,7 @@ Arguments:
 Options:
   -r, --region <REGION>            region string to genotype expansion in
   -R, --region-file <REGION_FILE>  Bed file with region(s) to genotype expansion(s) in
-      --preset <PRESET>            Use a predefined TR catalog: pathogenic, adotto, or trexplorer
+      --preset <PRESET>            Use a predefined TR catalog: pathogenic, adotto, trexplorer, or codis
   -m, --minlen <MINLEN>            minimal length of insertion/deletion operation [default: 5]
   -s, --support <SUPPORT>          minimal number of supporting reads [default: 3]
   -t, --threads <THREADS>          Number of parallel threads to use [default: 1]
@@ -193,6 +193,7 @@ inquiSTR call sample.bam -R regions.bed
 inquiSTR call sample.bam --preset pathogenic    # STRchive disease-associated STRs (75 loci)
 inquiSTR call sample.bam --preset adotto        # ADOTTO TR regions v1.2.1 (1.8M loci)
 inquiSTR call sample.bam --preset trexplorer    # Broad Institute TR Explorer catalog (4.9M loci)
+inquiSTR call sample.bam --preset codis         # CODIS forensic markers (20 loci)
 
 # Filter out large intervals (>10kb) that may span problematic regions
 inquiSTR call sample.bam -R regions.bed --max-locus 10000
@@ -217,6 +218,7 @@ The `--preset` option provides quick access to well-known TR catalogs without ma
 - **pathogenic**: STRchive pathogenic disease-associated STRs - curated database of STRs linked to human diseases (**75 loci**). See also [Hiatt et al., 2025](https://genomemedicine.biomedcentral.com/articles/10.1186/s13073-025-01454-4)
 - **adotto**: ADOTTO TR regions catalog v1.2.1 - comprehensive TR regions from the ADOTTO project (**1,784,804 loci**). See also [English et al., 2025](https://www.nature.com/articles/s41587-024-02225-z)
 - **trexplorer**: Broad Institute TR Explorer catalog - genome-wide TR catalog covering 1-1000bp motifs (**4,863,041 loci**). See also [Weisburd et al., 2025](https://www.biorxiv.org/content/10.1101/2024.10.04.615514v2)
+- **codis**: CODIS forensic STR markers from the USAT catalog - standard forensic STR markers used for human identification (**20 loci**). See also [Wang et al., 2024](https://academic.oup.com/bioinformatics/article/40/12/btae688/7898855)
 
 **Note**: All preset catalogs are for the **GRCh38/hg38** reference genome.
 
@@ -306,7 +308,7 @@ Unmapped Kmer Mode Options (only with --unmapped):
 STR Genotyping Mode Options (default mode, without --unmapped):
   -r, --region <REGION>                  Region string to genotype expansion in
   -R, --region-file <REGION_FILE>        Bed file with region(s) to genotype expansion(s) in
-      --preset <PRESET>                  Use a predefined TR catalog (pathogenic, adotto, or trexplorer)
+      --preset <PRESET>                  Use a predefined TR catalog (pathogenic, adotto, trexplorer, or codis)
   -m, --minlen <MINLEN>                  Minimal length of insertion/deletion operation [default: 5]
   -s, --support <SUPPORT>                Minimal number of supporting reads [default: 3]
   -u, --unphased                         If reads have to be considered unphased

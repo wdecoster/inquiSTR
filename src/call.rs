@@ -30,6 +30,8 @@ pub enum TRPreset {
     Adotto,
     /// Broad Institute TR Explorer catalog (1-1000bp motifs)
     Trexplorer,
+    /// CODIS forensic STR markers (USAT catalog)
+    Codis,
 }
 
 impl TRPreset {
@@ -48,6 +50,10 @@ impl TRPreset {
                 "https://github.com/broadinstitute/tandem-repeat-catalog/releases/download/v1.0/repeat_catalog_v1.hg38.1_to_1000bp_motifs.bed.gz",
                 "repeat_catalog_v1.hg38.1_to_1000bp_motifs.bed.gz",
             ),
+            TRPreset::Codis => (
+                "https://raw.githubusercontent.com/XuewenWangUGA/USAT/refs/heads/main/settings/STRRegionsV5xwlinuxBest.bed",
+                "USAT-CODIS-STRRegionsV5.bed",
+            ),
         }
     }
 
@@ -57,6 +63,7 @@ impl TRPreset {
             TRPreset::Pathogenic => "STRchive pathogenic STRs",
             TRPreset::Adotto => "ADOTTO TR regions v1.2.1",
             TRPreset::Trexplorer => "TR Explorer catalog (1-1000bp motifs)",
+            TRPreset::Codis => "CODIS forensic markers (USAT)",
         }
     }
 }

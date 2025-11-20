@@ -45,14 +45,63 @@ impl RepeatIntervalIterator {
         chrom_lengths: HashMap<String, u64>,
         max_locus: Option<u32>,
     ) -> Self {
+        use std::io::{BufRead, BufReader};
+        
         // Use utils::reader to handle gzipped files
         let file_reader = crate::utils::reader(region_file);
-        let mut reader = bed::Reader::new(file_reader);
+        let buf_reader = BufReader::new(file_reader);
+        
+        // Check only the first non-empty, non-comment line to see if it's a header
+        // This avoids overhead on large BED files
+        let lines: Vec<String> = buf_reader.lines()
+            .map(|l| l.expect("Error reading line from BED file"))
+            .collect();
+        
+        let mut skipped_headers = 0;
+        let mut start_idx = 0;
+        
+        // Find first non-empty, non-comment line
+        for (idx, line) in lines.iter().enumerate() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                continue;
+            }
+            
+            // Check if this looks like a header (case-insensitive)
+            let first_field = trimmed.split('\t').next().unwrap_or("").to_lowercase();
+            let is_header = first_field.contains("chrom") 
+                || first_field.contains("chr") && !first_field.starts_with("chr")
+                || first_field == "name" 
+                || first_field == "id";
+            
+            if is_header {
+                skipped_headers = 1;
+                start_idx = idx + 1;
+            }
+            break;
+        }
+        
+        // Remove skipped lines
+        let filtered_lines: Vec<String> = lines.into_iter()
+            .skip(start_idx)
+            .filter(|line| {
+                let trimmed = line.trim();
+                !trimmed.is_empty() && !trimmed.starts_with('#')
+            })
+            .collect();
+        
+        // Join lines and parse as BED
+        let filtered_content = filtered_lines.join("\n");
+        let cursor = std::io::Cursor::new(filtered_content.as_bytes());
+        let mut reader = bed::Reader::new(cursor);
+        
         let mut data = Vec::new();
         let mut filtered_count = 0;
+        
         for record in reader.records() {
             let rec =
                 record.expect("Error reading bed record. Is the file valid and tab-delimited?");
+            
             let repeat = RepeatInterval::from_bed(&rec, &chrom_lengths);
             if let Some(repeat) = repeat {
                 // Filter by max_locus size if specified
@@ -65,6 +114,9 @@ impl RepeatIntervalIterator {
                 }
                 data.push(repeat);
             }
+        }
+        if skipped_headers > 0 {
+            eprintln!("INFO: Skipped {} header line(s) in BED file", skipped_headers);
         }
         if filtered_count > 0 {
             eprintln!(
@@ -262,13 +314,52 @@ impl RepeatIntervalIterator {
         chrom_lengths: HashMap<String, u64>,
         max_locus: Option<u32>,
     ) -> Self {
-        let reader = std::io::BufReader::new(data.as_bytes());
-        let mut bed_reader = bed::Reader::new(reader);
+        // Check only the first non-empty, non-comment line to see if it's a header
+        let lines: Vec<&str> = data.lines().collect();
+        let mut skipped_headers = 0;
+        let mut start_idx = 0;
+        
+        // Find first non-empty, non-comment line
+        for (idx, line) in lines.iter().enumerate() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                continue;
+            }
+            
+            // Check if this looks like a header (case-insensitive)
+            let first_field = trimmed.split('\t').next().unwrap_or("").to_lowercase();
+            let is_header = first_field.contains("chrom") 
+                || first_field.contains("chr") && !first_field.starts_with("chr")
+                || first_field == "name" 
+                || first_field == "id";
+            
+            if is_header {
+                skipped_headers = 1;
+                start_idx = idx + 1;
+            }
+            break;
+        }
+        
+        // Filter lines: skip header and empty/comment lines
+        let filtered_lines: Vec<&str> = lines.into_iter()
+            .skip(start_idx)
+            .filter(|line| {
+                let trimmed = line.trim();
+                !trimmed.is_empty() && !trimmed.starts_with('#')
+            })
+            .collect();
+        
+        // Join lines and parse as BED
+        let filtered_content = filtered_lines.join("\n");
+        let cursor = std::io::Cursor::new(filtered_content.as_bytes());
+        let mut bed_reader = bed::Reader::new(cursor);
+        
         let mut data_vec = Vec::new();
         let mut filtered_count = 0;
 
         for record in bed_reader.records() {
             let rec = record.expect("Error reading bed record from downloaded data");
+            
             let repeat = RepeatInterval::from_bed(&rec, &chrom_lengths);
             if let Some(repeat) = repeat {
                 // Filter by max_locus size if specified
@@ -283,6 +374,9 @@ impl RepeatIntervalIterator {
             }
         }
 
+        if skipped_headers > 0 {
+            eprintln!("INFO: Skipped {} header line(s) in downloaded catalog", skipped_headers);
+        }
         if filtered_count > 0 {
             eprintln!(
                 "INFO: Filtered out {} intervals larger than {} bp (max-locus limit)",

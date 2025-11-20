@@ -73,7 +73,7 @@ enum Commands {
         #[clap(short = 'R', long, value_parser)]
         region_file: Option<PathBuf>,
 
-        /// Use a predefined TR catalog (pathogenic, adotto, or trexplorer)
+        /// Use a predefined TR catalog (pathogenic, adotto, trexplorer, or codis)
         #[clap(long, value_parser)]
         preset: Option<call::TRPreset>,
 
@@ -148,7 +148,7 @@ enum Commands {
         #[clap(short = 'R', long, value_parser)]
         region_file: Option<PathBuf>,
 
-        /// [STR Genotyping] Use a predefined TR catalog (pathogenic, adotto, or trexplorer)
+        /// [STR Genotyping] Use a predefined TR catalog (pathogenic, adotto, trexplorer, or codis)
         #[clap(long, value_parser)]
         preset: Option<call::TRPreset>,
 
