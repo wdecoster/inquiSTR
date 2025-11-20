@@ -20,11 +20,13 @@ A toolkit for lightning-fast Short Tandem Repeat (STR) length genotyping and dow
   - [inquiSTR call - STR Genotyping](#inquistr-call---str-genotyping)
   - [inquiSTR batch - Batch Sample Processing](#inquistr-batch---batch-sample-processing)
   - [inquiSTR combine - Multi-sample Analysis](#inquistr-combine---multi-sample-analysis)
+  - [inquiSTR filter - Filter STR Data](#inquistr-filter---filter-str-data)
   - [inquiSTR query - Genotype Lookup](#inquistr-query---genotype-lookup)
   - [inquiSTR outlier - Outlier Detection](#inquistr-outlier---outlier-detection)
   - [inquiSTR histogram - Data Visualization](#inquistr-histogram---data-visualization)
   - [inquiSTR plot - Group Comparison Plots](#inquistr-plot---group-comparison-plots)
   - [inquiSTR unmapped - Kmer Frequency Analysis](#inquistr-unmapped---kmer-frequency-analysis)
+  - [inquiSTR benchmark - Validate STR Calls](#inquistr-benchmark---validate-str-calls)
   - [inquiSTR pca - Principal Component Analysis](#inquistr-pca---principal-component-analysis)
   - [inquiSTR association - Statistical Association Testing](#inquistr-association---statistical-association-testing)
 - [Legacy R Script Usage](#legacy-r-script-usage)
@@ -136,6 +138,7 @@ Commands:
   call         Call lengths
   batch        Process multiple samples in batch and combine results
   combine      Combine STR calls or kmer frequencies from multiple samples to a TSV
+  filter       Filter inquiSTR output by various criteria
   outlier      Find outliers from combined STR or kmer data
   query        Lookup genotypes and display
   histogram    Generate histograms for specific repeats
@@ -143,6 +146,7 @@ Commands:
   pca          Perform Principal Component Analysis on combined STR data
   association  Perform statistical association testing for STRs
   unmapped     Count kmer frequencies in unmapped reads
+  benchmark    Benchmark inquiSTR calls against truth VCF or BED files
   help         Print this message or the help of the given subcommand(s)
 
 Options:
@@ -171,7 +175,8 @@ Options:
       --sample-name <SAMPLE_NAME>  sample name to use in output
       --reference <REFERENCE>      reference fasta for cram decoding
       --max-locus <MAX_LOCUS>      maximum locus size to consider (intervals larger than this will be filtered out)
-      --batch-size <BATCH_SIZE>    batch size in KB for grouping nearby STR targets [default: 50]
+      --batch-size <BATCH_SIZE>    Batch size in KB for grouping nearby STR targets [default: 50]
+      --vcf <VCF>                  Output VCF file path (optional, TSV still written to stdout)
   -h, --help                       Print help
 ```
 
@@ -488,6 +493,47 @@ inquiSTR query combined.tsv regions.bed
 inquiSTR query combined.tsv regions.txt
 ```
 
+### `inquiSTR filter` - Filter STR Data
+
+Filter inquiSTR output files by various criteria to focus on variants of interest.
+
+```text
+Usage: inquiSTR filter [OPTIONS] <INPUT>
+
+Arguments:
+  <INPUT>  Input file from inquiSTR call or inquiSTR combine
+
+Options:
+      --minlen <MINLEN>            Minimum allele length (expansion/insertion only, ignores negative values)
+      --minchange <MINCHANGE>      Minimum absolute allele length change (uses absolute value)
+      --bed <BED>                  BED file to filter by overlap (requires both files to be sorted)
+      --call-rate <CALL_RATE>      Minimum call rate (fraction 0.0-1.0) for combined files
+      --min-cv <MIN_CV>            Minimum coefficient of variation (only for combined files)
+  -h, --help                       Print help
+```
+
+**Examples:**
+
+```bash
+# Filter for STR expansions of at least 20 bp
+inquiSTR filter combined.tsv --minlen 20 > expansions_20bp.tsv
+
+# Filter for variants with absolute change of at least 10 bp
+inquiSTR filter combined.tsv --minchange 10 > changes_10bp.tsv
+
+# Filter by genomic regions from BED file
+inquiSTR filter combined.tsv --bed target_regions.bed > filtered_regions.tsv
+
+# Filter combined file by call rate (at least 80% of samples have calls)
+inquiSTR filter combined.tsv --call-rate 0.8 > high_callrate.tsv
+
+# Filter by coefficient of variation (only variable loci)
+inquiSTR filter combined.tsv --min-cv 0.1 > variable_loci.tsv
+
+# Combine multiple filters
+inquiSTR filter combined.tsv --minlen 15 --call-rate 0.9 --min-cv 0.05 > filtered.tsv
+```
+
 ### `inquiSTR outlier` - Outlier Detection
 
 Identify outliers from combined data using `inquiSTR outlier`. This command works with both STR call data and kmer frequency data (automatically detecting the format), using either z-scores or DBSCAN algorithms.
@@ -746,6 +792,60 @@ inquiSTR combine sample*_kmers.tsv > combined_kmers.tsv
 # Find outlier samples based on kmer frequencies
 inquiSTR outlier combined_kmers.tsv --method dbscan
 ```
+
+### `inquiSTR benchmark` - Validate STR Calls
+
+Benchmark inquiSTR genotyping results against truth data from VCF or BED files. This command generates correlation plots and statistics to assess genotyping accuracy.
+
+```text
+Usage: inquiSTR benchmark [OPTIONS] --plot <PLOT> <INQUISTR>
+
+Arguments:
+  <INQUISTR>  inquiSTR call output file (.inq format)
+
+Options:
+      --vcf <VCF>                        VCF file with truth genotypes (can be compressed)
+      --bed <BED>                        BED file with truth genotypes (can be compressed, 9 columns with last 2 being haplotype lengths)
+  -m, --mode <MODE>                      Mode for selecting alleles: MAX (default) or MIN [default: MAX]
+  -p, --plot <PLOT>                      Output file for correlation plot
+      --max-plot-length <MAX_PLOT_LENGTH> Maximum length to display on plot [default: 5000]
+      --tier1                            Only use Tier1 variants from BED file
+  -d, --diff-out <DIFF_OUT>              Create output file for largest differences
+      --max-locus <MAX_LOCUS>            Maximum locus size in bp to include
+      --nonzero                          Exclude zero-zero pairs from correlation
+      --tolerance <TOLERANCE>            Tolerance in bp for matching calls [default: 5]
+  -h, --help                             Print help
+```
+
+**Examples:**
+
+```bash
+# Compare against truth VCF
+inquiSTR benchmark inquistr_calls.inq --vcf truth.vcf.gz --plot correlation.html
+
+# Compare against truth BED file with Tier1 filtering
+inquiSTR benchmark calls.inq --bed truth.bed.gz --tier1 --plot results.html
+
+# Detailed comparison with difference output
+inquiSTR benchmark calls.inq --vcf truth.vcf.gz --plot corr.html --diff-out differences.tsv
+
+# Exclude unchanged alleles and use custom tolerance
+inquiSTR benchmark calls.inq --vcf truth.vcf.gz --plot corr.html --nonzero --tolerance 10
+
+# Filter by locus size and adjust plot range
+inquiSTR benchmark calls.inq --bed truth.bed --max-locus 5000 --max-plot-length 3000 --plot results.html
+```
+
+**Input Formats:**
+
+- **VCF**: Standard VCF format with genotype fields
+- **BED**: 9-column BED format where the last two columns contain H1 and H2 allele lengths
+
+**Output:**
+
+- Interactive HTML plot showing correlation between truth and called allele lengths
+- Optional TSV file with largest discrepancies (using `--diff-out`)
+- Statistics printed to stderr including R² correlation coefficient
 
 ### `inquiSTR pca` - Principal Component Analysis
 
