@@ -22,12 +22,114 @@
 
 #![allow(clippy::uninlined_format_args)]
 
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 use log::info;
 use std::path::PathBuf;
 
 /// inquiSTR version from Cargo.toml
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Common arguments for batch processing
+#[derive(Args, Debug)]
+struct BatchCommonArgs {
+    /// TSV manifest file with bam_path (required) and sample_name (optional) columns
+    #[clap(value_parser, required = true)]
+    manifest: PathBuf,
+
+    /// Output file for combined results
+    #[clap(short, long, value_parser, required = true)]
+    output: PathBuf,
+
+    /// Number of parallel threads to use (per sample)
+    #[clap(short, long, value_parser, default_value_t = 1)]
+    threads: usize,
+
+    /// Reference fasta for CRAM decoding (applies to all samples)
+    #[clap(long, value_parser)]
+    reference: Option<String>,
+
+    /// Save individual sample files to this directory (optional)
+    #[clap(long, value_parser)]
+    save_individual: Option<PathBuf>,
+
+    /// Temporary directory for intermediate files (default: $TMPDIR or current directory)
+    #[clap(long, value_parser)]
+    tmpdir: Option<PathBuf>,
+
+    /// Resume: skip already processed samples by checking the output file
+    #[clap(long, value_parser)]
+    resume: bool,
+
+    /// Show what would be processed without actually running
+    #[clap(long, value_parser)]
+    dry_run: bool,
+}
+
+/// Mode selection for batch processing
+#[derive(Args, Debug)]
+#[group(id = "mode")]
+#[command(next_help_heading = "Mode Selection")]
+struct BatchModeArgs {
+    /// Process unmapped reads instead of genotyping STRs
+    #[clap(long, value_parser)]
+    unmapped: bool,
+}
+
+/// STR genotyping mode arguments
+#[derive(Args, Debug)]
+#[group(id = "str_mode")]
+#[command(next_help_heading = "STR Genotyping Options")]
+struct BatchStrArgs {
+    /// Region string to genotype expansion in
+    #[clap(short, long, value_parser)]
+    region: Option<String>,
+
+    /// Bed file with region(s) to genotype expansion(s) in
+    #[clap(short = 'R', long, value_parser)]
+    region_file: Option<PathBuf>,
+
+    /// Use a predefined TR catalog (pathogenic, adotto, trexplorer, or codis)
+    #[clap(long, value_parser)]
+    preset: Option<call::TRPreset>,
+
+    /// Minimal length of insertion/deletion operation
+    #[clap(short, long, value_parser, default_value_t = 5)]
+    minlen: u32,
+
+    /// Minimal number of supporting reads
+    #[clap(short, long, value_parser, default_value_t = 3)]
+    support: usize,
+
+    /// If reads have to be considered unphased
+    #[clap(short, long, value_parser)]
+    unphased: bool,
+
+    /// Maximum locus size to consider (intervals larger than this will be filtered out)
+    #[clap(long, value_parser)]
+    max_locus: Option<u32>,
+
+    /// Batch size in KB for grouping nearby STR targets
+    #[clap(long, value_parser, default_value_t = 50)]
+    batch_size: u32,
+}
+
+/// Unmapped kmer mode arguments
+#[derive(Args, Debug)]
+#[group(id = "unmapped_mode")]
+#[command(next_help_heading = "Unmapped Kmer Options")]
+struct BatchUnmappedArgs {
+    /// Maximum kmer length to count (counts all sizes from 2 to klength)
+    #[clap(short = 'k', long, value_parser, default_value_t = 6)]
+    klength: usize,
+
+    /// Target kmer to specifically quantify (optional, can be any length)
+    #[clap(long, value_parser)]
+    target_kmer: Option<String>,
+
+    /// Combine kmers with their reverse complements
+    #[clap(long, value_parser, default_value_t = false)]
+    combine_revcomp: bool,
+}
 
 pub mod assoc;
 pub mod bam_utils;
@@ -117,87 +219,19 @@ enum Commands {
     /// Process multiple samples in batch and combine results
     #[clap(arg_required_else_help = true)]
     Batch {
-        /// TSV manifest file with bam_path (required) and sample_name (optional) columns
-        #[clap(value_parser, required = true)]
-        manifest: PathBuf,
+        #[clap(flatten)]
+        common: BatchCommonArgs,
 
-        /// Output file for combined results
-        #[clap(short, long, value_parser, required = true)]
-        output: PathBuf,
+        #[clap(flatten)]
+        mode: BatchModeArgs,
 
-        /// [Mode Selection] Process unmapped reads instead of genotyping STRs
-        #[clap(long, value_parser)]
-        unmapped: bool,
+        #[clap(flatten)]
+        str_args: BatchStrArgs,
 
-        /// [Unmapped Mode] Maximum kmer length to count (counts all sizes from 2 to klength)
-        #[clap(short = 'k', long, value_parser, default_value_t = 6)]
-        klength: usize,
-
-        /// [Unmapped Mode] Target kmer to specifically quantify (optional, can be any length)
-        #[clap(long, value_parser)]
-        target_kmer: Option<String>,
-
-        /// [Unmapped Mode] Combine kmers with their reverse complements
-        #[clap(long, value_parser, default_value_t = false)]
-        combine_revcomp: bool,
-
-        /// [STR Genotyping] Region string to genotype expansion in
-        #[clap(short, long, value_parser)]
-        region: Option<String>,
-
-        /// [STR Genotyping] Bed file with region(s) to genotype expansion(s) in
-        #[clap(short = 'R', long, value_parser)]
-        region_file: Option<PathBuf>,
-
-        /// [STR Genotyping] Use a predefined TR catalog (pathogenic, adotto, trexplorer, or codis)
-        #[clap(long, value_parser)]
-        preset: Option<call::TRPreset>,
-
-        /// [STR Genotyping] Minimal length of insertion/deletion operation
-        #[clap(short, long, value_parser, default_value_t = 5)]
-        minlen: u32,
-
-        /// [STR Genotyping] Minimal number of supporting reads
-        #[clap(short, long, value_parser, default_value_t = 3)]
-        support: usize,
-
-        /// [STR Genotyping] If reads have to be considered unphased
-        #[clap(short, long, value_parser)]
-        unphased: bool,
-
-        /// [STR Genotyping] Maximum locus size to consider (intervals larger than this will be filtered out)
-        #[clap(long, value_parser)]
-        max_locus: Option<u32>,
-
-        /// [STR Genotyping] Batch size in KB for grouping nearby STR targets
-        #[clap(long, value_parser, default_value_t = 50)]
-        batch_size: u32,
-
-        /// [Both Modes] Number of parallel threads to use (per sample)
-        #[clap(short, long, value_parser, default_value_t = 1)]
-        threads: usize,
-
-        /// [Both Modes] Reference fasta for CRAM decoding (applies to all samples)
-        #[clap(long, value_parser)]
-        reference: Option<String>,
-
-        /// [Both Modes] Save individual sample files to this directory (optional)
-        #[clap(long, value_parser)]
-        save_individual: Option<PathBuf>,
-
-        /// [Both Modes] Temporary directory for intermediate files (default: $TMPDIR or current directory)
-        #[clap(long, value_parser)]
-        tmpdir: Option<PathBuf>,
-
-        /// [Both Modes] Resume: skip already processed samples by checking the output file
-        #[clap(long, value_parser)]
-        resume: bool,
-
-        /// [Both Modes] Show what would be processed without actually running
-        #[clap(long, value_parser)]
-        dry_run: bool,
+        #[clap(flatten)]
+        unmapped_args: BatchUnmappedArgs,
     },
-    /// Combine lengths from multiple bams to a TSV, or combine kmer frequency files from unmapped
+    /// Combine STR lengths or kmer frequency files from multiple samples
     Combine {
         /// files from inquiSTR call or inquiSTR unmapped
         // this validator gets applied to each element from the Vec separately
@@ -271,6 +305,7 @@ enum Commands {
         #[clap(required = true)]
         region: String,
     },
+    /// Generate text-based histogram for a specific repeat
     Histogram {
         /// combined file of calls
         #[clap(value_parser, required = true)]
@@ -515,64 +550,52 @@ fn main() {
             sample_name,
             reference,
         ),
-        Commands::Batch {
-            manifest,
-            output,
-            unmapped,
-            klength,
-            target_kmer,
-            combine_revcomp,
-            region,
-            region_file,
-            preset,
-            minlen,
-            support,
-            threads,
-            unphased,
-            reference,
-            max_locus,
-            batch_size,
-            save_individual,
-            tmpdir,
-            resume,
-            dry_run,
-        } => {
+        Commands::Batch { common, mode, str_args, unmapped_args } => {
             let config = batch_process::BatchConfig {
-                manifest,
-                output,
-                save_individual,
-                tmpdir,
-                resume,
-                dry_run,
-                reference,
+                manifest: common.manifest,
+                output: common.output,
+                save_individual: common.save_individual,
+                tmpdir: common.tmpdir,
+                resume: common.resume,
+                dry_run: common.dry_run,
+                reference: common.reference,
             };
 
-            let mode = if unmapped {
+            let batch_mode = if mode.unmapped {
                 batch_process::BatchMode::UnmappedKmer {
                     unmapped_config: batch_process::UnmappedConfig {
-                        klength,
-                        target_kmer,
-                        combine_revcomp,
+                        klength: unmapped_args.klength,
+                        target_kmer: unmapped_args.target_kmer,
+                        combine_revcomp: unmapped_args.combine_revcomp,
                     },
                     processing_config: call::ProcessingConfig {
-                        threads,
-                        batch_size_kb: batch_size,
+                        threads: common.threads,
+                        batch_size_kb: str_args.batch_size,
                         output_vcf: None,
                     },
                 }
             } else {
                 batch_process::BatchMode::StrGenotyping {
-                    target_config: call::TargetConfig { region, region_file, preset, max_locus },
-                    genotype_config: call::GenotypeConfig { minlen, support, unphased },
+                    target_config: call::TargetConfig {
+                        region: str_args.region,
+                        region_file: str_args.region_file,
+                        preset: str_args.preset,
+                        max_locus: str_args.max_locus,
+                    },
+                    genotype_config: call::GenotypeConfig {
+                        minlen: str_args.minlen,
+                        support: str_args.support,
+                        unphased: str_args.unphased,
+                    },
                     processing_config: call::ProcessingConfig {
-                        threads,
-                        batch_size_kb: batch_size,
+                        threads: common.threads,
+                        batch_size_kb: str_args.batch_size,
                         output_vcf: None,
                     },
                 }
             };
 
-            batch_process::batch_process(config, mode);
+            batch_process::batch_process(config, batch_mode);
         }
         Commands::Combine { calls, threads } => {
             combine::combine(calls, threads);
