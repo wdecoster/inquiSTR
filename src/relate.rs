@@ -53,10 +53,7 @@ pub fn compute_relatedness(combined: PathBuf, output: PathBuf, threads: usize) {
     let n_samples = sample_names.len();
     let n_loci = locus_names.len();
 
-    eprintln!(
-        "Computing relatedness for {} samples across {} loci...",
-        n_samples, n_loci
-    );
+    eprintln!("Computing relatedness for {} samples across {} loci...", n_samples, n_loci);
 
     // Generate all sample pairs (excluding self-comparisons)
     let mut pairs = Vec::new();
@@ -91,11 +88,8 @@ pub fn compute_relatedness(combined: PathBuf, output: PathBuf, threads: usize) {
     let mut out_file = File::create(&output).expect("Failed to create output file");
 
     // Write header
-    writeln!(
-        out_file,
-        "sample1\tsample2\trelatedness\tn_loci\tibs0\tibs1\tibs2"
-    )
-    .expect("Failed to write header");
+    writeln!(out_file, "sample1\tsample2\trelatedness\tn_loci\tibs0\tibs1\tibs2")
+        .expect("Failed to write header");
 
     // Write results sorted by relatedness (descending)
     let mut sorted_results = results;
@@ -115,9 +109,7 @@ pub fn compute_relatedness(combined: PathBuf, output: PathBuf, threads: usize) {
 
 /// Parse combined file and extract genotype matrix
 /// Returns: (genotype_matrix[locus][sample][haplotype], sample_names, locus_names)
-fn parse_combined_file(
-    combined: &std::path::Path,
-) -> (GenotypeMatrix, Vec<String>, Vec<String>) {
+fn parse_combined_file(combined: &std::path::Path) -> (GenotypeMatrix, Vec<String>, Vec<String>) {
     let file = crate::utils::reader(&combined.to_string_lossy());
     let mut lines = file.lines();
 
@@ -174,8 +166,14 @@ fn parse_combined_file(
             let h1_idx = 3 + i * 2;
             let h2_idx = 3 + i * 2 + 1;
 
-            let h1 = fields.get(h1_idx).and_then(|s| s.parse::<f64>().ok()).unwrap_or(f64::NAN);
-            let h2 = fields.get(h2_idx).and_then(|s| s.parse::<f64>().ok()).unwrap_or(f64::NAN);
+            let h1 = fields
+                .get(h1_idx)
+                .and_then(|s| s.parse::<f64>().ok())
+                .unwrap_or(f64::NAN);
+            let h2 = fields
+                .get(h2_idx)
+                .and_then(|s| s.parse::<f64>().ok())
+                .unwrap_or(f64::NAN);
 
             locus_genotypes.push((h1, h2));
         }
