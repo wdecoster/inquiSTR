@@ -62,7 +62,7 @@ impl TRPreset {
 }
 
 /// Configuration for target selection (what STRs to genotype)
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct TargetConfig {
     pub region: Option<String>,
     pub region_file: Option<PathBuf>,
@@ -78,7 +78,7 @@ impl TargetConfig {
 }
 
 /// Configuration for genotyping parameters (how to call STRs)
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct GenotypeConfig {
     pub minlen: u32,
     pub support: usize,
@@ -86,7 +86,7 @@ pub struct GenotypeConfig {
 }
 
 /// Configuration for processing (threads, batching, etc.)
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct ProcessingConfig {
     pub threads: usize,
     pub batch_size_kb: u32,
@@ -256,6 +256,13 @@ pub fn genotype_repeats(
     // Write TSV to stdout
     let stdout = io::stdout();
     let mut handle = io::BufWriter::new(stdout);
+    writeln!(handle, "# file_type=individual_call").expect("Failed writing metadata.");
+    writeln!(handle, "# version={}", crate::VERSION).expect("Failed writing metadata.");
+    writeln!(handle, "# command=call").expect("Failed writing metadata.");
+    writeln!(handle, "# sample={}", sample).expect("Failed writing metadata.");
+    writeln!(handle, "# minlen={}", genotype.minlen).expect("Failed writing metadata.");
+    writeln!(handle, "# support={}", genotype.support).expect("Failed writing metadata.");
+    writeln!(handle, "# unphased={}", genotype.unphased).expect("Failed writing metadata.");
     let file_header = format!("chromosome\tbegin\tend\t{sample}_H1\t{sample}_H2");
     writeln!(handle, "{file_header}").expect("Failed writing the header.");
     for genotype in &all_genotypes {

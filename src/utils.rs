@@ -39,6 +39,24 @@ pub fn reader(filename: &str) -> BufReader<Box<dyn Read>> {
     }
 }
 
+/// Skip all metadata lines (lines starting with #) and return the actual data/header line
+/// This allows for future expansion of metadata types beyond just file_type
+pub fn skip_metadata_lines(
+    lines: &mut dyn Iterator<Item = Result<String, std::io::Error>>,
+) -> String {
+    loop {
+        let line = lines
+            .next()
+            .expect("File is empty or contains only metadata")
+            .expect("Error reading line");
+
+        if !line.starts_with('#') {
+            return line;
+        }
+        // Otherwise keep looping to skip metadata lines
+    }
+}
+
 /// parse a region string
 pub fn process_region(reg: String) -> Result<(String, u32, u32), Box<dyn std::error::Error>> {
     let reg = reg.replace(',', "");

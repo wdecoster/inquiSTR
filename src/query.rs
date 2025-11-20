@@ -10,13 +10,24 @@ pub fn query(combined: PathBuf, region: String) {
         std::process::exit(1);
     }
 
+    // Validate that input is a combined file, not individual
+    if let Some(file_type) = crate::combine::read_file_type_metadata(&combined) {
+        if !matches!(
+            file_type,
+            crate::combine::FileType::CombinedCall | crate::combine::FileType::CombinedKmer
+        ) {
+            eprintln!("ERROR: Query requires a combined file (combined_call or combined_kmer).");
+            eprintln!("The provided file appears to be: {:?}", file_type);
+            eprintln!("\nPlease use 'inquiSTR combine' to merge individual sample files first.");
+            std::process::exit(1);
+        }
+    }
+
     // Read header to get sample names
     let file = crate::utils::reader(&combined.to_string_lossy());
     let mut lines = file.lines();
-    let header_line = lines
-        .next()
-        .expect("Problem parsing file to get header")
-        .expect("Problem parsing file to get header");
+    // Skip metadata lines if present
+    let header_line = crate::utils::skip_metadata_lines(&mut lines);
     let samples = extract_sample_names(&header_line);
     debug!("Samples: {:?}", samples);
 

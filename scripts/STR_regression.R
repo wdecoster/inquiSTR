@@ -371,8 +371,17 @@ run_streaming_analysis <- function(arg) {
     # Open input file for streaming
     con <- file(arg$input, "r")
     
-    # Read header to get sample names
+    # Skip metadata lines (lines starting with #) and read header
     header_line <- readLines(con, n = 1)
+    while(length(header_line) > 0 && grepl("^#", header_line)) {
+        header_line <- readLines(con, n = 1)
+    }
+    
+    if(length(header_line) == 0) {
+        close(con)
+        stop("Error: Input file is empty or contains only metadata lines")
+    }
+    
     header_cols <- strsplit(header_line, "\t")[[1]]
     
     # Extract sample names from header (every other column starting from 4th, removing _H1 suffix)

@@ -42,11 +42,10 @@ pub fn count_unmapped_kmers(
         std::process::exit(1);
     }
 
-    // Set up thread pool
-    rayon::ThreadPoolBuilder::new()
+    // Set up thread pool (ignore error if already initialized)
+    let _ = rayon::ThreadPoolBuilder::new()
         .num_threads(threads)
-        .build_global()
-        .expect("Failed to build thread pool");
+        .build_global();
 
     // Determine sample name
     let sample_name = sample_name.unwrap_or_else(|| {
@@ -627,11 +626,10 @@ fn count_target_kmer(
         }
     }
 
-    // Set up thread pool
-    rayon::ThreadPoolBuilder::new()
+    // Set up thread pool (ignore error if already initialized)
+    let _ = rayon::ThreadPoolBuilder::new()
         .num_threads(threads)
-        .build_global()
-        .expect("Failed to build thread pool");
+        .build_global();
 
     // Determine sample name
     let sample_name = sample_name.unwrap_or_else(|| {
@@ -650,6 +648,10 @@ fn count_target_kmer(
         stream_and_count_target_kmer(bam_path, reference, counts_from_index, &rotations);
 
     // Output results
+    println!("# file_type=target_kmer");
+    println!("# version={}", crate::VERSION);
+    println!("# command=kmer");
+    println!("# target={}", expanded_kmer);
     println!("Sample\tTarget_Kmer\tCanonical_Kmer\tKmer_Length\tCount\tTotal_Reads\tFrequency");
     let canonical = if combine_revcomp {
         String::from_utf8(get_canonical_kmer_with_revcomp(target_bytes)).unwrap()
@@ -880,6 +882,11 @@ fn output_results(
     klength: usize,
     total_reads: u64,
 ) {
+    println!("# file_type=individual_kmer");
+    println!("# version={}", crate::VERSION);
+    println!("# command=kmer");
+    println!("# klength={}", klength);
+    println!("# total_reads={}", total_reads);
     println!("kmer\t{}", sample_name);
 
     for k in 2..=klength {
@@ -897,6 +904,10 @@ fn output_results(
 
 /// Output empty results when no unmapped reads are found (only canonical kmers)
 fn output_empty_results(sample_name: &str, klength: usize) {
+    println!("# file_type=individual_kmer");
+    println!("# version={}", crate::VERSION);
+    println!("# command=kmer");
+    println!("# klength={}", klength);
     println!("kmer\t{}", sample_name);
 
     for k in 2..=klength {

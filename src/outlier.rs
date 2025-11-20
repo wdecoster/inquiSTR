@@ -84,16 +84,14 @@ fn get_sample_names_from_file(file_path: &Path, is_kmer: bool) -> Vec<String> {
     let file_reader = crate::utils::reader(&file_path.to_string_lossy());
     let mut lines = file_reader.lines();
 
-    if let Some(Ok(header_line)) = lines.next() {
-        let skip_columns = if is_kmer { 1 } else { 3 }; // kmer files skip 1, STR files skip 3
-        return header_line
-            .split('\t')
-            .skip(skip_columns)
-            .map(|s| s.to_string())
-            .collect();
-    }
-
-    Vec::new()
+    // Skip metadata lines if present
+    let header_line = crate::utils::skip_metadata_lines(&mut lines);
+    let skip_columns = if is_kmer { 1 } else { 3 }; // kmer files skip 1, STR files skip 3
+    header_line
+        .split('\t')
+        .skip(skip_columns)
+        .map(|s| s.to_string())
+        .collect()
 }
 
 /// Validate that requested samples exist in the combined file
@@ -139,29 +137,29 @@ fn is_kmer_file(file_path: &Path) -> bool {
     let file_reader = crate::utils::reader(&file_path.to_string_lossy());
     let mut lines = file_reader.lines();
 
-    if let Some(Ok(first_line)) = lines.next() {
-        let fields: Vec<&str> = first_line.split('\t').collect();
+    // Skip metadata lines if present
+    let first_line = crate::utils::skip_metadata_lines(&mut lines);
+    let fields: Vec<&str> = first_line.split('\t').collect();
 
-        // Check if it's a kmer file format
-        // Kmer files have "kmer" as first column header
-        if fields.len() >= 2 && fields[0] == "kmer" {
-            return true;
+    // Check if it's a kmer file format
+    // Kmer files have "kmer" as first column header
+    if fields.len() >= 2 && fields[0] == "kmer" {
+        return true;
+    }
+
+    // Check if it's STR call format (with or without header)
+    // STR files either start with "chromosome" or have genomic coordinates
+    if fields.len() >= 3 {
+        if fields[0] == "chromosome" {
+            return false; // STR file with header
         }
 
-        // Check if it's STR call format (with or without header)
-        // STR files either start with "chromosome" or have genomic coordinates
-        if fields.len() >= 3 {
-            if fields[0] == "chromosome" {
-                return false; // STR file with header
-            }
-
-            // Check if first line looks like genomic coordinates (chr1, etc.)
-            if fields[0].starts_with("chr")
-                && fields[1].parse::<u32>().is_ok()
-                && fields[2].parse::<u32>().is_ok()
-            {
-                return false; // STR file without header
-            }
+        // Check if first line looks like genomic coordinates (chr1, etc.)
+        if fields[0].starts_with("chr")
+            && fields[1].parse::<u32>().is_ok()
+            && fields[2].parse::<u32>().is_ok()
+        {
+            return false; // STR file without header
         }
     }
 
@@ -183,6 +181,19 @@ pub fn outlier(
         .num_threads(threads)
         .build_global()
         .expect("Failed to build thread pool");
+
+    // Validate that input is a combined file, not individual
+    if let Some(file_type) = crate::combine::read_file_type_metadata(&combined) {
+        if !matches!(
+            file_type,
+            crate::combine::FileType::CombinedCall | crate::combine::FileType::CombinedKmer
+        ) {
+            eprintln!("ERROR: Outlier detection requires a combined file (combined_call or combined_kmer).");
+            eprintln!("The provided file appears to be: {:?}", file_type);
+            eprintln!("\nPlease use 'inquiSTR combine' to merge individual sample files first.");
+            std::process::exit(1);
+        }
+    }
 
     // Detect file format
     let is_kmer_format = is_kmer_file(&combined);
@@ -211,7 +222,8 @@ fn outlier_str_analysis(
 ) {
     let file = crate::utils::reader(&combined.into_os_string().into_string().unwrap());
     let mut lines = file.lines();
-    let header_line = lines.next().unwrap().unwrap();
+    // Skip metadata lines if present
+    let header_line = crate::utils::skip_metadata_lines(&mut lines);
     println!("chrom\tbegin\tend\toutliers");
 
     // Parse sample names once and store them
@@ -281,7 +293,8 @@ fn outlier_kmer_analysis(
 ) {
     let file = crate::utils::reader(&combined.into_os_string().into_string().unwrap());
     let mut lines = file.lines();
-    let header_line = lines.next().unwrap().unwrap();
+    // Skip metadata lines if present
+    let header_line = crate::utils::skip_metadata_lines(&mut lines);
     println!("kmer\toutliers");
 
     // Parse sample names once and store them

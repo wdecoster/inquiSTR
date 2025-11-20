@@ -1,6 +1,6 @@
 [package]
 name = "inquiSTR"
-version = "0.19.0"
+version = "0.20.0"
 edition = "2021"
 rust-version = "1.88.0"
 authors = ["Wouter De Coster <wouter.decoster@gmail.com>"]
@@ -38,8 +38,6 @@ histo_fp = "0.2.1"
 indicatif = { version = "0.18.3", features = ["rayon"] }
 itertools = "0.14.0"
 plotly = "0.13.5"
-linfa-clustering = "0.8.0"
-linfa = "0.8.0"
 ndarray = "0.17.1"
 dbscan = "0.3.1"
 url = "2.5.7"

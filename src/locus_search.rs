@@ -56,54 +56,47 @@ pub fn find_locus(config: LocusSearchConfig) -> Option<LocusMatch> {
     let reg_chrom = format!("{target_chrom}\t");
 
     // Read header to determine expected number of columns
-    let expected_columns = if let Some(first_line) = lines.next() {
-        let first_line = first_line.unwrap();
-        let first_cols = first_line.split('\t').count();
-        if first_cols < 4 {
-            eprintln!(
-                "ERROR: Invalid file format. Expected at least 4 columns, got {}.",
-                first_cols
-            );
-            eprintln!("First line: '{}'", first_line);
-            std::process::exit(1);
-        }
-
-        // If this line matches our target chromosome, process it
-        if first_line.starts_with(&reg_chrom) {
-            let splitline: Vec<&str> = first_line.split('\t').collect();
-            let begin: u32 = splitline[1].parse().expect("Failed parsing interval start");
-            let end: u32 = splitline[2].parse().expect("Failed parsing interval end");
-
-            // Check overlap based on strategy
-            let matches = match config.overlap_strategy {
-                OverlapStrategy::Overlap => {
-                    std::cmp::max(target_start, begin) < std::cmp::min(target_end, end)
-                }
-                OverlapStrategy::Containment => target_start <= begin && end <= target_end,
-            };
-
-            if matches {
-                let values: Vec<f64> = splitline
-                    .iter()
-                    .skip(3)
-                    .map(|number| number.parse::<f64>().expect("Failed parsing lengths"))
-                    .collect();
-
-                return Some(LocusMatch {
-                    chromosome: target_chrom.clone(),
-                    start: begin,
-                    end,
-                    values,
-                    raw_line: first_line,
-                });
-            }
-        }
-
-        first_cols
-    } else {
-        eprintln!("ERROR: Combined file is empty: {}", config.combined_file.display());
+    // Skip metadata lines if present and get actual header/first data line
+    let first_line = crate::utils::skip_metadata_lines(&mut lines);
+    let first_cols = first_line.split('\t').count();
+    if first_cols < 4 {
+        eprintln!("ERROR: Invalid file format. Expected at least 4 columns, got {}.", first_cols);
+        eprintln!("First line: '{}'", first_line);
         std::process::exit(1);
-    };
+    }
+
+    // If this line matches our target chromosome, process it
+    if first_line.starts_with(&reg_chrom) {
+        let splitline: Vec<&str> = first_line.split('\t').collect();
+        let begin: u32 = splitline[1].parse().expect("Failed parsing interval start");
+        let end: u32 = splitline[2].parse().expect("Failed parsing interval end");
+
+        // Check overlap based on strategy
+        let matches = match config.overlap_strategy {
+            OverlapStrategy::Overlap => {
+                std::cmp::max(target_start, begin) < std::cmp::min(target_end, end)
+            }
+            OverlapStrategy::Containment => target_start <= begin && end <= target_end,
+        };
+
+        if matches {
+            let values: Vec<f64> = splitline
+                .iter()
+                .skip(3)
+                .map(|number| number.parse::<f64>().expect("Failed parsing lengths"))
+                .collect();
+
+            return Some(LocusMatch {
+                chromosome: target_chrom.clone(),
+                start: begin,
+                end,
+                values,
+                raw_line: first_line,
+            });
+        }
+    }
+
+    let expected_columns = first_cols;
 
     for (line_num, line_result) in lines.enumerate() {
         let line = line_result.unwrap();

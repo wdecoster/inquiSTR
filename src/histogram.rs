@@ -8,6 +8,21 @@ pub fn histogram(combined: PathBuf, region: String) {
         std::process::exit(1);
     }
 
+    // Validate that input is a combined file, not individual
+    if let Some(file_type) = crate::combine::read_file_type_metadata(&combined) {
+        if !matches!(
+            file_type,
+            crate::combine::FileType::CombinedCall | crate::combine::FileType::CombinedKmer
+        ) {
+            eprintln!(
+                "ERROR: Histogram requires a combined file (combined_call or combined_kmer)."
+            );
+            eprintln!("The provided file appears to be: {:?}", file_type);
+            eprintln!("\nPlease use 'inquiSTR combine' to merge individual sample files first.");
+            std::process::exit(1);
+        }
+    }
+
     // Use the new locus search utility with containment strategy (original behavior)
     let config = LocusSearchConfig {
         combined_file: combined,

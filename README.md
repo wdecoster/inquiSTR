@@ -268,7 +268,12 @@ See [INDEX_CACHING.md](INDEX_CACHING.md) for detailed configuration options.
 
 ### `inquiSTR batch` - Batch Sample Processing
 
-Process multiple samples in batch and automatically combine results. This is the recommended approach for cohort studies, eliminating the need to manually run `inquiSTR call` followed by `inquiSTR combine`.
+Process multiple samples in batch and automatically combine results. This is the recommended approach for cohort studies, eliminating the need to manually run `inquiSTR call` (or `inquiSTR unmapped`) followed by `inquiSTR combine`.
+
+The batch command supports two modes:
+
+- **STR genotyping mode** (default): Genotypes STRs across all samples
+- **Unmapped kmer mode** (`--unmapped`): Analyzes kmer frequencies in unmapped reads
 
 ```text
 Usage: inquiSTR batch [OPTIONS] --output <OUTPUT> <MANIFEST>
@@ -276,21 +281,34 @@ Usage: inquiSTR batch [OPTIONS] --output <OUTPUT> <MANIFEST>
 Arguments:
   <MANIFEST>  TSV manifest file with bam_path (required) and sample_name (optional) columns
 
-Options:
-  -o, --output <OUTPUT>             Output file for combined results
-  -r, --region <REGION>             region string to genotype expansion in
-  -R, --region-file <REGION_FILE>   Bed file with region(s) to genotype expansion(s) in
-      --preset <PRESET>             Use a predefined TR catalog (pathogenic, adotto, or trexplorer)
-  -m, --minlen <MINLEN>             minimal length of insertion/deletion operation [default: 5]
-  -s, --support <SUPPORT>           minimal number of supporting reads [default: 3]
-  -t, --threads <THREADS>           Number of parallel threads to use (per sample) [default: 1]
-  -u, --unphased                    If reads have to be considered unphased
-      --reference <REFERENCE>       reference fasta for cram decoding (applies to all samples)
-      --max-locus <MAX_LOCUS>       maximum locus size to consider
-      --batch-size <BATCH_SIZE>     Batch size in KB for grouping nearby STR targets [default: 50]
-      --save-individual <DIR>       Save individual sample files to this directory (optional)
-      --tmpdir <TMPDIR>             Temporary directory for intermediate files
-  -h, --help                        Print help
+Common Options (both modes):
+  -o, --output <OUTPUT>                  Output file for combined results
+  -t, --threads <THREADS>                Number of parallel threads to use (per sample) [default: 1]
+      --reference <REFERENCE>            Reference fasta for CRAM decoding (applies to all samples)
+      --save-individual <DIR>            Save individual sample files to this directory (optional)
+      --tmpdir <TMPDIR>                  Temporary directory for intermediate files
+      --resume                           Skip already processed samples by checking the output file
+      --dry-run                          Validate manifest and preview processing without running
+
+Mode Selection:
+      --unmapped                         Process unmapped reads instead of genotyping STRs
+
+Unmapped Kmer Mode Options (only with --unmapped):
+  -k, --klength <KLENGTH>                Maximum kmer length to count [default: 6]
+      --target-kmer <TARGET_KMER>        Target kmer to quantify (optional, supports shorthand notation)
+      --combine-revcomp                  Combine kmers with reverse complements
+
+STR Genotyping Mode Options (default mode, without --unmapped):
+  -r, --region <REGION>                  Region string to genotype expansion in
+  -R, --region-file <REGION_FILE>        Bed file with region(s) to genotype expansion(s) in
+      --preset <PRESET>                  Use a predefined TR catalog (pathogenic, adotto, or trexplorer)
+  -m, --minlen <MINLEN>                  Minimal length of insertion/deletion operation [default: 5]
+  -s, --support <SUPPORT>                Minimal number of supporting reads [default: 3]
+  -u, --unphased                         If reads have to be considered unphased
+      --max-locus <MAX_LOCUS>            Maximum locus size to consider
+      --batch-size <BATCH_SIZE>          Batch size in KB for grouping nearby STR targets [default: 50]
+
+  -h, --help                             Print help
 ```
 
 **Manifest File Format:**
@@ -309,6 +327,8 @@ bam_path    sample_name
 
 **Examples:**
 
+**STR Genotyping Mode:**
+
 ```bash
 # Basic batch processing with pathogenic STRs
 inquiSTR batch samples.tsv --preset pathogenic --output cohort_results.tsv
@@ -326,13 +346,81 @@ inquiSTR batch samples.tsv -R regions.bed --threads 8 --output cohort.tsv
 inquiSTR batch samples.tsv --preset adotto --tmpdir /scratch/tmp --output results.tsv
 ```
 
+**Unmapped Kmer Analysis Mode:**
+
+```bash
+# Basic unmapped kmer analysis across cohort
+inquiSTR batch samples.tsv --unmapped --output kmer_combined.tsv
+
+# Custom kmer length with multiple threads
+inquiSTR batch samples.tsv --unmapped -k 8 --threads 4 --output kmers_k8.tsv
+
+# Target specific kmer (e.g., CTG repeats associated with myotonic dystrophy)
+inquiSTR batch samples.tsv --unmapped --target-kmer "(CTG)10" --output ctg_repeats.tsv
+
+# Combine reverse complements and save individual results
+inquiSTR batch samples.tsv --unmapped -k 10 --combine-revcomp --save-individual kmer_results/ --output combined_kmers.tsv
+```
+
+**Workflow Management Features:**
+
+```bash
+# Dry-run mode: validate manifest and preview processing without execution
+inquiSTR batch samples.tsv --preset pathogenic --output results.tsv --dry-run
+
+# Resume mode: skip already-processed samples (useful for interrupted runs)
+inquiSTR batch samples.tsv --preset pathogenic --save-individual results/ --output combined.tsv --resume
+
+# Combined: preview which samples would be skipped with resume
+inquiSTR batch samples.tsv --unmapped -k 8 --save-individual kmer_results/ --output kmers.tsv --resume --dry-run
+
+# Target kmer with reverse complement combining
+inquiSTR batch samples.tsv --unmapped --target-kmer "(CT)4" --combine-revcomp --output ct_combined.tsv
+
+# Full kmer catalog with reverse complement combining
+inquiSTR batch samples.tsv --unmapped -k 6 --combine-revcomp --threads 8 --output full_kmers.tsv
+
+# Save individual kmer files for later analysis
+inquiSTR batch samples.tsv --unmapped --save-individual kmer_results/ --output combined_kmers.tsv
+```
+
 **Key Features:**
 
+- **Dual mode operation**: Supports both STR genotyping and unmapped kmer analysis in a single command
+- **Automatic mode validation**: STR mode requires `--region`, `--region-file`, or `--preset`; unmapped mode uses `--unmapped` flag
 - **Sequential processing**: Processes samples one at a time to maximize per-sample parallelization
 - **Automatic cleanup**: Temporary files are cleaned up unless `--save-individual` is specified
 - **Error handling**: Failed samples are skipped with detailed error logging; successful samples are still combined
 - **Progress tracking**: Visual progress bar shows which sample is currently being processed
 - **Flexible temp storage**: Use `--tmpdir`, `$TMPDIR` environment variable, or current directory for temporary files
+- **Format detection**: Automatically combines results in the correct format (STR calls or kmer frequencies)
+- **Resume capability**: `--resume` flag skips samples with existing output files, enabling restart of interrupted runs
+- **Dry-run validation**: `--dry-run` flag validates the manifest and previews processing without executing
+
+**Workflow Features:**
+
+The `--resume` and `--dry-run` flags provide workflow management capabilities:
+
+- **`--dry-run`**: Validates the manifest file, checks for missing BAM files, and reports what would be processed without actually running analysis. This is useful for:
+  - Verifying manifest format before starting long-running jobs
+  - Checking file accessibility before processing
+  - Estimating workload and identifying problematic samples
+  - Works independently - no other flags required
+
+- **`--resume`**: Intelligently resumes interrupted batch jobs by checking the output file for already-processed samples:
+  - **How it works**: Parses the combined output file header to identify which samples have already been processed
+  - **Appends new data**: Processes only the missing samples and appends them to the existing combined file
+  - **No extra files needed**: Works directly with the output file - no need for `--save-individual`
+  - **Use cases**:
+    - Restarting interrupted batch jobs without reprocessing completed samples
+    - Adding new samples to an existing cohort incrementally
+    - Recovering from failures by simply re-running with the same manifest
+  
+  **📝 Note for STR mode**: Resume works seamlessly by parsing sample names from the combined file header (e.g., `sample_A_H1`, `sample_A_H2`).
+  
+  **⚠️ Limitation for kmer mode**: Resume currently only works reliably for STR genotyping. For unmapped kmer analysis, if different samples have different kmers, the combine operation may fail. Use `--save-individual` with kmer mode if you need incremental processing.
+
+- **Combined usage**: Use both `--dry-run` and `--resume` together to preview which samples would be skipped and which would be processed, without running anything. This combination is useful for planning before resuming an interrupted job.
 
 ### `inquiSTR combine` - Multi-sample Analysis
 

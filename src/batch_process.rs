@@ -4,6 +4,40 @@ use std::fs;
 use std::io::{self, BufRead};
 use std::path::{Path, PathBuf};
 
+/// Configuration for unmapped kmer counting
+#[derive(Debug, Clone)]
+pub struct UnmappedConfig {
+    pub klength: usize,
+    pub target_kmer: Option<String>,
+    pub combine_revcomp: bool,
+}
+
+/// Batch processing configuration
+#[derive(Debug, Clone)]
+pub struct BatchConfig {
+    pub manifest: PathBuf,
+    pub output: PathBuf,
+    pub save_individual: Option<PathBuf>,
+    pub tmpdir: Option<PathBuf>,
+    pub resume: bool,
+    pub dry_run: bool,
+    pub reference: Option<String>,
+}
+
+/// Mode-specific configuration for batch processing
+#[derive(Debug, Clone)]
+pub enum BatchMode {
+    StrGenotyping {
+        target_config: TargetConfig,
+        genotype_config: GenotypeConfig,
+        processing_config: ProcessingConfig,
+    },
+    UnmappedKmer {
+        unmapped_config: UnmappedConfig,
+        processing_config: ProcessingConfig,
+    },
+}
+
 /// Sample information from the manifest file
 #[derive(Debug, Clone)]
 struct SampleInfo {
@@ -98,7 +132,7 @@ fn extract_sample_name_from_path(path: &str) -> String {
         .unwrap_or_else(|| "sample".to_string())
 }
 
-/// Process a single sample and write to output file
+/// Process a single sample for STR genotyping and write to output file
 /// This uses gag crate to redirect stdout to a file
 fn process_sample(
     sample: &SampleInfo,
@@ -152,22 +186,218 @@ fn process_sample(
     }
 }
 
+/// Process a single sample for unmapped kmer counting and write to output file
+fn process_sample_unmapped(
+    sample: &SampleInfo,
+    unmapped_config: &UnmappedConfig,
+    processing_config: &ProcessingConfig,
+    reference: &Option<String>,
+    output_path: &Path,
+) -> Result<(), String> {
+    use std::fs::OpenOptions;
+    use std::panic;
+
+    // Open output file
+    let output_file = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(output_path)
+        .map_err(|e| format!("Failed to create output file {}: {}", output_path.display(), e))?;
+
+    // Redirect stdout to the file
+    let _redirect = gag::Redirect::stdout(output_file)
+        .map_err(|e| format!("Failed to redirect stdout: {}", e))?;
+
+    // Catch panics and convert to errors
+    let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
+        crate::unmapped::count_unmapped_kmers(
+            sample.bam_path.clone(),
+            unmapped_config.klength,
+            Some(sample.sample_name.clone()),
+            reference.clone(),
+            processing_config.threads,
+            unmapped_config.target_kmer.clone(),
+            unmapped_config.combine_revcomp,
+        );
+    }));
+
+    // redirect is dropped here, restoring stdout
+
+    match result {
+        Ok(_) => Ok(()),
+        Err(e) => {
+            // Try to extract error message from panic
+            if let Some(s) = e.downcast_ref::<&str>() {
+                Err(s.to_string())
+            } else if let Some(s) = e.downcast_ref::<String>() {
+                Err(s.clone())
+            } else {
+                Err("Unknown panic occurred during sample processing".to_string())
+            }
+        }
+    }
+}
+
+/// Extract sample names from a combined STR file header
+/// Returns None if file doesn't exist or isn't a valid combined file
+fn get_samples_from_combined_str_file(file_path: &Path) -> Option<Vec<String>> {
+    if !file_path.exists() {
+        return None;
+    }
+
+    let file = match fs::File::open(file_path) {
+        Ok(f) => f,
+        Err(_) => return None,
+    };
+
+    let reader = io::BufReader::new(file);
+    let mut lines = reader.lines();
+
+    // Read first line (might be metadata or header)
+    let first_line = match lines.next() {
+        Some(Ok(line)) => line,
+        _ => return None,
+    };
+
+    // Skip metadata line if present
+    let header = if first_line.starts_with("# file_type=") {
+        match lines.next() {
+            Some(Ok(line)) => line,
+            _ => return None,
+        }
+    } else {
+        first_line
+    };
+
+    // Check if it's a valid STR file header
+    let fields: Vec<&str> = header.split('\t').collect();
+    if fields.first() != Some(&"chromosome") {
+        return None;
+    }
+
+    // Check if it has more than 5 columns (indicating it's a combined file)
+    if fields.len() <= 5 {
+        return None; // Individual file, not combined
+    }
+
+    // Extract sample names from column headers
+    // Format: chromosome, begin, end, then pairs of (sample_H1, sample_H2) for each sample
+    let mut sample_names = Vec::new();
+    let mut seen_samples = std::collections::HashSet::new();
+    let mut i = 3; // Start after chromosome, begin, end
+
+    while i < fields.len() {
+        if i + 1 < fields.len() {
+            // Extract base sample name by removing _H1 or _H2 suffix
+            let col_name = fields[i + 1];
+            let base_name = col_name
+                .strip_suffix("_H1")
+                .or_else(|| col_name.strip_suffix("_H2"))
+                .unwrap_or(col_name);
+
+            // Only add each unique sample name once
+            if !seen_samples.contains(base_name) {
+                sample_names.push(base_name.to_string());
+                seen_samples.insert(base_name.to_string());
+            }
+
+            i += 2; // Move to next pair
+        } else {
+            break;
+        }
+    }
+
+    Some(sample_names)
+}
+
+/// Extract sample names from a combined kmer file header
+/// Returns None if file doesn't exist or isn't a valid combined kmer file
+fn get_samples_from_combined_kmer_file(file_path: &Path) -> Option<Vec<String>> {
+    if !file_path.exists() {
+        return None;
+    }
+
+    let file = match fs::File::open(file_path) {
+        Ok(f) => f,
+        Err(_) => return None,
+    };
+
+    let reader = io::BufReader::new(file);
+    let mut lines = reader.lines();
+
+    // Read first line (might be metadata or header)
+    let first_line = match lines.next() {
+        Some(Ok(line)) => line,
+        _ => return None,
+    };
+
+    // Skip metadata line if present
+    let header = if first_line.starts_with("# file_type=") {
+        match lines.next() {
+            Some(Ok(line)) => line,
+            _ => return None,
+        }
+    } else {
+        first_line
+    };
+
+    // Check if it's a valid kmer file header
+    let fields: Vec<&str> = header.split('\t').collect();
+
+    // Check for regular kmer file format (kmer, sample1, sample2, ...)
+    if fields.first() == Some(&"kmer") {
+        // Sample names are all columns after the first
+        return Some(fields[1..].iter().map(|s| s.to_string()).collect());
+    }
+
+    // Check for target kmer file format (Sample, count, ...)
+    if fields.first() == Some(&"Sample") {
+        // This format lists samples in rows, not columns
+        // Read all rows to get sample names
+        let mut sample_names = Vec::new();
+        for line in lines.map_while(Result::ok) {
+            let line_fields: Vec<&str> = line.split('\t').collect();
+            if !line_fields.is_empty() {
+                sample_names.push(line_fields[0].to_string());
+            }
+        }
+        return Some(sample_names);
+    }
+
+    None
+}
+
 /// Main batch processing function
-pub fn batch_process(
-    manifest: PathBuf,
-    output: PathBuf,
-    save_individual: Option<PathBuf>,
-    tmpdir: Option<PathBuf>,
-    target_config: TargetConfig,
-    genotype_config: GenotypeConfig,
-    processing_config: ProcessingConfig,
-    reference: Option<String>,
-) {
+pub fn batch_process(config: BatchConfig, mode: BatchMode) {
     eprintln!("Starting batch processing...");
-    eprintln!("Reading manifest: {}", manifest.display());
+
+    match &mode {
+        BatchMode::UnmappedKmer { unmapped_config, .. } => {
+            eprintln!("Mode: Unmapped kmer counting");
+            eprintln!("  Max kmer length: {}", unmapped_config.klength);
+            if let Some(ref target) = unmapped_config.target_kmer {
+                eprintln!("  Target kmer: {}", target);
+            }
+            if unmapped_config.combine_revcomp {
+                eprintln!("  Combining with reverse complements");
+            }
+        }
+        BatchMode::StrGenotyping { target_config, .. } => {
+            eprintln!("Mode: STR genotyping");
+            if target_config.region.is_none()
+                && target_config.region_file.is_none()
+                && target_config.preset.is_none()
+            {
+                eprintln!("ERROR: For STR genotyping mode, you must provide --region, --region-file, or --preset");
+                std::process::exit(1);
+            }
+        }
+    }
+    eprintln!("Reading manifest: {}", config.manifest.display());
 
     // Parse manifest
-    let samples = match parse_manifest(&manifest) {
+    let mut samples = match parse_manifest(&config.manifest) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("ERROR: Failed to parse manifest: {}", e);
@@ -175,13 +405,51 @@ pub fn batch_process(
         }
     };
 
-    eprintln!("Found {} samples in manifest", samples.len());
+    // If resume mode is enabled, check for completed samples in the output file
+    let mut completed_samples = Vec::new();
+    if config.resume {
+        let completed = match &mode {
+            BatchMode::StrGenotyping { .. } => get_samples_from_combined_str_file(&config.output),
+            BatchMode::UnmappedKmer { .. } => get_samples_from_combined_kmer_file(&config.output),
+        };
+
+        if let Some(completed_list) = completed {
+            eprintln!(
+                "Resume mode: Found {} samples in existing output file",
+                completed_list.len()
+            );
+            completed_samples = completed_list.clone();
+
+            // Filter out already completed samples
+            let original_count = samples.len();
+            samples.retain(|s| !completed_samples.contains(&s.sample_name));
+            let skipped = original_count - samples.len();
+
+            if skipped > 0 {
+                eprintln!("  Skipping {} already completed sample(s)", skipped);
+            }
+
+            if samples.is_empty() {
+                eprintln!("\nAll samples already processed. Nothing to do.");
+                eprintln!("Output file: {}", config.output.display());
+                return;
+            }
+
+            eprintln!("  Will process {} remaining sample(s)", samples.len());
+        } else {
+            eprintln!("Resume mode: No existing output file found, will process all samples");
+        }
+    } else {
+        eprintln!("Found {} samples in manifest", samples.len());
+    }
 
     // Determine output directory for individual files
-    let individual_dir = if let Some(dir) = save_individual.as_ref() {
+    let individual_dir = if let Some(dir) = config.save_individual.as_ref() {
         // Create directory if it doesn't exist
         if !dir.exists() {
-            if let Err(e) = fs::create_dir_all(dir) {
+            if config.dry_run {
+                eprintln!("Would create output directory: {}", dir.display());
+            } else if let Err(e) = fs::create_dir_all(dir) {
                 eprintln!("ERROR: Failed to create output directory {}: {}", dir.display(), e);
                 std::process::exit(1);
             }
@@ -189,10 +457,53 @@ pub fn batch_process(
         dir.clone()
     } else {
         // Use temporary directory
-        tmpdir
+        config
+            .tmpdir
+            .clone()
             .or_else(|| std::env::var("TMPDIR").ok().map(PathBuf::from))
             .unwrap_or_else(|| PathBuf::from("."))
     };
+
+    // Dry-run: validate manifest and report what would be processed
+    if config.dry_run {
+        eprintln!("\nDRY RUN MODE - No processing will occur");
+        eprintln!("\nValidating samples:");
+        let mut valid_samples = 0;
+        let mut invalid_samples = Vec::new();
+
+        for sample in &samples {
+            // Check if BAM file exists (for local files)
+            if !sample.bam_path.starts_with("http://")
+                && !sample.bam_path.starts_with("https://")
+                && !sample.bam_path.starts_with("ftp://")
+                && !sample.bam_path.starts_with("s3://")
+                && !std::path::Path::new(&sample.bam_path).exists()
+            {
+                eprintln!("  ✗ {}: BAM file not found: {}", sample.sample_name, sample.bam_path);
+                invalid_samples.push(sample.sample_name.clone());
+            } else {
+                eprintln!("  ✓ {}: Would process", sample.sample_name);
+                valid_samples += 1;
+            }
+        }
+
+        eprintln!("\nSummary:");
+        if config.resume && !completed_samples.is_empty() {
+            eprintln!("  Samples in existing output: {}", completed_samples.len());
+        }
+        eprintln!("  Total samples in manifest: {}", samples.len() + completed_samples.len());
+        eprintln!("  Would process: {}", valid_samples);
+        if !invalid_samples.is_empty() {
+            eprintln!("  Invalid: {}", invalid_samples.len());
+        }
+
+        if config.resume && config.output.exists() {
+            eprintln!("\nOutput: Would append to existing file: {}", config.output.display());
+        } else {
+            eprintln!("\nOutput: Would create new file: {}", config.output.display());
+        }
+        return;
+    }
 
     // Create progress bar
     let pb = ProgressBar::new(samples.len() as u64);
@@ -229,14 +540,29 @@ pub fn batch_process(
             continue;
         }
 
-        match process_sample(
-            sample,
-            &target_config,
-            &genotype_config,
-            &processing_config,
-            &reference,
-            &individual_file,
-        ) {
+        let result = match &mode {
+            BatchMode::UnmappedKmer { unmapped_config, processing_config } => {
+                process_sample_unmapped(
+                    sample,
+                    unmapped_config,
+                    processing_config,
+                    &config.reference,
+                    &individual_file,
+                )
+            }
+            BatchMode::StrGenotyping { target_config, genotype_config, processing_config } => {
+                process_sample(
+                    sample,
+                    target_config,
+                    genotype_config,
+                    processing_config,
+                    &config.reference,
+                    &individual_file,
+                )
+            }
+        };
+
+        match result {
             Ok(()) => {
                 individual_files.push(individual_file);
             }
@@ -266,22 +592,36 @@ pub fn batch_process(
         std::process::exit(1);
     }
 
-    eprintln!(
-        "\nCombining {} successful sample(s) into {}",
-        individual_files.len(),
-        output.display()
-    );
+    // Get thread count from mode
+    let threads = match &mode {
+        BatchMode::UnmappedKmer { processing_config, .. } => processing_config.threads,
+        BatchMode::StrGenotyping { processing_config, .. } => processing_config.threads,
+    };
 
-    // Redirect stdout to output file for combine
-    {
+    // Combine files - either create new or append to existing
+    if config.resume && config.output.exists() {
+        // Resume mode with existing output: append new samples to existing combined file
+        eprintln!(
+            "\nAppending {} new sample(s) to existing combined file: {}",
+            individual_files.len(),
+            config.output.display()
+        );
+
+        // combine supports adding individual files to a combined file
+        // We pass the existing combined file + new individual files
+        let mut all_files = vec![config.output.clone()];
+        all_files.extend(individual_files.clone());
+
+        // Redirect stdout to temporary file first
         use std::fs::OpenOptions;
+        let temp_output = config.output.with_extension("tmp");
         let output_file = OpenOptions::new()
             .write(true)
             .create(true)
             .truncate(true)
-            .open(&output)
+            .open(&temp_output)
             .unwrap_or_else(|e| {
-                eprintln!("ERROR: Failed to create output file {}: {}", output.display(), e);
+                eprintln!("ERROR: Failed to create temporary output file: {}", e);
                 std::process::exit(1);
             });
 
@@ -290,11 +630,43 @@ pub fn batch_process(
             std::process::exit(1);
         });
 
-        crate::combine::combine(individual_files.clone(), processing_config.threads);
+        crate::combine::combine(all_files, threads);
+        drop(_redirect); // Explicitly drop to restore stdout before file operations
+
+        // Replace original with updated file
+        if let Err(e) = fs::rename(&temp_output, &config.output) {
+            eprintln!("ERROR: Failed to update output file: {}", e);
+            std::process::exit(1);
+        }
+    } else {
+        // Normal mode: create new combined file
+        eprintln!(
+            "\nCombining {} sample(s) into {}",
+            individual_files.len(),
+            config.output.display()
+        );
+
+        use std::fs::OpenOptions;
+        let output_file = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&config.output)
+            .unwrap_or_else(|e| {
+                eprintln!("ERROR: Failed to create output file {}: {}", config.output.display(), e);
+                std::process::exit(1);
+            });
+
+        let _redirect = gag::Redirect::stdout(output_file).unwrap_or_else(|e| {
+            eprintln!("ERROR: Failed to redirect stdout: {}", e);
+            std::process::exit(1);
+        });
+
+        crate::combine::combine(individual_files.clone(), threads);
     } // redirect is dropped here, restoring stdout
 
     // Clean up temporary files if not saving individual files
-    if save_individual.is_none() {
+    if config.save_individual.is_none() {
         eprintln!("Cleaning up temporary files...");
         for file in &individual_files {
             if let Err(e) = fs::remove_file(file) {
@@ -306,5 +678,5 @@ pub fn batch_process(
     eprintln!("\nBatch processing complete!");
     eprintln!("  Successful: {}", individual_files.len());
     eprintln!("  Failed: {}", failed_samples.len());
-    eprintln!("  Output: {}", output.display());
+    eprintln!("  Output: {}", config.output.display());
 }

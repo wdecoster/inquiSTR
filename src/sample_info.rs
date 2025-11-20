@@ -1,13 +1,24 @@
+//! Sample/phenotype information parsing
+//!
+//! This module provides functionality to parse sample metadata files
+//! containing phenotype/grouping information for samples.
+//! This is distinct from file header metadata (lines starting with #).
+
 use std::io::BufRead;
 use std::path::Path;
 
+/// Individual sample with identifier and group assignment
 pub struct Individual {
     pub identifier: String,
     pub group: String,
 }
 
+/// Parse sample phenotypes from a sample metadata file
+///
+/// Reads a TSV file with sample identifiers and phenotype information,
+/// filtering for samples matching the specified condition.
 pub fn parse_phenotypes(
-    metadata: &Path,
+    sample_metadata: &Path,
     condition: &str,
 ) -> Result<Vec<Individual>, Box<dyn std::error::Error>> {
     let pheno_column = condition
@@ -20,7 +31,7 @@ pub fn parse_phenotypes(
         .unwrap()
         .split(',')
         .collect::<Vec<&str>>();
-    let meta_file = crate::utils::reader(metadata.to_str().unwrap());
+    let meta_file = crate::utils::reader(sample_metadata.to_str().unwrap());
     let mut lines = meta_file.lines();
     let header = lines.next().unwrap().unwrap();
     let pheno_column_index = header
@@ -31,9 +42,9 @@ pub fn parse_phenotypes(
         .next()
         .unwrap_or_else(|| {
             eprintln!(
-                "ERROR: Could not find column '{}' in metadata file: {}",
+                "ERROR: Could not find column '{}' in sample metadata file: {}",
                 pheno_column,
-                metadata.display()
+                sample_metadata.display()
             );
             eprintln!("Available columns: {}", header);
             std::process::exit(1);

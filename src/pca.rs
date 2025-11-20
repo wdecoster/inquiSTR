@@ -89,10 +89,8 @@ fn parse_combined_file_with_selection(
     let mut lines = file.lines();
 
     // Read header line - this should contain sample names
-    let header_line = lines
-        .next()
-        .expect("File is empty")
-        .expect("Error reading header line");
+    // Skip metadata lines if present
+    let header_line = crate::utils::skip_metadata_lines(&mut lines);
 
     let header_fields: Vec<&str> = header_line.trim().split('\t').collect();
 
@@ -307,8 +305,8 @@ fn sequential_feature_selection(
     let file = crate::utils::reader(&combined.to_string_lossy());
     let mut lines = file.lines();
 
-    // Skip header
-    lines.next();
+    // Skip metadata lines and header
+    let _header = crate::utils::skip_metadata_lines(&mut lines);
 
     let mut feature_scores: Vec<(usize, f64)> = Vec::new();
 
@@ -481,8 +479,8 @@ fn parallel_feature_selection(
     let file = crate::utils::reader(&combined.to_string_lossy());
     let mut lines = file.lines();
 
-    // Skip header
-    lines.next();
+    // Skip metadata lines and header
+    let _header = crate::utils::skip_metadata_lines(&mut lines);
 
     let mut all_scores = Vec::new();
     let chunk_size = 10_000; // Process 10k lines at a time
@@ -688,8 +686,8 @@ fn sequential_data_loading(
     let file = crate::utils::reader(&combined.to_string_lossy());
     let mut lines = file.lines();
 
-    // Skip header
-    lines.next();
+    // Skip metadata lines and header
+    let _header = crate::utils::skip_metadata_lines(&mut lines);
 
     let mut data_matrix = Array2::<f64>::zeros((num_samples, selected_indices.len()));
     let mut selected_idx_map: std::collections::HashMap<usize, usize> =
@@ -751,8 +749,8 @@ fn parallel_data_loading(
     let file = crate::utils::reader(&combined.to_string_lossy());
     let mut lines = file.lines();
 
-    // Skip header
-    lines.next();
+    // Skip metadata lines and header
+    let _header = crate::utils::skip_metadata_lines(&mut lines);
 
     let mut chunk_buffer = Vec::new();
     let chunk_size = 5_000; // Smaller chunks for data loading
@@ -856,8 +854,8 @@ fn estimate_feature_count(combined: &std::path::Path) -> usize {
     let file = crate::utils::reader(&combined.to_string_lossy());
     let mut lines = file.lines();
 
-    // Skip header
-    lines.next();
+    // Skip metadata lines and header
+    let _header = crate::utils::skip_metadata_lines(&mut lines);
 
     // Count first few hundred lines to estimate total
     let sample_size = 500;
@@ -1093,6 +1091,19 @@ pub fn pca(
 ) {
     if !combined.exists() {
         panic!("Combined file does not exist: {}", combined.display());
+    }
+
+    // Validate that input is a combined file, not individual
+    if let Some(file_type) = crate::combine::read_file_type_metadata(&combined) {
+        if !matches!(
+            file_type,
+            crate::combine::FileType::CombinedCall | crate::combine::FileType::CombinedKmer
+        ) {
+            eprintln!("ERROR: PCA requires a combined file (combined_call or combined_kmer).");
+            eprintln!("The provided file appears to be: {:?}", file_type);
+            eprintln!("\nPlease use 'inquiSTR combine' to merge individual sample files first.");
+            std::process::exit(1);
+        }
     }
 
     // Configure thread pool based on user input

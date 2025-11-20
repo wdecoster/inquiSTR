@@ -7,7 +7,7 @@ use std::path::PathBuf;
 
 pub fn plot(
     combined: PathBuf,
-    metadata: PathBuf,
+    sample_metadata: PathBuf,
     condition: String,
     region: String,
     output: String,
@@ -16,19 +16,33 @@ pub fn plot(
         eprintln!("ERROR: Combined file does not exist: {}", combined.display());
         std::process::exit(1);
     }
-    if !metadata.exists() {
-        eprintln!("ERROR: Metadata file does not exist: {}", metadata.display());
+    if !sample_metadata.exists() {
+        eprintln!("ERROR: Sample metadata file does not exist: {}", sample_metadata.display());
         std::process::exit(1);
+    }
+
+    // Validate that input is a combined file, not individual
+    if let Some(file_type) = crate::combine::read_file_type_metadata(&combined) {
+        if !matches!(
+            file_type,
+            crate::combine::FileType::CombinedCall | crate::combine::FileType::CombinedKmer
+        ) {
+            eprintln!("ERROR: Plot requires a combined file (combined_call or combined_kmer).");
+            eprintln!("The provided file appears to be: {:?}", file_type);
+            eprintln!("\nPlease use 'inquiSTR combine' to merge individual sample files first.");
+            std::process::exit(1);
+        }
     }
 
     // Read header to get sample names
     let file = crate::utils::reader(&combined.to_string_lossy());
     let mut lines = std::io::BufRead::lines(file);
-    let header_line = lines.next().unwrap().unwrap();
+    // Skip metadata lines if present
+    let header_line = crate::utils::skip_metadata_lines(&mut lines);
     let samples: Vec<String> = extract_clean_sample_names(&header_line);
 
-    let samples_of_interest = crate::metadata::parse_phenotypes(&metadata, &condition)
-        .expect("Problem parsing metadata file");
+    let samples_of_interest = crate::sample_info::parse_phenotypes(&sample_metadata, &condition)
+        .expect("Problem parsing sample metadata file");
     let mut samples_map = HashMap::with_capacity(samples_of_interest.len());
     for s in samples_of_interest {
         samples_map.insert(s.identifier, s.group);
