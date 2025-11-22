@@ -10,7 +10,8 @@ build:
 	cargo build --release
 
 # Build a statically-linked Linux binary using MUSL
-.PHONY: build-musl
+.PHONY: build-musl musl
+musl: build-musl
 build-musl:
 	@echo "Building static MUSL binary (x86_64-unknown-linux-musl)"
 	rustup target add x86_64-unknown-linux-musl >/dev/null 2>&1 || true
