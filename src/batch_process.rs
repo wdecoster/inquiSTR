@@ -141,12 +141,12 @@ fn validate_url(url: &str) -> Result<(), String> {
         .timeout(std::time::Duration::from_secs(10))
         .build()
         .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
-    
+
     let response = client
         .head(url)
         .send()
         .map_err(|e| format!("Failed to connect: {}", e))?;
-    
+
     if response.status().is_success() {
         Ok(())
     } else {
