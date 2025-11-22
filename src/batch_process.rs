@@ -135,6 +135,44 @@ fn extract_sample_name_from_path(path: &str) -> String {
         .unwrap_or_else(|| "sample".to_string())
 }
 
+/// Check if a URL is accessible by performing a HEAD request
+fn validate_url(url: &str) -> Result<(), String> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
+    
+    let response = client
+        .head(url)
+        .send()
+        .map_err(|e| format!("Failed to connect: {}", e))?;
+    
+    if response.status().is_success() {
+        Ok(())
+    } else {
+        Err(format!("HTTP error: {}", response.status()))
+    }
+}
+
+/// Check if a file path is accessible (local file or URL)
+fn validate_file_path(path: &str) -> Result<(), String> {
+    if path.starts_with("http://")
+        || path.starts_with("https://")
+        || path.starts_with("ftp://")
+        || path.starts_with("ftps://")
+        || path.starts_with("s3://")
+    {
+        validate_url(path)
+    } else {
+        // Local file
+        if Path::new(path).exists() {
+            Ok(())
+        } else {
+            Err("File does not exist".to_string())
+        }
+    }
+}
+
 /// Process a single sample for STR genotyping and write to output file
 /// This uses gag crate to redirect stdout to a file
 fn process_sample(
@@ -427,45 +465,44 @@ pub fn batch_process(config: BatchConfig, mode: BatchMode) {
         }
     };
 
-    // If resume mode is enabled, check for completed samples in the output file
-    let mut completed_samples = Vec::new();
-    if config.resume {
-        let completed = match &mode {
-            BatchMode::StrGenotyping { .. } => get_samples_from_combined_str_file(&config.output),
-            BatchMode::UnmappedKmer { .. } => get_samples_from_combined_kmer_file(&config.output),
-        };
-
-        if let Some(completed_list) = completed {
-            eprintln!(
-                "Resume mode: Found {} samples in existing output file",
-                completed_list.len()
-            );
-            completed_samples = completed_list.clone();
-
-            // Filter out already completed samples
-            let original_count = samples.len();
-            samples.retain(|s| !completed_samples.contains(&s.sample_name));
-            let skipped = original_count - samples.len();
-
-            if skipped > 0 {
-                eprintln!("  Skipping {} already completed sample(s)", skipped);
-            }
-
-            if samples.is_empty() {
-                eprintln!("\nAll samples already processed. Nothing to do.");
-                eprintln!("Output file: {}", config.output.display());
-                return;
-            }
-
-            eprintln!("  Will process {} remaining sample(s)", samples.len());
-        } else {
-            eprintln!("Resume mode: No existing output file found, will process all samples");
+    // Check for duplicate sample names
+    let mut seen_names = std::collections::HashSet::new();
+    let mut duplicates = std::collections::HashSet::new();
+    for sample in &samples {
+        if !seen_names.insert(&sample.sample_name) {
+            duplicates.insert(sample.sample_name.clone());
         }
-    } else {
-        eprintln!("Found {} samples in manifest", samples.len());
+    }
+    if !duplicates.is_empty() {
+        eprintln!("ERROR: Duplicate sample names found in manifest:");
+        let mut dup_list: Vec<_> = duplicates.into_iter().collect();
+        dup_list.sort();
+        for dup in &dup_list {
+            eprintln!("  - {}", dup);
+        }
+        eprintln!("\nSample names must be unique. Please fix the manifest or ensure unique sample_name column values.");
+        std::process::exit(1);
     }
 
-    // Determine output directory for individual files
+    // Validate all file paths (especially URLs) before starting processing
+    eprintln!("Validating file paths...");
+    let mut invalid_paths = Vec::new();
+    for sample in &samples {
+        if let Err(e) = validate_file_path(&sample.bam_path) {
+            invalid_paths.push((sample.sample_name.clone(), sample.bam_path.clone(), e));
+        }
+    }
+    if !invalid_paths.is_empty() {
+        eprintln!("ERROR: {} invalid file path(s) found:", invalid_paths.len());
+        for (sample_name, path, error) in &invalid_paths {
+            eprintln!("  - {}: {} ({})", sample_name, path, error);
+        }
+        eprintln!("\nPlease fix the file paths in the manifest and try again.");
+        std::process::exit(1);
+    }
+    eprintln!("  All {} file paths validated successfully", samples.len());
+
+    // Determine output directory for individual files (need this early for resume logic)
     let individual_dir = if let Some(dir) = config.save_individual.as_ref() {
         // Create directory if it doesn't exist
         if !dir.exists() {
@@ -486,16 +523,89 @@ pub fn batch_process(config: BatchConfig, mode: BatchMode) {
             .unwrap_or_else(|| PathBuf::from("."))
     };
 
+    // If resume mode is enabled, check for completed samples
+    let mut completed_samples = Vec::new();
+    let mut samples_in_output = 0;
+    let mut samples_with_individual_files = 0;
+
+    if config.resume {
+        // First check the combined output file
+        let completed_from_output = match &mode {
+            BatchMode::StrGenotyping { .. } => get_samples_from_combined_str_file(&config.output),
+            BatchMode::UnmappedKmer { .. } => get_samples_from_combined_kmer_file(&config.output),
+        };
+
+        if let Some(completed_list) = completed_from_output {
+            samples_in_output = completed_list.len();
+            eprintln!(
+                "Resume mode: Found {} samples in existing combined output file",
+                samples_in_output
+            );
+            completed_samples.extend(completed_list);
+        }
+
+        // Also check for existing individual files
+        for sample in &samples {
+            let individual_file = individual_dir.join(format!("{}.inq", sample.sample_name));
+            if individual_file.exists() && !completed_samples.contains(&sample.sample_name) {
+                completed_samples.push(sample.sample_name.clone());
+                samples_with_individual_files += 1;
+            }
+        }
+
+        if samples_with_individual_files > 0 {
+            eprintln!(
+                "Resume mode: Found {} existing individual .inq files (not yet in combined output)",
+                samples_with_individual_files
+            );
+        }
+
+        if !completed_samples.is_empty() {
+            // Filter out already completed samples
+            let original_count = samples.len();
+            samples.retain(|s| !completed_samples.contains(&s.sample_name));
+            let skipped = original_count - samples.len();
+
+            eprintln!(
+                "  Total skipped: {} (in output: {}, individual files: {})",
+                skipped, samples_in_output, samples_with_individual_files
+            );
+
+            if samples.is_empty() {
+                eprintln!("\nAll samples already processed. Nothing to do.");
+                if config.output.exists() {
+                    eprintln!("Output file: {}", config.output.display());
+                } else {
+                    eprintln!("Individual files are ready. Run combine to create output file.");
+                }
+                return;
+            }
+
+            eprintln!("  Will process {} remaining sample(s)", samples.len());
+        } else {
+            eprintln!("Resume mode: No existing output or individual files found, will process all samples");
+        }
+    } else {
+        eprintln!("Found {} samples in manifest", samples.len());
+    }
+
     // Dry-run: validate manifest and report what would be processed
     if config.dry_run {
         eprintln!("\nDRY RUN MODE - No processing will occur");
         eprintln!("\nValidating samples:");
         let mut valid_samples = 0;
         let mut invalid_samples = Vec::new();
+        let mut existing_samples = 0;
 
         for sample in &samples {
+            let individual_file = individual_dir.join(format!("{}.inq", sample.sample_name));
+
+            // Check if individual file already exists (not yet in combined output)
+            if individual_file.exists() && !completed_samples.contains(&sample.sample_name) {
+                eprintln!("  ○ {}: Individual file exists, would combine", sample.sample_name);
+                existing_samples += 1;
             // Check if BAM file exists (for local files)
-            if !sample.bam_path.starts_with("http://")
+            } else if !sample.bam_path.starts_with("http://")
                 && !sample.bam_path.starts_with("https://")
                 && !sample.bam_path.starts_with("ftp://")
                 && !sample.bam_path.starts_with("s3://")
@@ -510,17 +620,29 @@ pub fn batch_process(config: BatchConfig, mode: BatchMode) {
         }
 
         eprintln!("\nSummary:");
-        if config.resume && !completed_samples.is_empty() {
-            eprintln!("  Samples in existing output: {}", completed_samples.len());
-        }
         eprintln!("  Total samples in manifest: {}", samples.len() + completed_samples.len());
-        eprintln!("  Would process: {}", valid_samples);
+        if config.resume && samples_in_output > 0 {
+            eprintln!("  Already in combined output: {}", samples_in_output);
+        }
+        if config.resume && samples_with_individual_files > 0 {
+            eprintln!("  Individual files to combine: {}", samples_with_individual_files);
+        }
+        if existing_samples > 0 {
+            eprintln!("  Individual files discovered in dry-run: {}", existing_samples);
+        }
+        eprintln!("  Would process from scratch: {}", valid_samples);
         if !invalid_samples.is_empty() {
             eprintln!("  Invalid: {}", invalid_samples.len());
         }
 
         if config.resume && config.output.exists() {
             eprintln!("\nOutput: Would append to existing file: {}", config.output.display());
+        } else if config.resume && samples_with_individual_files > 0 {
+            eprintln!(
+                "\nOutput: Would combine {} individual files and create: {}",
+                samples_with_individual_files,
+                config.output.display()
+            );
         } else {
             eprintln!("\nOutput: Would create new file: {}", config.output.display());
         }
