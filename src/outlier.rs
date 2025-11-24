@@ -171,7 +171,7 @@ fn is_kmer_file(file_path: &Path) -> bool {
 /// Write outlier counts to a file
 fn write_outlier_counts(counts: &std::collections::HashMap<String, usize>, output_path: &Path) {
     use std::io::Write;
-    
+
     let mut file = match std::fs::File::create(output_path) {
         Ok(f) => std::io::BufWriter::new(f),
         Err(e) => {
@@ -179,24 +179,24 @@ fn write_outlier_counts(counts: &std::collections::HashMap<String, usize>, outpu
             std::process::exit(1);
         }
     };
-    
+
     // Write header
     if let Err(e) = writeln!(file, "sample\tcount") {
         eprintln!("ERROR: Failed to write to count output file: {}", e);
         std::process::exit(1);
     }
-    
+
     // Sort by count (descending) and then by sample name
     let mut sorted_counts: Vec<_> = counts.iter().collect();
     sorted_counts.sort_by(|a, b| b.1.cmp(a.1).then_with(|| a.0.cmp(b.0)));
-    
+
     for (sample, count) in sorted_counts {
         if let Err(e) = writeln!(file, "{}\t{}", sample, count) {
             eprintln!("ERROR: Failed to write to count output file: {}", e);
             std::process::exit(1);
         }
     }
-    
+
     eprintln!("Wrote outlier counts for {} samples to {}", counts.len(), output_path.display());
 }
 
@@ -259,10 +259,11 @@ fn outlier_str_analysis(
     // Skip metadata lines if present
     let header_line = crate::utils::skip_metadata_lines(&mut lines);
     println!("chrom\tbegin\tend\toutliers");
-    
+
     // Initialize counter if count output is requested
-    let mut outlier_counts: Option<std::collections::HashMap<String, usize>> = 
-        count_output.as_ref().map(|_| std::collections::HashMap::new());
+    let mut outlier_counts: Option<std::collections::HashMap<String, usize>> = count_output
+        .as_ref()
+        .map(|_| std::collections::HashMap::new());
 
     // Parse sample names once and store them
     let sample_names: Vec<String> = header_line
@@ -273,7 +274,7 @@ fn outlier_str_analysis(
 
     let num_samples = sample_names.len();
     let mincluster = num_samples.ilog2() as usize;
-    
+
     // Create params struct
     let params = ProcessParams {
         sample_names: &sample_names,
@@ -295,11 +296,7 @@ fn outlier_str_analysis(
 
         // When chunk is full, process it in parallel
         if line_buffer.len() == chunk_size {
-            process_chunk(
-                &line_buffer,
-                &params,
-                &mut outlier_counts,
-            );
+            process_chunk(&line_buffer, &params, &mut outlier_counts);
 
             processed_count += line_buffer.len();
             if processed_count % 10_000 == 0 {
@@ -312,16 +309,12 @@ fn outlier_str_analysis(
 
     // Process remaining lines
     if !line_buffer.is_empty() {
-        process_chunk(
-            &line_buffer,
-            &params,
-            &mut outlier_counts,
-        );
+        process_chunk(&line_buffer, &params, &mut outlier_counts);
         processed_count += line_buffer.len();
     }
 
     eprintln!("Completed processing {} loci", processed_count);
-    
+
     // Write counts if requested
     if let (Some(counts), Some(output_path)) = (outlier_counts, count_output) {
         write_outlier_counts(&counts, &output_path);
@@ -342,10 +335,11 @@ fn outlier_kmer_analysis(
     // Skip metadata lines if present
     let header_line = crate::utils::skip_metadata_lines(&mut lines);
     println!("kmer\toutliers");
-    
+
     // Initialize counter if count output is requested
-    let mut outlier_counts: Option<std::collections::HashMap<String, usize>> = 
-        count_output.as_ref().map(|_| std::collections::HashMap::new());
+    let mut outlier_counts: Option<std::collections::HashMap<String, usize>> = count_output
+        .as_ref()
+        .map(|_| std::collections::HashMap::new());
 
     // Parse sample names once and store them
     let sample_names: Vec<String> = header_line
@@ -356,7 +350,7 @@ fn outlier_kmer_analysis(
 
     let num_samples = sample_names.len();
     let mincluster = num_samples.ilog2() as usize;
-    
+
     // Create params struct
     let params = ProcessParams {
         sample_names: &sample_names,
@@ -378,11 +372,7 @@ fn outlier_kmer_analysis(
 
         // When chunk is full, process it in parallel
         if line_buffer.len() == chunk_size {
-            process_kmer_chunk(
-                &line_buffer,
-                &params,
-                &mut outlier_counts,
-            );
+            process_kmer_chunk(&line_buffer, &params, &mut outlier_counts);
 
             processed_count += line_buffer.len();
             if processed_count % 10_000 == 0 {
@@ -395,16 +385,12 @@ fn outlier_kmer_analysis(
 
     // Process remaining lines
     if !line_buffer.is_empty() {
-        process_kmer_chunk(
-            &line_buffer,
-            &params,
-            &mut outlier_counts,
-        );
+        process_kmer_chunk(&line_buffer, &params, &mut outlier_counts);
         processed_count += line_buffer.len();
     }
 
     eprintln!("Completed processing {} kmers", processed_count);
-    
+
     // Write counts if requested
     if let (Some(counts), Some(output_path)) = (outlier_counts, count_output) {
         write_outlier_counts(&counts, &output_path);
@@ -442,8 +428,12 @@ fn process_chunk(
 
             if let Some(values) = get_repeat_lengths(&splitline, params.minsize) {
                 let expanded = match params.method {
-                    Method::Zscore => z_score_outliers(&values, params.sample_names, params.zscore_cutoff),
-                    Method::Dbscan => dbscan_outliers(&values, params.sample_names, params.mincluster),
+                    Method::Zscore => {
+                        z_score_outliers(&values, params.sample_names, params.zscore_cutoff)
+                    }
+                    Method::Dbscan => {
+                        dbscan_outliers(&values, params.sample_names, params.mincluster)
+                    }
                 };
 
                 if !expanded.is_empty() {
@@ -484,7 +474,7 @@ fn process_chunk(
     for (chrom, begin, end, expanded) in results {
         let expanded_str = expanded.join(",");
         println!("{}	{}	{}	{}", chrom, begin, end, expanded_str);
-        
+
         // Update counts if tracking
         if let Some(ref mut counts) = outlier_counts {
             for sample in &expanded {
@@ -513,8 +503,12 @@ fn process_kmer_chunk(
 
             if let Some(values) = get_kmer_frequencies(&splitline, params.minsize) {
                 let expanded = match params.method {
-                    Method::Zscore => z_score_outliers(&values, params.sample_names, params.zscore_cutoff),
-                    Method::Dbscan => dbscan_outliers(&values, params.sample_names, params.mincluster),
+                    Method::Zscore => {
+                        z_score_outliers(&values, params.sample_names, params.zscore_cutoff)
+                    }
+                    Method::Dbscan => {
+                        dbscan_outliers(&values, params.sample_names, params.mincluster)
+                    }
                 };
 
                 if !expanded.is_empty() {
@@ -543,7 +537,7 @@ fn process_kmer_chunk(
     for (kmer, expanded) in results {
         let expanded_str = expanded.join(",");
         println!("{}	{}", kmer, expanded_str);
-        
+
         // Update counts if tracking
         if let Some(ref mut counts) = outlier_counts {
             for sample in &expanded {

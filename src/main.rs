@@ -298,6 +298,10 @@ enum Commands {
         /// Number of threads to use for parallel processing
         #[clap(short = 't', long, value_parser, default_value_t = 1)]
         threads: usize,
+
+        /// Output file to write outlier counts per sample (tab-separated: sample\tcount)
+        #[clap(short = 'c', long, value_parser)]
+        count: Option<PathBuf>,
     },
     /// Lookup genotypes and display
     Query {
@@ -396,9 +400,9 @@ enum Commands {
         #[clap(short, long, value_parser, default_value_t=String::from("groupplot.html"))]
         output: String,
     },
-    /// Perform PCA analysis on combined STR data
+    /// Perform PCA analysis on combined STR or kmer data
     Pca {
-        /// Combined file of STR calls from inquiSTR combine command
+        /// Combined file from inquiSTR combine command (supports both STR calls and kmer frequencies)
         #[clap(value_parser, required = true)]
         combined: PathBuf,
 
@@ -414,7 +418,7 @@ enum Commands {
         #[clap(short, long, value_parser, default_value_t = 1)]
         threads: usize,
 
-        /// Method for aggregating H1/H2 allele lengths: max (default), min, or sum
+        /// Method for aggregating H1/H2 allele lengths: max (default), min, or sum (only applies to STR files, ignored for kmer files)
         #[clap(short, long, value_parser, default_value_t = pca::AlleleAggregation::Max)]
         aggregation: pca::AlleleAggregation,
     },
@@ -609,13 +613,13 @@ fn main() {
         Commands::Filter { input, minlen, minchange, bed, call_rate, min_cv } => {
             filter::filter(input, minlen, minchange, bed, call_rate, min_cv);
         }
-        Commands::Outlier { combined, minsize, zscore, method, sample, threads } => {
+        Commands::Outlier { combined, minsize, zscore, method, sample, threads, count } => {
             if !combined.exists() {
                 eprintln!("ERROR: Combined file does not exist: {}", combined.display());
                 std::process::exit(1);
             }
             let subset = sample.map(|s| outlier::parse_sample_input(&s));
-            outlier::outlier(combined, minsize, zscore, method, subset, threads);
+            outlier::outlier(combined, minsize, zscore, method, subset, threads, count);
         }
         Commands::Query { combined, region } => {
             query::query(combined, region);
