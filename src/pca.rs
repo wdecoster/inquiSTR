@@ -1,12 +1,12 @@
-//! # Principal Component Analysis (PCA) for STR Genotypes
+//! # Principal Component Analysis (PCA) for STR Genotypes and Kmer Frequencies
 //!
 //! This module implements Principal Component Analysis for Short Tandem Repeat (STR) genotype data
-//! from inquiSTR combined files. It provides dimensionality reduction and visualization to identify
-//! population structure and relationships between samples.
+//! and kmer frequency data from inquiSTR combined files. It provides dimensionality reduction and
+//! visualization to identify population structure and relationships between samples.
 //!
 //! ## Features
 //!
-//! - **Automated data parsing** from inquiSTR combined files
+//! - **Automated data parsing** from inquiSTR combined files (both STR and kmer formats)
 //! - **Simplified PCA implementation** using variance-based feature selection
 //! - **Interactive HTML plots** using Plotly for visualization
 //! - **Support for missing data** (NaN values handled gracefully)
@@ -16,6 +16,9 @@
 //! ```bash
 //! # Generate PCA plot from combined STR data
 //! inquiSTR pca combined_strs.tsv --output str_pca.html
+//!
+//! # Generate PCA plot from combined kmer frequency data
+//! inquiSTR pca inquiSTR_unmapped.tsv --output kmer_pca.html
 //! ```
 //!
 //! ## Implementation
@@ -79,8 +82,238 @@ impl AlleleAggregation {
     }
 }
 
+/// Parse a combined kmer file for PCA analysis
+fn parse_combined_kmer_file_with_selection(
+    combined: &std::path::Path,
+    max_features: Option<usize>,
+) -> (Array2<f64>, Vec<String>) {
+    let file = crate::utils::reader(&combined.to_string_lossy());
+    let mut lines = file.lines();
+
+    // Read header line - skip metadata if present
+    let header_line = crate::utils::skip_metadata_lines(&mut lines);
+    let header_fields: Vec<&str> = header_line.trim().split('\t').collect();
+
+    // Validate kmer file header format
+    if header_fields.len() < 2 || header_fields[0] != "kmer" {
+        panic!(
+            "Invalid combined kmer file header. Expected format: kmer\\tsample1\\tsample2\\t..."
+        );
+    }
+
+    // Extract sample names (all columns after "kmer")
+    let sample_names: Vec<String> = header_fields[1..].iter().map(|s| s.to_string()).collect();
+    let num_samples = sample_names.len();
+
+    if num_samples < 2 {
+        panic!("Need at least 2 samples for PCA, found {}", num_samples);
+    }
+
+    println!("Detected {} samples in kmer file", num_samples);
+
+    // For kmer files, we may have many features (kmers)
+    // Use feature selection if requested or if we detect many features
+    if let Some(max_features) = max_features {
+        return parse_kmer_with_feature_selection(
+            combined,
+            num_samples,
+            sample_names,
+            max_features,
+        );
+    }
+
+    // Single-pass approach for smaller datasets
+    let mut data_rows = Vec::new();
+
+    for (line_num, line_result) in lines.enumerate() {
+        let line = line_result
+            .map_err(|e| format!("Error reading line {}: {}", line_num + 2, e))
+            .expect("IO error reading file");
+
+        let fields: Vec<&str> = line.trim().split('\t').collect();
+
+        let expected_cols = 1 + num_samples;
+        if fields.len() != expected_cols {
+            eprintln!(
+                "Warning: Skipping malformed line {} (expected {} columns, got {})",
+                line_num + 2,
+                expected_cols,
+                fields.len()
+            );
+            continue;
+        }
+
+        // Parse kmer frequencies for this kmer across all samples
+        let mut row_data = Vec::with_capacity(num_samples);
+        for sample_idx in 0..num_samples {
+            let freq_idx = 1 + sample_idx;
+            let freq: f64 = fields[freq_idx].parse().unwrap_or(0.0);
+            row_data.push(freq);
+        }
+        data_rows.push(row_data);
+    }
+
+    if data_rows.is_empty() {
+        panic!("No data lines found after header in kmer file");
+    }
+
+    let num_kmers = data_rows.len();
+    let mut data_matrix = Array2::<f64>::zeros((num_samples, num_kmers));
+
+    // Fill matrix from collected row data
+    for (kmer_idx, row_data) in data_rows.iter().enumerate() {
+        for (sample_idx, &value) in row_data.iter().enumerate() {
+            data_matrix[[sample_idx, kmer_idx]] = value;
+        }
+    }
+
+    println!("Loaded {} kmers for {} samples", num_kmers, num_samples);
+
+    (data_matrix, sample_names)
+}
+
+/// Parse kmer file with feature selection for large datasets
+fn parse_kmer_with_feature_selection(
+    combined: &std::path::Path,
+    num_samples: usize,
+    sample_names: Vec<String>,
+    max_features: usize,
+) -> (Array2<f64>, Vec<String>) {
+    println!("Using memory-efficient two-pass parsing for large kmer dataset...");
+
+    // PASS 1: Calculate variance scores for each kmer
+    println!("Pass 1: Analyzing kmers to find most informative features...");
+    let file = crate::utils::reader(&combined.to_string_lossy());
+    let mut lines = file.lines();
+    let _header = crate::utils::skip_metadata_lines(&mut lines);
+
+    let mut feature_scores: Vec<(usize, f64)> = Vec::new();
+
+    for (kmer_idx, line_result) in lines.enumerate() {
+        let line = match line_result {
+            Ok(l) => l,
+            Err(_) => continue,
+        };
+
+        let fields: Vec<&str> = line.trim().split('\t').collect();
+        if fields.len() != 1 + num_samples {
+            continue;
+        }
+
+        // Calculate variance for this kmer
+        let mut sum = 0.0;
+        let mut sum_sq = 0.0;
+        let mut count = 0;
+
+        for sample_idx in 0..num_samples {
+            let freq: f64 = fields[1 + sample_idx].parse().unwrap_or(0.0);
+            sum += freq;
+            sum_sq += freq * freq;
+            count += 1;
+        }
+
+        if count > 1 {
+            let variance = (sum_sq - sum * sum / count as f64) / (count as f64 - 1.0);
+            feature_scores.push((kmer_idx, variance));
+        }
+    }
+
+    // Sort by variance and select top features
+    feature_scores.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    let selected_indices: Vec<usize> = feature_scores
+        .into_iter()
+        .take(max_features)
+        .map(|(idx, _)| idx)
+        .collect();
+
+    println!("Pass 2: Loading {} selected kmers into memory...", selected_indices.len());
+
+    // PASS 2: Load only selected features
+    let file = crate::utils::reader(&combined.to_string_lossy());
+    let mut lines = file.lines();
+    let _header = crate::utils::skip_metadata_lines(&mut lines);
+
+    let mut data_matrix = Array2::<f64>::zeros((num_samples, selected_indices.len()));
+    let mut selected_idx_map: std::collections::HashMap<usize, usize> =
+        std::collections::HashMap::new();
+
+    for (new_idx, &original_idx) in selected_indices.iter().enumerate() {
+        selected_idx_map.insert(original_idx, new_idx);
+    }
+
+    for (kmer_idx, line_result) in lines.enumerate() {
+        if let Some(&new_idx) = selected_idx_map.get(&kmer_idx) {
+            let line = match line_result {
+                Ok(l) => l,
+                Err(_) => continue,
+            };
+
+            let fields: Vec<&str> = line.trim().split('\t').collect();
+            if fields.len() != 1 + num_samples {
+                continue;
+            }
+
+            for sample_idx in 0..num_samples {
+                let freq: f64 = fields[1 + sample_idx].parse().unwrap_or(0.0);
+                data_matrix[[sample_idx, new_idx]] = freq;
+            }
+        }
+    }
+
+    println!("Loaded {} kmers for {} samples", selected_indices.len(), num_samples);
+
+    (data_matrix, sample_names)
+}
+
 /// Parse a combined inquiSTR file with optional feature pre-selection for memory efficiency
+/// This is a dispatcher that routes to the appropriate parser based on file type
 fn parse_combined_file_with_selection(
+    combined: &std::path::Path,
+    max_features: Option<usize>,
+    aggregation: AlleleAggregation,
+) -> (Array2<f64>, Vec<String>) {
+    // Detect file type and route to appropriate parser
+    let file_type = crate::combine::read_file_type_metadata(combined);
+
+    match file_type {
+        Some(crate::combine::FileType::CombinedKmer) => {
+            parse_combined_kmer_file_with_selection(combined, max_features)
+        }
+        Some(crate::combine::FileType::CombinedCall) => {
+            parse_combined_str_file_with_selection(combined, max_features, aggregation)
+        }
+        _ => {
+            // Try to auto-detect from header
+            let file = crate::utils::reader(&combined.to_string_lossy());
+            let mut lines = file.lines();
+            let header_line = crate::utils::skip_metadata_lines(&mut lines);
+            let header_fields: Vec<&str> = header_line.trim().split('\t').collect();
+
+            // Check if this looks like a kmer file (first column is "kmer")
+            if header_fields.len() >= 2 && header_fields[0] == "kmer" {
+                parse_combined_kmer_file_with_selection(combined, max_features)
+            // Check if this looks like an STR file (first three columns are chromosome, begin, end)
+            } else if header_fields.len() >= 3
+                && header_fields[0] == "chromosome"
+                && header_fields[1] == "begin"
+                && header_fields[2] == "end"
+            {
+                parse_combined_str_file_with_selection(combined, max_features, aggregation)
+            } else {
+                // Unable to determine file type
+                eprintln!("Error: Unable to determine file type from header.");
+                eprintln!("Expected either:");
+                eprintln!("  - STR file: chromosome\\tbegin\\tend\\tsample1_H1\\tsample1_H2...");
+                eprintln!("  - Kmer file: kmer\\tsample1\\tsample2...");
+                eprintln!("\nGot header: {}", header_line);
+                std::process::exit(1);
+            }
+        }
+    }
+}
+
+/// Parse a combined STR file for PCA analysis
+fn parse_combined_str_file_with_selection(
     combined: &std::path::Path,
     max_features: Option<usize>,
     aggregation: AlleleAggregation,
@@ -99,7 +332,12 @@ fn parse_combined_file_with_selection(
         || header_fields[1] != "begin"
         || header_fields[2] != "end"
     {
-        panic!("Invalid combined file header. Expected format: chromosome\tbegin\tend\tsample1_H1\tsample1_H2\t...");
+        eprintln!("Error: Invalid STR file header format.");
+        eprintln!("Expected: chromosome\\tbegin\\tend\\tsample1_H1\\tsample1_H2\\t...");
+        eprintln!("Got: {}", header_line);
+        eprintln!("\nThis file does not appear to be a valid combined STR file.");
+        eprintln!("If this is a kmer file, it should have been auto-detected.");
+        std::process::exit(1);
     }
 
     // Extract sample names from header (columns 3+ should be sample_H1, sample_H2 pattern)
@@ -1028,6 +1266,7 @@ fn create_pca_plot(
     sample_names: &[String],
     explained_variance: &Array1<f64>,
     output: &str,
+    title: &str,
 ) {
     // Extract PC1 and PC2 coordinates
     let pc1_coords: Vec<f64> = pca_data.column(0).to_vec();
@@ -1054,7 +1293,7 @@ fn create_pca_plot(
 
     // Set up layout
     let layout = Layout::new()
-        .title(Title::with_text("PCA of STR Genotypes"))
+        .title(Title::with_text(title))
         .x_axis(
             PlotAxis::new()
                 .title(Title::with_text(format!("PC1 ({:.1}% variance)", explained_variance[0]))),
@@ -1093,18 +1332,27 @@ pub fn pca(
         panic!("Combined file does not exist: {}", combined.display());
     }
 
-    // Validate that input is a combined file, not individual
-    if let Some(file_type) = crate::combine::read_file_type_metadata(&combined) {
+    // Validate that input is a combined file, not individual, and detect data type
+    let file_type = crate::combine::read_file_type_metadata(&combined);
+    let is_kmer_file = matches!(file_type, Some(crate::combine::FileType::CombinedKmer));
+
+    if let Some(ref ftype) = file_type {
         if !matches!(
-            file_type,
+            ftype,
             crate::combine::FileType::CombinedCall | crate::combine::FileType::CombinedKmer
         ) {
             eprintln!("ERROR: PCA requires a combined file (combined_call or combined_kmer).");
-            eprintln!("The provided file appears to be: {:?}", file_type);
+            eprintln!("The provided file appears to be: {:?}", ftype);
             eprintln!("\nPlease use 'inquiSTR combine' to merge individual sample files first.");
             std::process::exit(1);
         }
     }
+
+    let data_type = if is_kmer_file {
+        "kmer frequencies"
+    } else {
+        "STR genotypes"
+    };
 
     // Configure thread pool based on user input
     if threads > 0 {
@@ -1118,11 +1366,15 @@ pub fn pca(
     }
 
     println!("Reading combined inquiSTR file: {}", combined.display());
-    println!("Using '{}' aggregation method for H1/H2 allele lengths", aggregation);
+    println!("Detected file type: {}", data_type);
+    if !is_kmer_file {
+        println!("Using '{}' aggregation method for H1/H2 allele lengths", aggregation);
+    }
 
     // Pre-determine if we need feature selection based on a quick file scan
     let estimated_features = estimate_feature_count(combined.as_path());
-    println!("Estimated {} STR regions in file", estimated_features);
+    let feature_name = if is_kmer_file { "kmers" } else { "STR regions" };
+    println!("Estimated {} {} in file", estimated_features, feature_name);
 
     let max_features = if estimated_features > 100_000 {
         // For massive datasets (>100k loci), be very aggressive
@@ -1154,7 +1406,11 @@ pub fn pca(
 
     println!("Loaded data:");
     println!("  {} samples", sample_names.len());
-    println!("  {} STR regions", data_matrix.ncols());
+    if is_kmer_file {
+        println!("  {} kmers", data_matrix.ncols());
+    } else {
+        println!("  {} STR regions", data_matrix.ncols());
+    }
 
     if sample_names.len() < 2 {
         panic!("Need at least 2 samples for PCA, but only {} found", sample_names.len());
@@ -1162,12 +1418,13 @@ pub fn pca(
 
     // Show information about feature selection (if it occurred)
     if max_features.is_some() {
-        println!("Selected regions include loci with:");
+        let feature_name = if is_kmer_file { "kmers" } else { "regions" };
+        println!("Selected {} include features with:", feature_name);
         println!("  - High variance across samples");
         println!("  - Low missing data rate (<50%)");
         println!("  - Good dynamic range");
 
-        // Region names not collected to save memory
+        // Feature names not collected to save memory
     }
 
     let n_components = 2; // For now, stick to 2D visualization
@@ -1189,7 +1446,12 @@ pub fn pca(
     println!("  Parallel processing: {} CPU cores utilized", num_cores);
 
     // Create and save the PCA plot
-    create_pca_plot(&pca_data, &sample_names, &explained_variance, &output);
+    let plot_title = if is_kmer_file {
+        "PCA of Kmer Frequencies"
+    } else {
+        "PCA of STR Genotypes"
+    };
+    create_pca_plot(&pca_data, &sample_names, &explained_variance, &output, plot_title);
 
     println!("PCA analysis complete! Plot saved to: {}", output);
 }
