@@ -22,7 +22,12 @@ pub enum FileType {
 fn reader(filename: &str) -> Box<dyn BufRead> {
     let path = Path::new(filename);
     let file = match File::open(path) {
-        Err(why) => panic!("couldn't open {}: {}", path.display(), why),
+        Err(why) => {
+            eprintln!("Error: Failed to open file {}", path.display());
+            eprintln!("Reason: {}", why);
+            eprintln!("\nPlease check that the file exists and you have permission to read it.");
+            std::process::exit(1);
+        }
         Ok(file) => file,
     };
 
@@ -112,7 +117,12 @@ fn is_kmer_file(file_path: &Path) -> bool {
         }
     }
 
-    panic!("Unable to determine file format for {}", file_path.display());
+    eprintln!("Error: Unable to determine file format for {}", file_path.display());
+    eprintln!("The file does not appear to be a valid inquiSTR output file.");
+    eprintln!("\nExpected either:");
+    eprintln!("  - STR call file (starts with 'chromosome' or has chr:start:end format)");
+    eprintln!("  - Kmer frequency file (starts with 'kmer' or 'Sample')");
+    std::process::exit(1);
 }
 
 /// Determine if a file is a combined STR file (has more than 5 columns)
@@ -203,7 +213,9 @@ pub fn combine(calls: Vec<PathBuf>, threads: usize) {
     // Check if all files exist
     for file in &calls {
         if !file.exists() {
-            panic!("File {} does not exist!", file.display());
+            eprintln!("Error: File does not exist: {}", file.display());
+            eprintln!("\nPlease check the file path and try again.");
+            std::process::exit(1);
         }
     }
 
@@ -224,10 +236,13 @@ pub fn combine(calls: Vec<PathBuf>, threads: usize) {
             } else {
                 "STR call"
             };
-            panic!(
-                "File type mismatch: first file {} is a {} file, but file {} is a {} file. All files must be the same type.",
-                calls[0].display(), first_type, file.display(), current_type
+            eprintln!("Error: File type mismatch detected.");
+            eprintln!("  First file: {} ({})", calls[0].display(), first_type);
+            eprintln!("  This file: {} ({})", file.display(), current_type);
+            eprintln!(
+                "\nAll files must be the same type. Cannot combine kmer and STR files together."
             );
+            std::process::exit(1);
         }
     }
 
@@ -283,15 +298,19 @@ fn combine_str_files(calls: Vec<PathBuf>, _actual_threads: usize) {
         let headers = read_and_validate_headers(&calls);
         let has_headers = headers[0].split('\t').next() == Some("chromosome");
 
-        // Output combined header if present
-        if has_headers {
-            output_combined_header(&headers);
-        } else {
-            eprintln!("Warning: No headers detected in input files");
+        // Validate that headers are present
+        if !has_headers {
+            eprintln!("Error: No headers detected in input files.");
+            eprintln!("All inquiSTR output files should have headers starting with 'chromosome'.");
+            eprintln!("\nPlease ensure you are combining valid inquiSTR output files.");
+            std::process::exit(1);
         }
 
+        // Output combined header
+        output_combined_header(&headers);
+
         // Process data with parallel chunked reading
-        process_data_parallel(&calls, has_headers);
+        process_data_parallel(&calls);
 
         eprintln!("Completed combining {} files", calls.len());
     }
@@ -327,7 +346,16 @@ fn combine_target_kmer_files(calls: &[PathBuf], headers: &[String]) {
 
     for file in calls {
         let mut file_reader = reader(&file.to_string_lossy()).lines();
-        file_reader.next(); // Skip header
+
+        // Skip metadata lines and header
+        while let Some(Ok(line)) = file_reader.next() {
+            if line.starts_with('#') {
+                continue; // Skip metadata lines
+            } else {
+                // This is the header line, consume it and stop
+                break;
+            }
+        }
 
         let mut file_data = HashMap::new();
         for line in file_reader.map_while(Result::ok) {
@@ -374,8 +402,16 @@ fn merge_combined_and_individual_str_files(combined_file: PathBuf, individual_fi
     // Read combined file header
     let combined_header = combined_reader
         .next()
-        .unwrap_or_else(|| panic!("Combined file {} is empty", combined_file.display()))
-        .unwrap_or_else(|e| panic!("Error reading combined file header: {}", e));
+        .unwrap_or_else(|| {
+            eprintln!("Error: Combined file is empty: {}", combined_file.display());
+            eprintln!("\nThe file contains no data.");
+            std::process::exit(1);
+        })
+        .unwrap_or_else(|e| {
+            eprintln!("Error: Failed to read combined file header: {}", combined_file.display());
+            eprintln!("Reason: {}", e);
+            std::process::exit(1);
+        });
 
     let has_combined_header = combined_header.split('\t').next() == Some("chromosome");
 
@@ -389,8 +425,15 @@ fn merge_combined_and_individual_str_files(combined_file: PathBuf, individual_fi
                 let mut reader = reader(&file.to_string_lossy()).lines();
                 reader
                     .next()
-                    .unwrap_or_else(|| panic!("File {} is empty", file.display()))
-                    .unwrap_or_else(|e| panic!("Error reading file {}: {}", file.display(), e))
+                    .unwrap_or_else(|| {
+                        eprintln!("Error: File is empty: {}", file.display());
+                        std::process::exit(1);
+                    })
+                    .unwrap_or_else(|e| {
+                        eprintln!("Error: Failed to read file: {}", file.display());
+                        eprintln!("Reason: {}", e);
+                        std::process::exit(1);
+                    })
             })
             .collect()
     };
@@ -403,11 +446,14 @@ fn merge_combined_and_individual_str_files(combined_file: PathBuf, individual_fi
 
     // Validate header consistency
     if has_combined_header != has_individual_headers {
-        panic!(
-            "Header mismatch: combined file has {} header, but individual files have {} headers",
-            if has_combined_header { "a" } else { "no" },
+        eprintln!("Error: Header mismatch between files.");
+        eprintln!("  Combined file has {} header", if has_combined_header { "a" } else { "no" });
+        eprintln!(
+            "  Individual files have {} headers",
             if has_individual_headers { "a" } else { "no" }
         );
+        eprintln!("\nAll files must have consistent header format.");
+        std::process::exit(1);
     }
 
     // Output merged header
@@ -565,10 +611,21 @@ fn read_and_validate_kmer_headers(calls: &[PathBuf]) -> Vec<String> {
         .map(|(_i, file)| {
             let mut file_reader =
                 reader(&file.clone().into_os_string().into_string().unwrap()).lines();
-            file_reader
-                .next()
-                .unwrap_or_else(|| panic!("File {} is empty", file.display()))
-                .unwrap_or_else(|e| panic!("Error reading header from {}: {}", file.display(), e))
+
+            // Skip metadata lines (lines starting with #) and return first non-metadata line
+            loop {
+                match file_reader.next() {
+                    Some(Ok(line)) => {
+                        if line.starts_with('#') {
+                            continue; // Skip metadata line
+                        } else {
+                            return line; // Return first non-metadata line (header)
+                        }
+                    }
+                    Some(Err(e)) => panic!("Error reading from {}: {}", file.display(), e),
+                    None => panic!("File {} is empty or contains only metadata", file.display()),
+                }
+            }
         })
         .collect();
 
@@ -616,9 +673,16 @@ fn process_kmer_data(calls: &[PathBuf]) {
         .map(|file| reader(&file.clone().into_os_string().into_string().unwrap()).lines())
         .collect();
 
-    // Skip headers
+    // Skip metadata lines (starting with #) and the header line in all files
     for file_reader in &mut file_readers {
-        file_reader.next(); // Skip header line
+        while let Some(Ok(line)) = file_reader.next() {
+            if line.starts_with('#') {
+                continue; // Skip metadata lines
+            } else {
+                // This is the header line (first non-metadata line), consume it and stop
+                break;
+            }
+        }
     }
 
     // Collect all kmer data into a master map
@@ -718,10 +782,21 @@ fn read_and_validate_headers(calls: &[PathBuf]) -> Vec<String> {
         .map(|(_i, file)| {
             let mut file_reader =
                 reader(&file.clone().into_os_string().into_string().unwrap()).lines();
-            file_reader
-                .next()
-                .unwrap_or_else(|| panic!("File {} is empty", file.display()))
-                .unwrap_or_else(|e| panic!("Error reading header from {}: {}", file.display(), e))
+
+            // Skip metadata lines (lines starting with #) and return first non-metadata line
+            loop {
+                match file_reader.next() {
+                    Some(Ok(line)) => {
+                        if line.starts_with('#') {
+                            continue; // Skip metadata line
+                        } else {
+                            return line; // Return first non-metadata line (header or data)
+                        }
+                    }
+                    Some(Err(e)) => panic!("Error reading from {}: {}", file.display(), e),
+                    None => panic!("File {} is empty or contains only metadata", file.display()),
+                }
+            }
         })
         .collect();
 
@@ -744,7 +819,10 @@ fn read_and_validate_headers(calls: &[PathBuf]) -> Vec<String> {
 fn output_combined_header(headers: &[String]) {
     let first_header_fields: Vec<&str> = headers[0].split('\t').collect();
     if first_header_fields.len() < 5 {
-        panic!("Invalid header format in first file: {}", headers[0]);
+        eprintln!("Error: Invalid header format in first file.");
+        eprintln!("Expected at least 5 columns: chromosome, begin, end, sample_H1, sample_H2");
+        eprintln!("Got {} columns: {}", first_header_fields.len(), headers[0]);
+        std::process::exit(1);
     }
 
     // Output file type metadata
@@ -766,7 +844,10 @@ fn output_combined_header(headers: &[String]) {
     for header in &headers[1..] {
         let fields: Vec<&str> = header.split('\t').collect();
         if fields.len() < 5 {
-            panic!("Invalid header format: {}", header);
+            eprintln!("Error: Invalid header format in one of the input files.");
+            eprintln!("Expected at least 5 columns: chromosome, begin, end, sample_H1, sample_H2");
+            eprintln!("Got {} columns: {}", fields.len(), header);
+            std::process::exit(1);
         }
         combined_header.extend(&fields[3..]);
     }
@@ -775,17 +856,23 @@ fn output_combined_header(headers: &[String]) {
 }
 
 /// Process data lines with optimized sequential reading and parallel line processing
-fn process_data_parallel(calls: &[PathBuf], has_headers: bool) {
+fn process_data_parallel(calls: &[PathBuf]) {
     // Create file readers
     let mut file_readers: Vec<_> = calls
         .iter()
         .map(|file| reader(&file.clone().into_os_string().into_string().unwrap()).lines())
         .collect();
 
-    // Skip headers if present
-    if has_headers {
-        for file_reader in &mut file_readers {
-            file_reader.next(); // Skip header line
+    // Skip metadata lines (starting with #) and the header line in all files
+    // All files must have headers (validated earlier), so we skip until we've consumed the header
+    for file_reader in &mut file_readers {
+        while let Some(Ok(line)) = file_reader.next() {
+            if line.starts_with('#') {
+                continue; // Skip metadata lines
+            } else {
+                // This is the header line (first non-metadata line), consume it and stop
+                break;
+            }
         }
     }
 
