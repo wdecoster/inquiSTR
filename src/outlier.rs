@@ -168,6 +168,38 @@ fn is_kmer_file(file_path: &Path) -> bool {
     std::process::exit(1);
 }
 
+/// Write outlier counts to a file
+fn write_outlier_counts(counts: &std::collections::HashMap<String, usize>, output_path: &Path) {
+    use std::io::Write;
+    
+    let mut file = match std::fs::File::create(output_path) {
+        Ok(f) => std::io::BufWriter::new(f),
+        Err(e) => {
+            eprintln!("ERROR: Failed to create count output file {}: {}", output_path.display(), e);
+            std::process::exit(1);
+        }
+    };
+    
+    // Write header
+    if let Err(e) = writeln!(file, "sample\tcount") {
+        eprintln!("ERROR: Failed to write to count output file: {}", e);
+        std::process::exit(1);
+    }
+    
+    // Sort by count (descending) and then by sample name
+    let mut sorted_counts: Vec<_> = counts.iter().collect();
+    sorted_counts.sort_by(|a, b| b.1.cmp(a.1).then_with(|| a.0.cmp(b.0)));
+    
+    for (sample, count) in sorted_counts {
+        if let Err(e) = writeln!(file, "{}\t{}", sample, count) {
+            eprintln!("ERROR: Failed to write to count output file: {}", e);
+            std::process::exit(1);
+        }
+    }
+    
+    eprintln!("Wrote outlier counts for {} samples to {}", counts.len(), output_path.display());
+}
+
 pub fn outlier(
     combined: PathBuf,
     minsize: u32,
@@ -175,6 +207,7 @@ pub fn outlier(
     method: Method,
     subset: Option<Vec<String>>,
     threads: usize,
+    count_output: Option<PathBuf>,
 ) {
     // Configure thread pool
     rayon::ThreadPoolBuilder::new()
@@ -205,10 +238,10 @@ pub fn outlier(
 
     if is_kmer_format {
         eprintln!("Detected kmer frequency file format");
-        outlier_kmer_analysis(combined, minsize, zscore_cutoff, method, subset);
+        outlier_kmer_analysis(combined, minsize, zscore_cutoff, method, subset, count_output);
     } else {
         eprintln!("Detected STR call file format");
-        outlier_str_analysis(combined, minsize, zscore_cutoff, method, subset);
+        outlier_str_analysis(combined, minsize, zscore_cutoff, method, subset, count_output);
     }
 }
 
@@ -219,12 +252,17 @@ fn outlier_str_analysis(
     zscore_cutoff: f32,
     method: Method,
     subset: Option<Vec<String>>,
+    count_output: Option<PathBuf>,
 ) {
     let file = crate::utils::reader(&combined.into_os_string().into_string().unwrap());
     let mut lines = file.lines();
     // Skip metadata lines if present
     let header_line = crate::utils::skip_metadata_lines(&mut lines);
     println!("chrom\tbegin\tend\toutliers");
+    
+    // Initialize counter if count output is requested
+    let mut outlier_counts: Option<std::collections::HashMap<String, usize>> = 
+        count_output.as_ref().map(|_| std::collections::HashMap::new());
 
     // Parse sample names once and store them
     let sample_names: Vec<String> = header_line
@@ -235,6 +273,16 @@ fn outlier_str_analysis(
 
     let num_samples = sample_names.len();
     let mincluster = num_samples.ilog2() as usize;
+    
+    // Create params struct
+    let params = ProcessParams {
+        sample_names: &sample_names,
+        minsize,
+        zscore_cutoff,
+        method,
+        mincluster,
+        subset: &subset,
+    };
 
     // Process lines in chunks for better memory efficiency
     let chunk_size = 1000; // Process 1000 lines at a time
@@ -249,12 +297,8 @@ fn outlier_str_analysis(
         if line_buffer.len() == chunk_size {
             process_chunk(
                 &line_buffer,
-                &sample_names,
-                minsize,
-                zscore_cutoff,
-                method,
-                mincluster,
-                &subset,
+                &params,
+                &mut outlier_counts,
             );
 
             processed_count += line_buffer.len();
@@ -270,17 +314,18 @@ fn outlier_str_analysis(
     if !line_buffer.is_empty() {
         process_chunk(
             &line_buffer,
-            &sample_names,
-            minsize,
-            zscore_cutoff,
-            method,
-            mincluster,
-            &subset,
+            &params,
+            &mut outlier_counts,
         );
         processed_count += line_buffer.len();
     }
 
     eprintln!("Completed processing {} loci", processed_count);
+    
+    // Write counts if requested
+    if let (Some(counts), Some(output_path)) = (outlier_counts, count_output) {
+        write_outlier_counts(&counts, &output_path);
+    }
 }
 
 /// Outlier analysis for kmer frequency data
@@ -290,12 +335,17 @@ fn outlier_kmer_analysis(
     zscore_cutoff: f32,
     method: Method,
     subset: Option<Vec<String>>,
+    count_output: Option<PathBuf>,
 ) {
     let file = crate::utils::reader(&combined.into_os_string().into_string().unwrap());
     let mut lines = file.lines();
     // Skip metadata lines if present
     let header_line = crate::utils::skip_metadata_lines(&mut lines);
     println!("kmer\toutliers");
+    
+    // Initialize counter if count output is requested
+    let mut outlier_counts: Option<std::collections::HashMap<String, usize>> = 
+        count_output.as_ref().map(|_| std::collections::HashMap::new());
 
     // Parse sample names once and store them
     let sample_names: Vec<String> = header_line
@@ -306,6 +356,16 @@ fn outlier_kmer_analysis(
 
     let num_samples = sample_names.len();
     let mincluster = num_samples.ilog2() as usize;
+    
+    // Create params struct
+    let params = ProcessParams {
+        sample_names: &sample_names,
+        minsize,
+        zscore_cutoff,
+        method,
+        mincluster,
+        subset: &subset,
+    };
 
     // Process lines in chunks for better memory efficiency
     let chunk_size = 1000; // Process 1000 lines at a time
@@ -320,12 +380,8 @@ fn outlier_kmer_analysis(
         if line_buffer.len() == chunk_size {
             process_kmer_chunk(
                 &line_buffer,
-                &sample_names,
-                minsize,
-                zscore_cutoff,
-                method,
-                mincluster,
-                &subset,
+                &params,
+                &mut outlier_counts,
             );
 
             processed_count += line_buffer.len();
@@ -341,28 +397,35 @@ fn outlier_kmer_analysis(
     if !line_buffer.is_empty() {
         process_kmer_chunk(
             &line_buffer,
-            &sample_names,
-            minsize,
-            zscore_cutoff,
-            method,
-            mincluster,
-            &subset,
+            &params,
+            &mut outlier_counts,
         );
         processed_count += line_buffer.len();
     }
 
     eprintln!("Completed processing {} kmers", processed_count);
+    
+    // Write counts if requested
+    if let (Some(counts), Some(output_path)) = (outlier_counts, count_output) {
+        write_outlier_counts(&counts, &output_path);
+    }
+}
+
+/// Parameters for processing chunks
+struct ProcessParams<'a> {
+    sample_names: &'a [String],
+    minsize: u32,
+    zscore_cutoff: f32,
+    method: Method,
+    mincluster: usize,
+    subset: &'a Option<Vec<String>>,
 }
 
 /// Process a chunk of lines in parallel
 fn process_chunk(
     lines: &[String],
-    sample_names: &[String],
-    minsize: u32,
-    zscore_cutoff: f32,
-    method: Method,
-    mincluster: usize,
-    subset: &Option<Vec<String>>,
+    params: &ProcessParams,
+    outlier_counts: &mut Option<std::collections::HashMap<String, usize>>,
 ) {
     use rayon::prelude::*;
 
@@ -377,10 +440,10 @@ fn process_chunk(
 
             let (chrom, begin, end) = (splitline[0], splitline[1], splitline[2]);
 
-            if let Some(values) = get_repeat_lengths(&splitline, minsize) {
-                let expanded = match method {
-                    Method::Zscore => z_score_outliers(&values, sample_names, zscore_cutoff),
-                    Method::Dbscan => dbscan_outliers(&values, sample_names, mincluster),
+            if let Some(values) = get_repeat_lengths(&splitline, params.minsize) {
+                let expanded = match params.method {
+                    Method::Zscore => z_score_outliers(&values, params.sample_names, params.zscore_cutoff),
+                    Method::Dbscan => dbscan_outliers(&values, params.sample_names, params.mincluster),
                 };
 
                 if !expanded.is_empty() {
@@ -394,7 +457,7 @@ fn process_chunk(
                     );
 
                     // Check subset filtering
-                    if let Some(subset) = subset {
+                    if let Some(subset) = params.subset {
                         if expanded.iter().any(|sample| subset.contains(sample)) {
                             return Some((
                                 chrom.to_string(),
@@ -420,19 +483,22 @@ fn process_chunk(
     // Output results in order (important for deterministic output)
     for (chrom, begin, end, expanded) in results {
         let expanded_str = expanded.join(",");
-        println!("{}\t{}\t{}\t{}", chrom, begin, end, expanded_str);
+        println!("{}	{}	{}	{}", chrom, begin, end, expanded_str);
+        
+        // Update counts if tracking
+        if let Some(ref mut counts) = outlier_counts {
+            for sample in &expanded {
+                *counts.entry(sample.clone()).or_insert(0) += 1;
+            }
+        }
     }
 }
 
 /// Process a chunk of kmer lines in parallel
 fn process_kmer_chunk(
     lines: &[String],
-    sample_names: &[String],
-    minsize: u32,
-    zscore_cutoff: f32,
-    method: Method,
-    mincluster: usize,
-    subset: &Option<Vec<String>>,
+    params: &ProcessParams,
+    outlier_counts: &mut Option<std::collections::HashMap<String, usize>>,
 ) {
     // Process lines in parallel and collect results
     let results: Vec<_> = lines
@@ -445,10 +511,10 @@ fn process_kmer_chunk(
 
             let kmer = splitline[0];
 
-            if let Some(values) = get_kmer_frequencies(&splitline, minsize) {
-                let expanded = match method {
-                    Method::Zscore => z_score_outliers(&values, sample_names, zscore_cutoff),
-                    Method::Dbscan => dbscan_outliers(&values, sample_names, mincluster),
+            if let Some(values) = get_kmer_frequencies(&splitline, params.minsize) {
+                let expanded = match params.method {
+                    Method::Zscore => z_score_outliers(&values, params.sample_names, params.zscore_cutoff),
+                    Method::Dbscan => dbscan_outliers(&values, params.sample_names, params.mincluster),
                 };
 
                 if !expanded.is_empty() {
@@ -460,7 +526,7 @@ fn process_kmer_chunk(
                     );
 
                     // Check subset filtering
-                    if let Some(subset) = subset {
+                    if let Some(subset) = params.subset {
                         if expanded.iter().any(|sample| subset.contains(sample)) {
                             return Some((kmer.to_string(), expanded));
                         }
@@ -476,7 +542,14 @@ fn process_kmer_chunk(
     // Output results in order (important for deterministic output)
     for (kmer, expanded) in results {
         let expanded_str = expanded.join(",");
-        println!("{}\t{}", kmer, expanded_str);
+        println!("{}	{}", kmer, expanded_str);
+        
+        // Update counts if tracking
+        if let Some(ref mut counts) = outlier_counts {
+            for sample in &expanded {
+                *counts.entry(sample.clone()).or_insert(0) += 1;
+            }
+        }
     }
 }
 
