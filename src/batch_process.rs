@@ -572,16 +572,25 @@ pub fn batch_process(config: BatchConfig, mode: BatchMode) {
             );
 
             if samples.is_empty() {
-                eprintln!("\nAll samples already processed. Nothing to do.");
+                // All samples already processed
                 if config.output.exists() {
+                    // Combined output already exists, nothing to do
+                    eprintln!("\nAll samples already processed and combined output exists.");
                     eprintln!("Output file: {}", config.output.display());
+                    return;
+                } else if samples_with_individual_files > 0 {
+                    // Individual files exist but combined output doesn't - need to combine
+                    eprintln!("\nAll samples already processed as individual files.");
+                    eprintln!("Creating combined output file...");
+                    // Will skip processing and jump directly to combine step
                 } else {
-                    eprintln!("Individual files are ready. Run combine to create output file.");
+                    // All samples in output but output file doesn't exist (shouldn't happen)
+                    eprintln!("\nERROR: Inconsistent state - samples marked as complete but no files found.");
+                    std::process::exit(1);
                 }
-                return;
+            } else {
+                eprintln!("  Will process {} remaining sample(s)", samples.len());
             }
-
-            eprintln!("  Will process {} remaining sample(s)", samples.len());
         } else {
             eprintln!("Resume mode: No existing output or individual files found, will process all samples");
         }
@@ -674,7 +683,17 @@ pub fn batch_process(config: BatchConfig, mode: BatchMode) {
     let individual_files = Arc::new(Mutex::new(Vec::new()));
     let failed_samples = Arc::new(Mutex::new(Vec::new()));
 
-    if parallel_samples == 1 {
+    // If all samples are already processed, skip processing and collect existing files
+    if samples.is_empty() && samples_with_individual_files > 0 {
+        // Collect all existing individual files
+        for sample_name in &completed_samples {
+            let individual_file = individual_dir.join(format!("{}.inq", sample_name));
+            if individual_file.exists() {
+                individual_files.lock().unwrap().push(individual_file);
+            }
+        }
+        // Jump directly to combine step (skip the processing loop)
+    } else if parallel_samples == 1 {
         // Sequential processing with simple progress bar
         let pb = ProgressBar::new(samples.len() as u64);
         pb.set_style(
