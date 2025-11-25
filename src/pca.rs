@@ -1272,7 +1272,11 @@ fn write_pc_scores(
     let mut file = match std::fs::File::create(output_path) {
         Ok(f) => std::io::BufWriter::new(f),
         Err(e) => {
-            eprintln!("ERROR: Failed to create scores output file {}: {}", output_path.display(), e);
+            eprintln!(
+                "ERROR: Failed to create scores output file {}: {}",
+                output_path.display(),
+                e
+            );
             std::process::exit(1);
         }
     };
@@ -1300,8 +1304,12 @@ fn write_pc_scores(
         }
     }
 
-    println!("PC scores saved to: {} ({} samples × {} PCs)", 
-        output_path.display(), sample_names.len(), n_components);
+    println!(
+        "PC scores saved to: {} ({} samples × {} PCs)",
+        output_path.display(),
+        sample_names.len(),
+        n_components
+    );
 }
 
 /// Create a PCA plot using Plotly
@@ -1517,7 +1525,14 @@ mod tests {
         let test_file = PathBuf::from("test_combined_with_header.tsv");
         if test_file.exists() {
             // This should not panic and should create the HTML file
-            pca(test_file, "test_pca_output.html".to_string(), 10, 0, AlleleAggregation::Max, None);
+            pca(
+                test_file,
+                "test_pca_output.html".to_string(),
+                10,
+                0,
+                AlleleAggregation::Max,
+                None,
+            );
 
             // Verify the output file was created
             assert!(PathBuf::from("test_pca_output.html").exists());
