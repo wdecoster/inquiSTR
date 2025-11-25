@@ -421,6 +421,10 @@ enum Commands {
         /// Method for aggregating H1/H2 allele lengths: max (default), min, or sum (only applies to STR files, ignored for kmer files)
         #[clap(short, long, value_parser, default_value_t = pca::AlleleAggregation::Max)]
         aggregation: pca::AlleleAggregation,
+
+        /// Output file for PC scores (tab-separated: sample, PC1, PC2, ...) to use as covariates
+        #[clap(long, value_parser)]
+        scores: Option<PathBuf>,
     },
     /// Count kmer frequencies in unmapped reads
     #[clap(arg_required_else_help = true)]
@@ -661,12 +665,12 @@ fn main() {
         Commands::Plot { combined, sample_metadata, condition, region, output } => {
             plot::plot(combined, sample_metadata, condition, region, output)
         }
-        Commands::Pca { combined, output, components, threads, aggregation } => {
+        Commands::Pca { combined, output, components, threads, aggregation, scores } => {
             if !combined.exists() {
                 eprintln!("ERROR: Combined file does not exist: {}", combined.display());
                 std::process::exit(1);
             }
-            pca::pca(combined, output, components, threads, aggregation);
+            pca::pca(combined, output, components, threads, aggregation, scores);
         }
         Commands::Unmapped {
             bam,

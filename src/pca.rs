@@ -1260,6 +1260,50 @@ fn power_iteration(
     (eigenvalue, vector)
 }
 
+/// Write PC scores to a tab-separated file for use as covariates
+fn write_pc_scores(
+    pca_data: &Array2<f64>,
+    sample_names: &[String],
+    n_components: usize,
+    output_path: &std::path::Path,
+) {
+    use std::io::Write;
+
+    let mut file = match std::fs::File::create(output_path) {
+        Ok(f) => std::io::BufWriter::new(f),
+        Err(e) => {
+            eprintln!("ERROR: Failed to create scores output file {}: {}", output_path.display(), e);
+            std::process::exit(1);
+        }
+    };
+
+    // Write header
+    let mut header = vec!["sample".to_string()];
+    for i in 1..=n_components {
+        header.push(format!("PC{}", i));
+    }
+    if let Err(e) = writeln!(file, "{}", header.join("\t")) {
+        eprintln!("ERROR: Failed to write to scores output file: {}", e);
+        std::process::exit(1);
+    }
+
+    // Write PC scores for each sample
+    for (sample_idx, sample_name) in sample_names.iter().enumerate() {
+        let mut row = vec![sample_name.clone()];
+        for pc_idx in 0..n_components {
+            let score = pca_data[[sample_idx, pc_idx]];
+            row.push(format!("{:.6}", score));
+        }
+        if let Err(e) = writeln!(file, "{}", row.join("\t")) {
+            eprintln!("ERROR: Failed to write to scores output file: {}", e);
+            std::process::exit(1);
+        }
+    }
+
+    println!("PC scores saved to: {} ({} samples × {} PCs)", 
+        output_path.display(), sample_names.len(), n_components);
+}
+
 /// Create a PCA plot using Plotly
 fn create_pca_plot(
     pca_data: &Array2<f64>,
@@ -1327,6 +1371,7 @@ pub fn pca(
     _n_components: usize,
     threads: usize,
     aggregation: AlleleAggregation,
+    scores_output: Option<PathBuf>,
 ) {
     if !combined.exists() {
         panic!("Combined file does not exist: {}", combined.display());
@@ -1453,6 +1498,11 @@ pub fn pca(
     };
     create_pca_plot(&pca_data, &sample_names, &explained_variance, &output, plot_title);
 
+    // Write PC scores if requested
+    if let Some(scores_path) = scores_output {
+        write_pc_scores(&pca_data, &sample_names, n_components, &scores_path);
+    }
+
     println!("PCA analysis complete! Plot saved to: {}", output);
 }
 
@@ -1467,7 +1517,7 @@ mod tests {
         let test_file = PathBuf::from("test_combined_with_header.tsv");
         if test_file.exists() {
             // This should not panic and should create the HTML file
-            pca(test_file, "test_pca_output.html".to_string(), 10, 0, AlleleAggregation::Max);
+            pca(test_file, "test_pca_output.html".to_string(), 10, 0, AlleleAggregation::Max, None);
 
             // Verify the output file was created
             assert!(PathBuf::from("test_pca_output.html").exists());

@@ -17,8 +17,8 @@ inquiSTR call sample.bam --preset pathogenic --output sample.inq
 # 2. Combine results for cohort analysis
 inquiSTR combine *.inq --output combined.tsv
 
-# 3. Or process multiple samples in batch
-inquiSTR batch samples.txt --preset pathogenic --threads 16
+# 3. Or process multiple samples in batch (also has --resume)
+inquiSTR batch samples.txt --preset pathogenic --threads 16 --parallel_samples 4
 
 # 4. Identify statistical outliers
 inquiSTR outlier combined.tsv --output outliers.txt
@@ -193,6 +193,10 @@ Options:
   -h, --help                       Print help
 ```
 
+**Performance Note:**
+
+inquiSTR scales well up to **4-6 threads** for single-sample processing. Beyond this, performance plateaus due to I/O bottlenecks (BAM reading and decompression). Using more than 6 threads per sample will not significantly improve speed. For systems with many cores, process multiple samples in parallel using `inquiSTR batch` with `--parallel-samples` rather than allocating excessive threads to a single sample.
+
 **Examples:**
 
 ```bash
@@ -211,8 +215,8 @@ inquiSTR call sample.bam --preset codis         # CODIS forensic markers (20 loc
 # Filter out large intervals (>10kb) that may span problematic regions
 inquiSTR call sample.bam -R regions.bed --max-locus 10000
 
-# Use multiple threads for faster processing
-inquiSTR call sample.bam -R regions.bed --threads 8 --minlen 10 --support 5
+# Use 4-6 threads for optimal single-sample performance
+inquiSTR call sample.bam -R regions.bed --threads 6 --minlen 10 --support 5
 
 # CRAM file with reference
 inquiSTR call sample.cram --reference genome.fa -R regions.bed
@@ -859,13 +863,14 @@ Perform Principal Component Analysis (PCA) on combined STR data to identify popu
 Usage: inquiSTR pca [OPTIONS] <COMBINED>
 
 Arguments:
-  <COMBINED>  Combined file of STR calls from inquiSTR combine command
+  <COMBINED>  Combined file from inquiSTR combine command (supports both STR calls and kmer frequencies)
 
 Options:
   -o, --output <OUTPUT>            HTML output file name for interactive PCA plot [default: pca_plot.html]
   -c, --components <COMPONENTS>    Number of principal components to compute (currently only first 2 are plotted) [default: 10]
   -t, --threads <THREADS>          Number of threads to use for parallel processing [default: 1]
-  -a, --aggregation <AGGREGATION>  Method for aggregating H1/H2 allele lengths: max (default), min, or sum [default: max]
+  -a, --aggregation <AGGREGATION>  Method for aggregating H1/H2 allele lengths: max (default), min, or sum (only applies to STR files, ignored for kmer files) [default: max]
+      --scores <SCORES>            Output file for PC scores (tab-separated: sample, PC1, PC2, ...) to use as covariates
   -h, --help                       Print help
 ```
 
@@ -894,7 +899,25 @@ inquiSTR pca combined.tsv --aggregation sum --threads 4 --output total_burden_pc
 
 # Compute more principal components (only first 2 are plotted)
 inquiSTR pca combined.tsv --components 20 --output detailed_pca.html
+
+# Export PC scores for use as covariates in association testing
+inquiSTR pca combined.tsv --scores pc_scores.tsv --output population_pca.html
+
+# PCA analysis on kmer frequencies from unmapped reads
+inquiSTR pca inquiSTR_unmapped.tsv --scores kmer_scores.tsv --output kmer_pca.html
 ```
+
+**PC Scores Output:**
+
+When using the `--scores` option, PC scores (sample coordinates in PC space) are written to a tab-separated file:
+
+```text
+sample     PC1         PC2         PC3         ...
+sample1    0.123456   -0.234567    0.345678   ...
+sample2   -0.456789    0.567890   -0.678901   ...
+```
+
+These PC scores can be used as covariates in association testing to correct for population structure, or for further analysis in external tools.
 
 ### `inquiSTR relate` - Compute Sample Relatedness
 
