@@ -269,7 +269,7 @@ pub fn genotype_repeats(
 
     // Output results in consistent format
     // Use either the sample_name provided as command line argument or extract one from the path
-    let sample = sample_name.unwrap_or_else(|| extract_sample_name_from_path(&bam));
+    let sample = sample_name.unwrap_or_else(|| crate::utils::extract_sample_name_from_path(&bam));
 
     // Write VCF if requested
     if let Some(vcf_path) = &processing.output_vcf {
@@ -292,38 +292,6 @@ pub fn genotype_repeats(
     for genotype in &all_genotypes {
         writeln!(handle, "{genotype}").expect("Failed writing the result.");
     }
-}
-
-/// Extract a sample name from a file path by removing path, extension, and common BAM/CRAM suffixes
-fn extract_sample_name_from_path(path: &str) -> String {
-    let path_buf = PathBuf::from(path);
-
-    // Handle URLs by extracting just the filename part
-    let filename = if path.starts_with("http") || path.starts_with("ftp") || path.starts_with("s3")
-    {
-        path.rsplit('/').next().unwrap_or(path)
-    } else {
-        path_buf
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or(path)
-    };
-
-    // Remove common extensions and suffixes
-    let mut result = filename.to_string();
-
-    // Remove BAM/CRAM extensions and index files (check longer suffixes first)
-    if result.ends_with(".bam.bai") {
-        result = result.strip_suffix(".bam.bai").unwrap().to_string();
-    } else if result.ends_with(".cram.crai") {
-        result = result.strip_suffix(".cram.crai").unwrap().to_string();
-    } else if result.ends_with(".bam") {
-        result = result.strip_suffix(".bam").unwrap().to_string();
-    } else if result.ends_with(".cram") {
-        result = result.strip_suffix(".cram").unwrap().to_string();
-    }
-
-    result
 }
 
 /// Write genotypes to VCF format
@@ -604,26 +572,4 @@ fn test_nan_genotype_for_unphased_loci() {
 
     // Clean up
     std::fs::remove_file("test_temp_nan_fix.bed").expect("Could not remove test file");
-}
-
-#[test]
-fn test_extract_sample_name_from_path() {
-    // Test local file paths
-    assert_eq!(extract_sample_name_from_path("test-data/sample.bam"), "sample");
-    assert_eq!(extract_sample_name_from_path("test-data/sample.cram"), "sample");
-    assert_eq!(extract_sample_name_from_path("/path/to/HG00096.hg38.cram"), "HG00096.hg38");
-
-    // Test URLs
-    assert_eq!(extract_sample_name_from_path("https://example.com/data/sample.bam"), "sample");
-    assert_eq!(
-        extract_sample_name_from_path("s3://bucket/data/HG00096.hg38.cram"),
-        "HG00096.hg38"
-    );
-
-    // Test complex filenames
-    assert_eq!(extract_sample_name_from_path("sample.sorted.dedup.bam"), "sample.sorted.dedup");
-
-    // Test edge cases
-    assert_eq!(extract_sample_name_from_path("sample"), "sample");
-    assert_eq!(extract_sample_name_from_path("sample.bam.bai"), "sample");
 }

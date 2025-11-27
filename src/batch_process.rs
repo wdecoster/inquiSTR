@@ -93,7 +93,7 @@ fn parse_manifest(manifest_path: &Path) -> Result<Vec<SampleInfo>, String> {
             fields[1].to_string()
         } else {
             // Extract sample name from BAM path
-            extract_sample_name_from_path(&bam_path)
+            crate::utils::extract_sample_name_from_path(&bam_path)
         };
 
         samples.push(SampleInfo { bam_path, sample_name });
@@ -104,35 +104,6 @@ fn parse_manifest(manifest_path: &Path) -> Result<Vec<SampleInfo>, String> {
     }
 
     Ok(samples)
-}
-
-/// Extract sample name from file path (same logic as in call.rs)
-fn extract_sample_name_from_path(path: &str) -> String {
-    // Handle URLs
-    let path_for_name = if path.starts_with("http://")
-        || path.starts_with("https://")
-        || path.starts_with("ftp://")
-        || path.starts_with("ftps://")
-        || path.starts_with("s3://")
-    {
-        // Extract filename from URL
-        path.split('/').next_back().unwrap_or(path)
-    } else {
-        path
-    };
-
-    Path::new(path_for_name)
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .map(|s| {
-            // Remove common extensions (.bam, .cram, .bai, .crai)
-            s.trim_end_matches(".bam")
-                .trim_end_matches(".cram")
-                .trim_end_matches(".bai")
-                .trim_end_matches(".crai")
-                .to_string()
-        })
-        .unwrap_or_else(|| "sample".to_string())
 }
 
 /// Check if a URL is accessible by performing a HEAD request
