@@ -155,9 +155,11 @@ fn count_lines(file_path: &Path) -> io::Result<usize> {
 
 /// Verify file has a valid header (must start with "chromosome")
 fn verify_header(file_path: &Path) -> io::Result<()> {
-    let mut reader = crate::utils::reader(&file_path.to_string_lossy());
-    let mut first_line = String::new();
-    reader.read_line(&mut first_line)?;
+    let reader = crate::utils::reader(&file_path.to_string_lossy());
+    let mut lines = reader.lines();
+
+    // Skip metadata lines starting with #
+    let first_line = crate::utils::skip_metadata_lines(&mut lines);
 
     if !first_line.starts_with("chromosome") {
         return Err(io::Error::new(
@@ -172,16 +174,25 @@ fn verify_header(file_path: &Path) -> io::Result<()> {
 }
 
 /// Determine if input is a single-sample or combined file based on number of columns
+/// First tries to read file_type metadata, then falls back to heuristics for backward compatibility
 fn is_combined_file(file_path: &Path) -> io::Result<bool> {
-    let mut reader = crate::utils::reader(&file_path.to_string_lossy());
-    let mut first_line = String::new();
-    reader.read_line(&mut first_line)?;
+    // Try reading metadata first
+    if let Some(file_type) = crate::filetype::read_file_type_metadata(file_path) {
+        return Ok(file_type == crate::filetype::FileType::CombinedCall);
+    }
+
+    // Fall back to heuristic detection for files without metadata
+    let reader = crate::utils::reader(&file_path.to_string_lossy());
+    let mut lines = reader.lines();
+
+    // Skip metadata lines starting with #
+    let first_line = crate::utils::skip_metadata_lines(&mut lines);
 
     // Count number of columns
-    // Single sample: chr, start, end, H1, H2 = 5 columns
-    // Combined: chr, start, end, sample1_H1, sample1_H2, sample2_H1, sample2_H2, ... = > 5 columns
+    // Single sample: chr, start, end, info, H1, H2 = 6 columns
+    // Combined: chr, start, end, info, sample1_H1, sample1_H2, sample2_H1, sample2_H2, ... = > 6 columns
     let num_cols = first_line.trim_end().split('\t').count();
-    Ok(num_cols > 5)
+    Ok(num_cols > 6)
 }
 
 pub fn filter(
@@ -278,6 +289,7 @@ pub fn filter(
 
     let mut line_num = 0;
     let progress_interval = (total_lines / 100).max(1000); // Update every 1% or 1000 lines
+    let mut header_written = false;
 
     for line in reader.lines() {
         let line = line.expect("Failed to read line");
@@ -293,17 +305,30 @@ pub fn filter(
             );
         }
 
-        // Write header (first line is always the header)
-        if line_num == 1 {
+        // Skip and write metadata lines
+        if line.starts_with('#') {
+            writeln!(writer, "{}", line).expect("Failed to write metadata");
+            continue;
+        }
+
+        // Write header (first non-metadata line)
+        if !header_written {
             writeln!(writer, "{}", line).expect("Failed to write header");
+            header_written = true;
             continue;
         }
 
         // Parse line
         let fields: Vec<&str> = line.split('\t').collect();
-        if fields.len() < 5 {
-            // Invalid line, skip
-            continue;
+        if fields.len() < 6 {
+            eprintln!("ERROR: Invalid line {} in input file", line_num);
+            eprintln!(
+                "Expected at least 6 columns (chr, start, end, info, H1, H2), got {}",
+                fields.len()
+            );
+            eprintln!("Line content: '{}'", line);
+            eprintln!("\nThe file may be corrupted or in an incorrect format.");
+            std::process::exit(1);
         }
 
         total_loci += 1;
@@ -311,6 +336,7 @@ pub fn filter(
         let chrom = fields[0];
         let start: u32 = fields[1].parse().expect("Invalid start position");
         let end: u32 = fields[2].parse().expect("Invalid end position");
+        // Skip info field at index 3
 
         // Apply filters in order
 
@@ -322,8 +348,8 @@ pub fn filter(
             }
         }
 
-        // Parse allele values (columns 3 onwards)
-        let alleles: Vec<&str> = fields[3..].to_vec();
+        // Parse allele values (columns 4 onwards, skipping info at column 3)
+        let alleles: Vec<&str> = fields[4..].to_vec();
 
         // 2. minlen filter (only positive values >= minlen)
         if let Some(min) = minlen {

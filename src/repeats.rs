@@ -36,8 +36,9 @@ impl RepeatIntervalIterator {
             .parse()
             .unwrap_or_else(|_| panic!("Invalid end position in region '{}'", reg));
 
-        let repeat = RepeatInterval::new_interval(chrom, start, end, &chrom_lengths)
-            .expect("Failed to create repeat interval");
+        let repeat =
+            RepeatInterval::new_interval(chrom, start, end, ".".to_string(), &chrom_lengths)
+                .expect("Failed to create repeat interval");
         RepeatIntervalIterator { current_index: 0, data: vec![repeat], num_intervals: 1 }
     }
     pub fn from_bed(
@@ -398,7 +399,12 @@ impl RepeatIntervalIterator {
 
 impl Clone for RepeatInterval {
     fn clone(&self) -> Self {
-        RepeatInterval { chrom: self.chrom.clone(), start: self.start, end: self.end }
+        RepeatInterval {
+            chrom: self.chrom.clone(),
+            start: self.start,
+            end: self.end,
+            info: self.info.clone(),
+        }
     }
 }
 
@@ -423,6 +429,7 @@ pub struct RepeatInterval {
     pub chrom: String,
     pub start: u32,
     pub end: u32,
+    pub info: String,
 }
 
 impl fmt::Display for RepeatInterval {
@@ -437,13 +444,19 @@ impl RepeatInterval {
         let chrom = rec.chrom().to_string();
         let start = rec.start().try_into().unwrap();
         let end = rec.end().try_into().unwrap();
-        RepeatInterval::new_interval(chrom, start, end, chrom_lengths)
+        // Extract 4th column (name field) or use "." if not present
+        let info = rec
+            .name()
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| ".".to_string());
+        RepeatInterval::new_interval(chrom, start, end, info, chrom_lengths)
     }
 
     fn new_interval(
         chrom: String,
         start: u32,
         end: u32,
+        info: String,
         chrom_lengths: &HashMap<String, u64>,
     ) -> Option<Self> {
         if end < start {
@@ -455,7 +468,7 @@ impl RepeatInterval {
         // check if the chromosome exists in the chrom lengths hashmap
         // and if the end coordinate is within the chromosome length
         if chrom_lengths.contains_key(&chrom) && (end as u64) < chrom_lengths[&chrom] {
-            return Some(Self { chrom, start, end });
+            return Some(Self { chrom, start, end, info });
         }
         // if the chromosome is not in the fai file or the end does not fit the interval, return None
         eprintln!(
@@ -473,7 +486,7 @@ impl RepeatInterval {
         std::process::exit(1);
     }
     pub fn new(chrom: &str, start: u32, end: u32) -> Self {
-        Self { chrom: chrom.to_string(), start, end }
+        Self { chrom: chrom.to_string(), start, end, info: ".".to_string() }
     }
 }
 

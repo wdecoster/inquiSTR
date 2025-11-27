@@ -273,13 +273,13 @@ fn parse_combined_file_with_selection(
     aggregation: AlleleAggregation,
 ) -> (Array2<f64>, Vec<String>) {
     // Detect file type and route to appropriate parser
-    let file_type = crate::combine::read_file_type_metadata(combined);
+    let file_type = crate::filetype::read_file_type_metadata(combined);
 
     match file_type {
-        Some(crate::combine::FileType::CombinedKmer) => {
+        Some(crate::filetype::FileType::CombinedKmer) => {
             parse_combined_kmer_file_with_selection(combined, max_features)
         }
-        Some(crate::combine::FileType::CombinedCall) => {
+        Some(crate::filetype::FileType::CombinedCall) => {
             parse_combined_str_file_with_selection(combined, max_features, aggregation)
         }
         _ => {
@@ -1386,13 +1386,13 @@ pub fn pca(
     }
 
     // Validate that input is a combined file, not individual, and detect data type
-    let file_type = crate::combine::read_file_type_metadata(&combined);
-    let is_kmer_file = matches!(file_type, Some(crate::combine::FileType::CombinedKmer));
+    let file_type = crate::filetype::read_file_type_metadata(&combined);
+    let is_kmer_file = matches!(file_type, Some(crate::filetype::FileType::CombinedKmer));
 
     if let Some(ref ftype) = file_type {
         if !matches!(
             ftype,
-            crate::combine::FileType::CombinedCall | crate::combine::FileType::CombinedKmer
+            crate::filetype::FileType::CombinedCall | crate::filetype::FileType::CombinedKmer
         ) {
             eprintln!("ERROR: PCA requires a combined file (combined_call or combined_kmer).");
             eprintln!("The provided file appears to be: {:?}", ftype);

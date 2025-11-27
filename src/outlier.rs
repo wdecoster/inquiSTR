@@ -131,43 +131,6 @@ fn validate_samples(file_path: &Path, requested_samples: &[String], is_kmer: boo
     eprintln!("✓ All {} requested sample(s) found in combined file", requested_samples.len());
 }
 
-/// Detect if input file contains kmer frequency data or STR call data
-/// Returns true if it's a kmer file, false if it's an STR call file
-fn is_kmer_file(file_path: &Path) -> bool {
-    let file_reader = crate::utils::reader(&file_path.to_string_lossy());
-    let mut lines = file_reader.lines();
-
-    // Skip metadata lines if present
-    let first_line = crate::utils::skip_metadata_lines(&mut lines);
-    let fields: Vec<&str> = first_line.split('\t').collect();
-
-    // Check if it's a kmer file format
-    // Kmer files have "kmer" as first column header
-    if fields.len() >= 2 && fields[0] == "kmer" {
-        return true;
-    }
-
-    // Check if it's STR call format (with or without header)
-    // STR files either start with "chromosome" or have genomic coordinates
-    if fields.len() >= 3 {
-        if fields[0] == "chromosome" {
-            return false; // STR file with header
-        }
-
-        // Check if first line looks like genomic coordinates (chr1, etc.)
-        if fields[0].starts_with("chr")
-            && fields[1].parse::<u32>().is_ok()
-            && fields[2].parse::<u32>().is_ok()
-        {
-            return false; // STR file without header
-        }
-    }
-
-    eprintln!("ERROR: Unable to determine file format for: {}", file_path.display());
-    eprintln!("File must be either STR call data or kmer frequency data from inquiSTR combine.");
-    std::process::exit(1);
-}
-
 /// Write outlier counts to a file
 fn write_outlier_counts(counts: &std::collections::HashMap<String, usize>, output_path: &Path) {
     use std::io::Write;
@@ -216,10 +179,10 @@ pub fn outlier(
         .expect("Failed to build thread pool");
 
     // Validate that input is a combined file, not individual
-    if let Some(file_type) = crate::combine::read_file_type_metadata(&combined) {
+    if let Some(file_type) = crate::filetype::read_file_type_metadata(&combined) {
         if !matches!(
             file_type,
-            crate::combine::FileType::CombinedCall | crate::combine::FileType::CombinedKmer
+            crate::filetype::FileType::CombinedCall | crate::filetype::FileType::CombinedKmer
         ) {
             eprintln!("ERROR: Outlier detection requires a combined file (combined_call or combined_kmer).");
             eprintln!("The provided file appears to be: {:?}", file_type);
@@ -229,7 +192,7 @@ pub fn outlier(
     }
 
     // Detect file format
-    let is_kmer_format = is_kmer_file(&combined);
+    let is_kmer_format = crate::filetype::is_kmer_file(&combined);
 
     // Validate samples if subset is provided
     if let Some(ref samples) = subset {

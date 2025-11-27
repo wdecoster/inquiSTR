@@ -9,10 +9,10 @@ pub fn histogram(combined: PathBuf, region: String) {
     }
 
     // Validate that input is a combined file, not individual
-    if let Some(file_type) = crate::combine::read_file_type_metadata(&combined) {
+    if let Some(file_type) = crate::filetype::read_file_type_metadata(&combined) {
         if !matches!(
             file_type,
-            crate::combine::FileType::CombinedCall | crate::combine::FileType::CombinedKmer
+            crate::filetype::FileType::CombinedCall | crate::filetype::FileType::CombinedKmer
         ) {
             eprintln!(
                 "ERROR: Histogram requires a combined file (combined_call or combined_kmer)."

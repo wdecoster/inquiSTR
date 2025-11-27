@@ -7,16 +7,6 @@ use std::io::{BufRead, BufReader};
 use std::path::Path;
 use std::path::PathBuf;
 
-/// File types that can be detected from metadata headers
-#[derive(Debug, PartialEq, Clone)]
-pub enum FileType {
-    IndividualCall,
-    CombinedCall,
-    IndividualKmer,
-    CombinedKmer,
-    TargetKmer,
-}
-
 /// Read normal or compressed files seamlessly
 /// Uses the presence of a `.gz` extension to decide
 fn reader(filename: &str) -> Box<dyn BufRead> {
@@ -35,157 +25,6 @@ fn reader(filename: &str) -> Box<dyn BufRead> {
         Box::new(BufReader::with_capacity(128 * 1024, read::GzDecoder::new(file)))
     } else {
         Box::new(BufReader::with_capacity(128 * 1024, file))
-    }
-}
-
-/// Read file type from metadata header (line starting with # file_type=)
-/// Returns None if no metadata header is found
-/// Scans all metadata lines (lines starting with #) to find file_type
-pub fn read_file_type_metadata(file_path: &Path) -> Option<FileType> {
-    let mut file_reader = reader(&file_path.to_string_lossy()).lines();
-
-    // Read through all metadata lines to find file_type
-    while let Some(Ok(line)) = file_reader.next() {
-        if line.starts_with("# file_type=") {
-            let file_type_str = line.trim_start_matches("# file_type=").trim();
-            return match file_type_str {
-                "individual_call" => Some(FileType::IndividualCall),
-                "combined_call" => Some(FileType::CombinedCall),
-                "individual_kmer" => Some(FileType::IndividualKmer),
-                "combined_kmer" => Some(FileType::CombinedKmer),
-                "target_kmer" => Some(FileType::TargetKmer),
-                _ => None,
-            };
-        } else if !line.starts_with('#') {
-            // Reached data section without finding file_type
-            break;
-        }
-    }
-    None
-}
-
-/// Detect if a file contains kmer frequency data or STR call data
-/// Returns true if it's a kmer file, false if it's an STR call file
-/// First tries to read file_type metadata, then falls back to heuristics for backward compatibility
-fn is_kmer_file(file_path: &Path) -> bool {
-    // Try reading metadata first
-    if let Some(file_type) = read_file_type_metadata(file_path) {
-        return matches!(
-            file_type,
-            FileType::IndividualKmer | FileType::CombinedKmer | FileType::TargetKmer
-        );
-    }
-
-    // Fall back to heuristic detection for files without metadata
-    let mut file_reader = reader(&file_path.to_string_lossy()).lines();
-
-    if let Some(Ok(first_line)) = file_reader.next() {
-        // Skip metadata lines if present
-        let first_data_line = if first_line.starts_with('#') {
-            if let Some(Ok(line)) = file_reader.next() {
-                line
-            } else {
-                first_line
-            }
-        } else {
-            first_line
-        };
-
-        let fields: Vec<&str> = first_data_line.split('\t').collect();
-
-        // Check if it's a kmer file format
-        // Kmer files have "kmer" as first column header
-        // Target kmer files have "Sample" as first column header
-        if fields.len() >= 2 && (fields[0] == "kmer" || fields[0] == "Sample") {
-            return true;
-        }
-
-        // Check if it's STR call format (with or without header)
-        // STR files either start with "chromosome" or have genomic coordinates
-        if fields.len() >= 3 {
-            if fields[0] == "chromosome" {
-                return false; // STR file with header
-            }
-
-            // Check if first line looks like genomic coordinates (chr1, etc.)
-            if fields[0].starts_with("chr")
-                && fields[1].parse::<u32>().is_ok()
-                && fields[2].parse::<u32>().is_ok()
-            {
-                return false; // STR file without header
-            }
-        }
-    }
-
-    eprintln!("Error: Unable to determine file format for {}", file_path.display());
-    eprintln!("The file does not appear to be a valid inquiSTR output file.");
-    eprintln!("\nExpected either:");
-    eprintln!("  - STR call file (starts with 'chromosome' or has chr:start:end format)");
-    eprintln!("  - Kmer frequency file (starts with 'kmer' or 'Sample')");
-    std::process::exit(1);
-}
-
-/// Determine if a file is a combined STR file (has more than 5 columns)
-/// Individual STR files have 5 columns: chr, start, end, H1, H2
-/// Combined STR files have 4+ columns: chr, start, end, sample1_H1, sample1_H2, sample2_H1, sample2_H2, ...
-/// First tries to read file_type metadata, then falls back to heuristics for backward compatibility
-fn is_combined_str_file(file: &Path) -> bool {
-    // Try reading metadata first
-    if let Some(file_type) = read_file_type_metadata(file) {
-        return file_type == FileType::CombinedCall;
-    }
-
-    // Fall back to heuristic detection for files without metadata
-    let mut file_reader = reader(&file.to_string_lossy()).lines();
-
-    // Get first line (might be metadata or header)
-    let first_line = match file_reader.next() {
-        Some(Ok(line)) => line,
-        Some(Err(e)) => panic!("Error reading file {}: {}", file.display(), e),
-        None => panic!("File {} is empty", file.display()),
-    };
-
-    // Skip metadata line if present
-    let header_line = if first_line.starts_with('#') {
-        match file_reader.next() {
-            Some(Ok(line)) => line,
-            Some(Err(e)) => {
-                eprintln!("Error: Failed to read file {}: {}", file.display(), e);
-                std::process::exit(1);
-            }
-            None => {
-                eprintln!("Error: File {} has metadata but no data", file.display());
-                eprintln!("The file appears to be empty or corrupted.");
-                std::process::exit(1);
-            }
-        }
-    } else {
-        first_line
-    };
-
-    // Validate that file has a header
-    if header_line.split('\t').next() != Some("chromosome") {
-        eprintln!("Error: File {} does not have a valid header.", file.display());
-        eprintln!(
-            "Expected first column to be 'chromosome', got '{}'",
-            header_line.split('\t').next().unwrap_or("<empty>")
-        );
-        eprintln!("\nAll STR files must have headers starting with 'chromosome'.");
-        std::process::exit(1);
-    }
-
-    // Check the next line to determine column count
-    match file_reader.next() {
-        Some(Ok(second_line)) => second_line.split('\t').count() > 5,
-        Some(Err(e)) => {
-            eprintln!("Error: Failed to read data from file {}: {}", file.display(), e);
-            std::process::exit(1);
-        }
-        None => {
-            eprintln!("Error: File {} has a header but no data lines", file.display());
-            eprintln!("STR files must contain at least one data line after the header.");
-            std::process::exit(1);
-        }
     }
 }
 
@@ -220,11 +59,11 @@ pub fn combine(calls: Vec<PathBuf>, threads: usize) {
     }
 
     // Detect file format from first file and validate all files are the same type
-    let first_file_is_kmer = is_kmer_file(&calls[0]);
+    let first_file_is_kmer = crate::filetype::is_kmer_file(&calls[0]);
 
     // Validate that all files are the same type as the first file
     for file in calls.iter().skip(1) {
-        let is_kmer = is_kmer_file(file);
+        let is_kmer = crate::filetype::is_kmer_file(file);
         if is_kmer != first_file_is_kmer {
             let first_type = if first_file_is_kmer {
                 "kmer frequency"
@@ -263,7 +102,7 @@ fn combine_str_files(calls: Vec<PathBuf>, _actual_threads: usize) {
     let mut individual_files = Vec::new();
 
     for file in &calls {
-        if is_combined_str_file(file) {
+        if crate::filetype::is_combined_str_file(file) {
             combined_files.push(file.clone());
         } else {
             individual_files.push(file.clone());
@@ -818,9 +657,11 @@ fn read_and_validate_headers(calls: &[PathBuf]) -> Vec<String> {
 /// Output the combined header line
 fn output_combined_header(headers: &[String]) {
     let first_header_fields: Vec<&str> = headers[0].split('\t').collect();
-    if first_header_fields.len() < 5 {
+    if first_header_fields.len() < 6 {
         eprintln!("Error: Invalid header format in first file.");
-        eprintln!("Expected at least 5 columns: chromosome, begin, end, sample_H1, sample_H2");
+        eprintln!(
+            "Expected at least 6 columns: chromosome, begin, end, info, sample_H1, sample_H2"
+        );
         eprintln!("Got {} columns: {}", first_header_fields.len(), headers[0]);
         std::process::exit(1);
     }
@@ -830,26 +671,29 @@ fn output_combined_header(headers: &[String]) {
     println!("# version={}", crate::VERSION);
     println!("# command=combine");
 
-    // Start with chr, begin, end
+    // Start with chr, begin, end, info
     let mut combined_header = vec![
         first_header_fields[0],
         first_header_fields[1],
         first_header_fields[2],
+        first_header_fields[3],
     ];
 
-    // Add sample columns from first file
-    combined_header.extend(&first_header_fields[3..]);
+    // Add sample columns from first file (skip chr, begin, end, info)
+    combined_header.extend(&first_header_fields[4..]);
 
-    // Add sample columns from other files (skip chr, begin, end)
+    // Add sample columns from other files (skip chr, begin, end, info)
     for header in &headers[1..] {
         let fields: Vec<&str> = header.split('\t').collect();
-        if fields.len() < 5 {
+        if fields.len() < 6 {
             eprintln!("Error: Invalid header format in one of the input files.");
-            eprintln!("Expected at least 5 columns: chromosome, begin, end, sample_H1, sample_H2");
+            eprintln!(
+                "Expected at least 6 columns: chromosome, begin, end, info, sample_H1, sample_H2"
+            );
             eprintln!("Got {} columns: {}", fields.len(), header);
             std::process::exit(1);
         }
-        combined_header.extend(&fields[3..]);
+        combined_header.extend(&fields[4..]);
     }
 
     println!("{}", combined_header.join("\t"));
@@ -954,18 +798,19 @@ fn combine_data_lines(data_lines: &[String], line_number: usize) -> String {
         data_lines.iter().map(|line| line.len()).sum::<usize>() + data_lines.len() * 10;
     let mut combined_fields = Vec::with_capacity(estimated_capacity / 8); // Rough estimate of field count
 
-    // Add coordinates from first file
+    // Add coordinates and info from first file
     combined_fields.push(chr);
     combined_fields.push(start);
     combined_fields.push(end);
+    combined_fields.push(first_line_fields[3]); // info column
 
-    // Add all sample data from first file
-    combined_fields.extend(&first_line_fields[3..]);
+    // Add all sample data from first file (skip chr, start, end, info)
+    combined_fields.extend(&first_line_fields[4..]);
 
-    // Add sample data from other files (skip coordinates)
+    // Add sample data from other files (skip chr, start, end, info)
     for line in &data_lines[1..] {
         let fields: Vec<&str> = line.split('\t').collect();
-        combined_fields.extend(&fields[3..]);
+        combined_fields.extend(&fields[4..]);
     }
 
     combined_fields.join("\t")

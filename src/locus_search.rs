@@ -82,7 +82,7 @@ pub fn find_locus(config: LocusSearchConfig) -> Option<LocusMatch> {
         if matches {
             let values: Vec<f64> = splitline
                 .iter()
-                .skip(3)
+                .skip(4) // Skip chr, start, end, info
                 .map(|number| number.parse::<f64>().expect("Failed parsing lengths"))
                 .collect();
 
@@ -132,7 +132,7 @@ pub fn find_locus(config: LocusSearchConfig) -> Option<LocusMatch> {
         if matches {
             let values: Vec<f64> = splitline
                 .iter()
-                .skip(3)
+                .skip(4) // Skip chr, start, end, info
                 .map(|number| number.parse::<f64>().expect("Failed parsing lengths"))
                 .collect();
 

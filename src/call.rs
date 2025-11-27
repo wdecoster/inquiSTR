@@ -135,8 +135,13 @@ impl fmt::Display for Genotype {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
             f,
-            "{}\t{}\t{}\t{}\t{}",
-            self.repeat.chrom, self.repeat.start, self.repeat.end, self.phase1, self.phase2
+            "{}\t{}\t{}\t{}\t{}\t{}",
+            self.repeat.chrom,
+            self.repeat.start,
+            self.repeat.end,
+            self.repeat.info,
+            self.phase1,
+            self.phase2
         )
     }
 }
@@ -282,7 +287,7 @@ pub fn genotype_repeats(
     writeln!(handle, "# minlen={}", genotype.minlen).expect("Failed writing metadata.");
     writeln!(handle, "# support={}", genotype.support).expect("Failed writing metadata.");
     writeln!(handle, "# unphased={}", genotype.unphased).expect("Failed writing metadata.");
-    let file_header = format!("chromosome\tbegin\tend\t{sample}_H1\t{sample}_H2");
+    let file_header = format!("chromosome\tbegin\tend\tinfo\t{sample}_H1\t{sample}_H2");
     writeln!(handle, "{file_header}").expect("Failed writing the header.");
     for genotype in &all_genotypes {
         writeln!(handle, "{genotype}").expect("Failed writing the result.");

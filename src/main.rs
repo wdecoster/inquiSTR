@@ -141,6 +141,7 @@ pub mod batch_process;
 pub mod benchmark;
 pub mod call;
 pub mod combine;
+pub mod filetype;
 pub mod filter;
 pub mod histogram;
 pub mod locus_batching;

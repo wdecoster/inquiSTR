@@ -118,7 +118,7 @@ fn parse_inquistr_file(
         }
 
         let fields: Vec<&str> = line.split('\t').collect();
-        if fields.len() != 5 {
+        if fields.len() != 6 {
             eprintln!("Warning: Skipping malformed line {}: {}", line_num + 1, line);
             continue;
         }
@@ -126,13 +126,14 @@ fn parse_inquistr_file(
         let chromosome = fields[0].to_string();
         let begin: u32 = fields[1].parse()?;
         let end: u32 = fields[2].parse()?;
+        // Skip info field at index 3
 
         // Parse H1 and H2, handling NaN values
-        let h1 = match fields[3].parse::<f64>() {
+        let h1 = match fields[4].parse::<f64>() {
             Ok(val) => val,
             Err(_) => f64::NAN,
         };
-        let h2 = match fields[4].parse::<f64>() {
+        let h2 = match fields[5].parse::<f64>() {
             Ok(val) => val,
             Err(_) => f64::NAN,
         };
