@@ -145,7 +145,7 @@ fn validate_file_path(path: &str) -> Result<(), String> {
 }
 
 /// Process a single sample for STR genotyping and write to output file
-/// This uses gag crate to redirect stdout to a file
+/// Writes directly to file to avoid stdout redirection conflicts in parallel execution
 fn process_sample(
     sample: &SampleInfo,
     target_config: &TargetConfig,
@@ -154,35 +154,69 @@ fn process_sample(
     reference: &Option<String>,
     output_path: &Path,
 ) -> Result<(), String> {
-    use std::fs::OpenOptions;
+    use std::fs::File;
+    use std::io::{BufWriter, Write};
     use std::panic;
-
-    // Open output file
-    let output_file = OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .open(output_path)
-        .map_err(|e| format!("Failed to create output file {}: {}", output_path.display(), e))?;
-
-    // Redirect stdout to the file
-    let _redirect = gag::Redirect::stdout(output_file)
-        .map_err(|e| format!("Failed to redirect stdout: {}", e))?;
 
     // Catch panics and convert to errors
     let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
-        crate::call::genotype_repeats(
-            sample.bam_path.clone(),
-            target_config.clone(),
-            *genotype_config,
-            processing_config.clone(),
-            Some(sample.sample_name.clone()),
-            reference.clone(),
-            false, // Don't show progress - batch mode has its own progress bar
-        );
+        // Get all genotypes
+        let repeats = target_config.get_targets(&sample.bam_path, reference);
+        let all_repeats: Vec<crate::repeats::RepeatInterval> = repeats.collect();
+        let batches = crate::locus_batching::create_batches(all_repeats, processing_config.batch_size_kb * 1000);
+        
+        let results: Vec<Vec<crate::call::Genotype>> = if processing_config.threads > 1 {
+            use rayon::prelude::*;
+            let thread_pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(processing_config.threads)
+                .build()
+                .expect("Failed to build thread pool");
+            
+            thread_pool.install(|| {
+                batches
+                    .into_par_iter()
+                    .map(|batch| {
+                        crate::locus_batching::process_batch_worker(batch, &sample.bam_path, reference, *genotype_config)
+                    })
+                    .collect()
+            })
+        } else {
+            batches
+                .into_iter()
+                .map(|batch| {
+                    crate::locus_batching::process_batch_worker(batch, &sample.bam_path, reference, *genotype_config)
+                })
+                .collect()
+        };
+        
+        let mut all_genotypes: Vec<crate::call::Genotype> = results.into_iter().flatten().collect();
+        all_genotypes.sort_unstable();
+        
+        // Write to output file
+        let file = File::create(output_path)
+            .map_err(|e| format!("Failed to create output file {}: {}", output_path.display(), e))
+            .unwrap();
+        let mut writer = BufWriter::new(file);
+        
+        let sample_name = sample.sample_name.as_str();
+        
+        // Write metadata header
+        writeln!(writer, "# file_type=individual_call").unwrap();
+        writeln!(writer, "# version={}", crate::VERSION).unwrap();
+        writeln!(writer, "# command=batch").unwrap();
+        writeln!(writer, "# sample={}", sample_name).unwrap();
+        writeln!(writer, "# minlen={}", genotype_config.minlen).unwrap();
+        writeln!(writer, "# support={}", genotype_config.support).unwrap();
+        writeln!(writer, "# unphased={}", genotype_config.unphased).unwrap();
+        
+        // Write data header
+        writeln!(writer, "chromosome\tbegin\tend\tinfo\t{}_H1\t{}_H2", sample_name, sample_name).unwrap();
+        
+        // Write genotypes
+        for genotype in &all_genotypes {
+            writeln!(writer, "{}", genotype).unwrap();
+        }
     }));
-
-    // redirect is dropped here, restoring stdout
 
     match result {
         Ok(_) => Ok(()),
