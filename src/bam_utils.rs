@@ -289,20 +289,57 @@ fn get_bam_reader_internal(
     // Set up index caching before opening the file
     setup_index_caching(bamp);
 
-    let mut bam =
-        if bamp.starts_with("s3") || bamp.starts_with("https://") || bamp.starts_with("ftp://") {
-            setup_ssl_certificates();
-            bam::IndexedReader::from_url(&Url::parse(bamp.as_str()).expect("Failed to parse URL"))
-                .map_err(|err| {
+    let mut bam = if bamp.starts_with("s3")
+        || bamp.starts_with("https://")
+        || bamp.starts_with("ftp://")
+    {
+        setup_ssl_certificates();
+        bam::IndexedReader::from_url(&Url::parse(bamp.as_str()).expect("Failed to parse URL"))
+            .map_err(|err| {
                 error!("Error opening remote BAM file: {err}");
                 InquiSTRError::new(format!("Error opening remote BAM file: {err}"))
             })?
-        } else {
-            bam::IndexedReader::from_path(bamp).map_err(|err| {
-                error!("Error opening local BAM file: {err}");
-                InquiSTRError::new(format!("Error opening local BAM file: {err}"))
+    } else {
+        bam::IndexedReader::from_path(bamp).map_err(|err| {
+                let err_msg = err.to_string();
+
+                // Check if this is an index-related error
+                if err_msg.contains("index") {
+                    // Check if the index file actually exists
+                    let possible_indices = [
+                        format!("{}.bai", bamp),
+                        format!("{}.crai", bamp),
+                        bamp.trim_end_matches(".bam").to_string() + ".bai",
+                        bamp.trim_end_matches(".cram").to_string() + ".crai",
+                    ];
+
+                    let index_exists = possible_indices.iter().any(|idx| PathBuf::from(idx).exists());
+
+                    if index_exists {
+                        error!("Error opening local BAM/CRAM file: {err}");
+                        error!("Note: An index file was found but appears to be corrupted or incompatible.");
+                        error!("Try regenerating the index with: samtools index {}", bamp);
+                        InquiSTRError::new(format!(
+                            "Error opening local BAM/CRAM file: {err}\n\
+                            Note: An index file was found but appears to be corrupted or incompatible.\n\
+                            Try regenerating the index with: samtools index {}", 
+                            bamp
+                        ))
+                    } else {
+                        error!("Error opening local BAM/CRAM file: {err}");
+                        error!("Note: No index file found. Create one with: samtools index {}", bamp);
+                        InquiSTRError::new(format!(
+                            "Error opening local BAM/CRAM file: {err}\n\
+                            Note: No index file found. Create one with: samtools index {}", 
+                            bamp
+                        ))
+                    }
+                } else {
+                    error!("Error opening local BAM/CRAM file: {err}");
+                    InquiSTRError::new(format!("Error opening local BAM/CRAM file: {err}"))
+                }
             })?
-        };
+    };
     if bamp.ends_with(".cram") {
         debug!("Detected CRAM file, setting CRAM options...");
         bam.set_cram_options(

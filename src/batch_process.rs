@@ -1,5 +1,6 @@
 use crate::call::{GenotypeConfig, ProcessingConfig, TargetConfig};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use log::debug;
 use rayon::prelude::*;
 use std::fs;
 use std::io::{self, BufRead};
@@ -220,6 +221,8 @@ fn process_sample(
                 .unwrap();
             let mut writer = BufWriter::new(file);
 
+            debug!("Writing individual file: {}", output_path.display());
+
             let sample_name = sample.sample_name.as_str();
 
             // Write metadata header
@@ -243,6 +246,13 @@ fn process_sample(
             for genotype in &all_genotypes {
                 writeln!(writer, "{}", genotype).unwrap();
             }
+
+            // Ensure all data is flushed to disk
+            writer
+                .flush()
+                .map_err(|e| format!("Failed to flush output file: {}", e))
+                .unwrap();
+            debug!("Successfully wrote individual file: {}", output_path.display());
 
             Ok(())
         },
@@ -572,6 +582,8 @@ pub fn batch_process(config: BatchConfig, mode: BatchMode) {
     let mut samples_with_individual_files = 0;
 
     if config.resume {
+        eprintln!("Resume mode: Checking for existing output in: {}", individual_dir.display());
+
         // First check the combined output file
         let completed_from_output = match &mode {
             BatchMode::StrGenotyping { .. } => get_samples_from_combined_str_file(&config.output),
@@ -590,9 +602,12 @@ pub fn batch_process(config: BatchConfig, mode: BatchMode) {
         // Also check for existing individual files
         for sample in &samples {
             let individual_file = individual_dir.join(format!("{}.inq", sample.sample_name));
-            if individual_file.exists() && !completed_samples.contains(&sample.sample_name) {
+            if individual_file.exists()
+                && !completed_samples.contains(&sample.sample_name)
+            {
                 completed_samples.push(sample.sample_name.clone());
                 samples_with_individual_files += 1;
+                eprintln!("  Found existing file: {}", individual_file.display());
             }
         }
 
