@@ -454,7 +454,8 @@ fn test_region() {
         Some("sample".to_string()),
         None,
         true, // show_progress
-    ).expect("genotype_repeats failed");
+    )
+    .expect("genotype_repeats failed");
 }
 
 #[test]
@@ -495,7 +496,8 @@ fn test_region_bed() {
         Some("sample".to_string()),
         None,
         true, // show_progress
-    ).expect("genotype_repeats failed");
+    )
+    .expect("genotype_repeats failed");
 }
 #[test]
 fn test_unphased() {
@@ -512,7 +514,8 @@ fn test_unphased() {
         Some("sample".to_string()),
         None,
         true, // show_progress
-    ).expect("genotype_repeats failed");
+    )
+    .expect("genotype_repeats failed");
 }
 
 // NOTE: Previously had a test_region_wrong_chromosome test with #[should_panic]
@@ -546,7 +549,8 @@ fn test_phasing_validation_triggers() {
         Some("sample".to_string()),
         None,
         true, // show_progress
-    ).expect("genotype_repeats failed");
+    )
+    .expect("genotype_repeats failed");
 }
 
 #[test]
@@ -575,7 +579,8 @@ fn test_nan_genotype_for_unphased_loci() {
         Some("test_sample".to_string()),
         None,
         true, // show_progress
-    ).expect("genotype_repeats failed");
+    )
+    .expect("genotype_repeats failed");
 
     // Clean up
     std::fs::remove_file("test_temp_nan_fix.bed").expect("Could not remove test file");
