@@ -199,11 +199,11 @@ fn parse_vcf_file(
 
         // Filter by max_locus size if specified
         // For VCF, we use the REF allele length as the locus size
-        if let Some(max_size) = max_locus {
-            if ref_seq.len() as u32 > max_size {
-                filtered_count += 1;
-                continue;
-            }
+        if let Some(max_size) = max_locus
+            && ref_seq.len() as u32 > max_size
+        {
+            filtered_count += 1;
+            continue;
         }
 
         // For VCF, we need to determine H1 and H2 from the available ALT alleles
@@ -453,7 +453,7 @@ pub fn benchmark(
         let zero_count = inquistr_values
             .iter()
             .zip(truth_values.iter())
-            .filter(|(&inq, &truth)| inq == 0.0 && truth == 0.0)
+            .filter(|&(inq, truth)| *inq == 0.0 && *truth == 0.0)
             .count();
 
         (corr_all, r2_all, zero_count)
@@ -556,7 +556,12 @@ pub fn benchmark(
                 let mut writer = std::io::BufWriter::new(file);
 
                 // Write header
-                if writeln!(writer, "chromosome\tbegin\tend\tinquistr_genotype\ttruth_genotype\tabsolute_difference").is_err() {
+                if writeln!(
+                    writer,
+                    "chromosome\tbegin\tend\tinquistr_genotype\ttruth_genotype\tabsolute_difference"
+                )
+                .is_err()
+                {
                     eprintln!("Error writing header to diff output file");
                 } else {
                     // Write data
@@ -566,13 +571,19 @@ pub fn benchmark(
                             writer,
                             "{}\t{}\t{}\t{:.1}\t{:.1}\t{:.1}",
                             locus.0, locus.1, locus.2, inq_val, truth_val, diff
-                        ).is_err() {
+                        )
+                        .is_err()
+                        {
                             eprintln!("Error writing data to diff output file");
                             break;
                         }
                         count += 1;
                     }
-                    println!("Top {} loci with largest differences written to: {}", count, diff_out_path.display());
+                    println!(
+                        "Top {} loci with largest differences written to: {}",
+                        count,
+                        diff_out_path.display()
+                    );
                 }
             }
             Err(e) => {

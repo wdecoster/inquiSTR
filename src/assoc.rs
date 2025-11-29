@@ -326,7 +326,9 @@ fn print_r_setup_instructions() {
     eprintln!("   # Note: 'parallel' is part of base R");
 
     eprintln!("\n3. Alternative: Install using command line:");
-    eprintln!("   Rscript -e \"install.packages(c('data.table', 'argparser'), repos='https://cran.rstudio.com/')\"");
+    eprintln!(
+        "   Rscript -e \"install.packages(c('data.table', 'argparser'), repos='https://cran.rstudio.com/')\""
+    );
 
     eprintln!("\nOnce R is properly set up, you can run:");
     eprintln!("   inquiSTR association --help");

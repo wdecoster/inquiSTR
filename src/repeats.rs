@@ -2,6 +2,7 @@ use bio::io::bed;
 use std::{collections::HashMap, fmt};
 
 use crate::bam_utils::get_chrom_lengths_from_bam_header;
+use crate::errors::{InquiSTRError, InquiSTRResult};
 
 #[derive(Debug)]
 pub struct RepeatIntervalIterator {
@@ -109,11 +110,11 @@ impl RepeatIntervalIterator {
             if let Some(repeat) = repeat {
                 // Filter by max_locus size if specified
                 let locus_size = repeat.end - repeat.start;
-                if let Some(max_size) = max_locus {
-                    if locus_size > max_size {
-                        filtered_count += 1;
-                        continue;
-                    }
+                if let Some(max_size) = max_locus
+                    && locus_size > max_size
+                {
+                    filtered_count += 1;
+                    continue;
                 }
                 data.push(repeat);
             }
@@ -217,7 +218,10 @@ impl RepeatIntervalIterator {
                                                 );
                                             }
                                             Err(e) => {
-                                                eprintln!("ERROR: Failed to decompress gzipped catalog: {}", e);
+                                                eprintln!(
+                                                    "ERROR: Failed to decompress gzipped catalog: {}",
+                                                    e
+                                                );
                                                 std::process::exit(1);
                                             }
                                         }
@@ -239,7 +243,10 @@ impl RepeatIntervalIterator {
                             Err(e) => {
                                 // Fall back to cache if reading response fails
                                 if cache_file.exists() {
-                                    eprintln!("Warning: Failed to read response body ({}), using cached version", e);
+                                    eprintln!(
+                                        "Warning: Failed to read response body ({}), using cached version",
+                                        e
+                                    );
                                 } else {
                                     eprintln!(
                                         "ERROR: Failed to download {} catalog: {}",
@@ -368,11 +375,11 @@ impl RepeatIntervalIterator {
             if let Some(repeat) = repeat {
                 // Filter by max_locus size if specified
                 let locus_size = repeat.end - repeat.start;
-                if let Some(max_size) = max_locus {
-                    if locus_size > max_size {
-                        filtered_count += 1;
-                        continue;
-                    }
+                if let Some(max_size) = max_locus
+                    && locus_size > max_size
+                {
+                    filtered_count += 1;
+                    continue;
                 }
                 data_vec.push(repeat);
             }
@@ -460,8 +467,10 @@ impl RepeatInterval {
         chrom_lengths: &HashMap<String, u64>,
     ) -> Option<Self> {
         if end < start {
-            eprintln!("ERROR: Invalid coordinates. End position ({}) is less than start position ({}) for {}:{}-{}", 
-                end, start, chrom, start, end);
+            eprintln!(
+                "ERROR: Invalid coordinates. End position ({}) is less than start position ({}) for {}:{}-{}",
+                end, start, chrom, start, end
+            );
             std::process::exit(1);
         }
 
@@ -495,27 +504,26 @@ pub fn get_targets(
     targets: crate::call::TargetConfig,
     bam: &str,
     reference: &Option<String>,
-) -> RepeatIntervalIterator {
-    let chrom_lengths = get_chrom_lengths_from_bam_header(bam.to_string(), reference);
+) -> InquiSTRResult<RepeatIntervalIterator> {
+    let chrom_lengths = get_chrom_lengths_from_bam_header(bam.to_string(), reference)?;
     match (&targets.region, &targets.region_file, &targets.preset) {
         // a region string
-        (Some(region), None, None) => RepeatIntervalIterator::from_string(region, chrom_lengths),
+        (Some(region), None, None) => Ok(RepeatIntervalIterator::from_string(region, chrom_lengths)),
         // a region file
-        (None, Some(region_file), None) => RepeatIntervalIterator::from_bed(
+        (None, Some(region_file), None) => Ok(RepeatIntervalIterator::from_bed(
             &region_file.to_string_lossy(),
             chrom_lengths,
             targets.max_locus,
-        ),
+        )),
         // preset catalog
         (None, None, Some(preset)) => {
-            RepeatIntervalIterator::from_preset(*preset, chrom_lengths, targets.max_locus)
+            Ok(RepeatIntervalIterator::from_preset(*preset, chrom_lengths, targets.max_locus))
         }
         // invalid input
         _ => {
-            eprintln!(
-                "ERROR: Specify a region string (-r), a region_file (-R), or --preset <pathogenic|adotto|trexplorer>!\n"
-            );
-            std::process::exit(1);
+            Err(InquiSTRError::new(
+                "Specify a region string (-r), a region_file (-R), or --preset <pathogenic|adotto|trexplorer>".to_string()
+            ))
         }
     }
 }
@@ -532,14 +540,14 @@ mod tests {
         // Test filtering functionality by creating a test BED file and checking results
 
         // Create a temporary test BED file
-        let test_bed_content =
-            "chr7\t154778571\t154779363\tsmall_interval\nchr7\t154780000\t154900000\thuge_interval\n";
+        let test_bed_content = "chr7\t154778571\t154779363\tsmall_interval\nchr7\t154780000\t154900000\thuge_interval\n";
         let mut file = File::create("test_temp_max_locus.bed").expect("Could not create test file");
         file.write_all(test_bed_content.as_bytes())
             .expect("Could not write test file");
 
         let chrom_lengths =
-            get_chrom_lengths_from_bam_header(String::from("test-data/small-test.bam"), &None);
+            get_chrom_lengths_from_bam_header(String::from("test-data/small-test.bam"), &None)
+                .expect("Failed to get chromosome lengths");
 
         // Test without max_locus - should include both intervals
         let repeats_no_filter = RepeatIntervalIterator::from_bed(

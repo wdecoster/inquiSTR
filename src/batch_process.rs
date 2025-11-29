@@ -23,6 +23,7 @@ pub struct BatchConfig {
     pub tmpdir: Option<PathBuf>,
     pub resume: bool,
     pub dry_run: bool,
+    pub keep_going: bool,
     pub reference: Option<String>,
     pub parallel_samples: usize,
 }
@@ -159,81 +160,97 @@ fn process_sample(
     use std::panic;
 
     // Catch panics and convert to errors
-    let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
-        // Get all genotypes
-        let repeats = target_config.get_targets(&sample.bam_path, reference);
-        let all_repeats: Vec<crate::repeats::RepeatInterval> = repeats.collect();
-        let batches = crate::locus_batching::create_batches(
-            all_repeats,
-            processing_config.batch_size_kb * 1000,
-        );
+    let result = panic::catch_unwind(panic::AssertUnwindSafe(
+        || -> Result<(), crate::errors::InquiSTRError> {
+            // Get all genotypes
+            let repeats = target_config.get_targets(&sample.bam_path, reference)?;
+            let all_repeats: Vec<crate::repeats::RepeatInterval> = repeats.collect();
+            let batches = crate::locus_batching::create_batches(
+                all_repeats,
+                processing_config.batch_size_kb * 1000,
+            );
 
-        let results: Vec<Vec<crate::call::Genotype>> = if processing_config.threads > 1 {
-            use rayon::prelude::*;
-            let thread_pool = rayon::ThreadPoolBuilder::new()
-                .num_threads(processing_config.threads)
-                .build()
-                .expect("Failed to build thread pool");
+            let results: Result<Vec<Vec<crate::call::Genotype>>, crate::errors::InquiSTRError> =
+                if processing_config.threads > 1 {
+                    use rayon::prelude::*;
+                    let thread_pool = rayon::ThreadPoolBuilder::new()
+                        .num_threads(processing_config.threads)
+                        .build()
+                        .expect("Failed to build thread pool");
 
-            thread_pool.install(|| {
-                batches
-                    .into_par_iter()
-                    .map(|batch| {
-                        crate::locus_batching::process_batch_worker(
-                            batch,
-                            &sample.bam_path,
-                            reference,
-                            *genotype_config,
-                        )
+                    thread_pool.install(|| {
+                        batches
+                            .into_par_iter()
+                            .map(|batch| {
+                                crate::locus_batching::process_batch_worker(
+                                    batch,
+                                    &sample.bam_path,
+                                    reference,
+                                    *genotype_config,
+                                )
+                            })
+                            .collect()
                     })
-                    .collect()
-            })
-        } else {
-            batches
-                .into_iter()
-                .map(|batch| {
-                    crate::locus_batching::process_batch_worker(
-                        batch,
-                        &sample.bam_path,
-                        reference,
-                        *genotype_config,
-                    )
+                } else {
+                    batches
+                        .into_iter()
+                        .map(|batch| {
+                            crate::locus_batching::process_batch_worker(
+                                batch,
+                                &sample.bam_path,
+                                reference,
+                                *genotype_config,
+                            )
+                        })
+                        .collect()
+                };
+
+            // Propagate the error if any batch failed
+            let results = results?;
+
+            let mut all_genotypes: Vec<crate::call::Genotype> =
+                results.into_iter().flatten().collect();
+            all_genotypes.sort_unstable();
+
+            // Write to output file
+            let file = File::create(output_path)
+                .map_err(|e| {
+                    format!("Failed to create output file {}: {}", output_path.display(), e)
                 })
-                .collect()
-        };
+                .unwrap();
+            let mut writer = BufWriter::new(file);
 
-        let mut all_genotypes: Vec<crate::call::Genotype> = results.into_iter().flatten().collect();
-        all_genotypes.sort_unstable();
+            let sample_name = sample.sample_name.as_str();
 
-        // Write to output file
-        let file = File::create(output_path)
-            .map_err(|e| format!("Failed to create output file {}: {}", output_path.display(), e))
-            .unwrap();
-        let mut writer = BufWriter::new(file);
+            // Write metadata header
+            writeln!(writer, "# file_type=individual_call").unwrap();
+            writeln!(writer, "# version={}", crate::VERSION).unwrap();
+            writeln!(writer, "# command=batch").unwrap();
+            writeln!(writer, "# sample={}", sample_name).unwrap();
+            writeln!(writer, "# minlen={}", genotype_config.minlen).unwrap();
+            writeln!(writer, "# support={}", genotype_config.support).unwrap();
+            writeln!(writer, "# unphased={}", genotype_config.unphased).unwrap();
 
-        let sample_name = sample.sample_name.as_str();
-
-        // Write metadata header
-        writeln!(writer, "# file_type=individual_call").unwrap();
-        writeln!(writer, "# version={}", crate::VERSION).unwrap();
-        writeln!(writer, "# command=batch").unwrap();
-        writeln!(writer, "# sample={}", sample_name).unwrap();
-        writeln!(writer, "# minlen={}", genotype_config.minlen).unwrap();
-        writeln!(writer, "# support={}", genotype_config.support).unwrap();
-        writeln!(writer, "# unphased={}", genotype_config.unphased).unwrap();
-
-        // Write data header
-        writeln!(writer, "chromosome\tbegin\tend\tinfo\t{}_H1\t{}_H2", sample_name, sample_name)
+            // Write data header
+            writeln!(
+                writer,
+                "chromosome\tbegin\tend\tinfo\t{}_H1\t{}_H2",
+                sample_name, sample_name
+            )
             .unwrap();
 
-        // Write genotypes
-        for genotype in &all_genotypes {
-            writeln!(writer, "{}", genotype).unwrap();
-        }
-    }));
+            // Write genotypes
+            for genotype in &all_genotypes {
+                writeln!(writer, "{}", genotype).unwrap();
+            }
+
+            Ok(())
+        },
+    ));
 
     match result {
-        Ok(_) => Ok(()),
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(e)) => Err(e.message), // Propagate the InquiSTRError
         Err(e) => {
             // Try to extract error message from panic
             if let Some(s) = e.downcast_ref::<&str>() {
@@ -271,23 +288,26 @@ fn process_sample_unmapped(
         .map_err(|e| format!("Failed to redirect stdout: {}", e))?;
 
     // Catch panics and convert to errors
-    let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
-        crate::unmapped::count_unmapped_kmers(
-            sample.bam_path.clone(),
-            unmapped_config.klength,
-            Some(sample.sample_name.clone()),
-            reference.clone(),
-            processing_config.threads,
-            unmapped_config.target_kmer.clone(),
-            unmapped_config.combine_revcomp,
-            false, // Don't show progress - batch mode has its own progress bar
-        );
-    }));
+    let result = panic::catch_unwind(panic::AssertUnwindSafe(
+        || -> Result<(), crate::errors::InquiSTRError> {
+            crate::unmapped::count_unmapped_kmers(
+                sample.bam_path.clone(),
+                unmapped_config.klength,
+                Some(sample.sample_name.clone()),
+                reference.clone(),
+                processing_config.threads,
+                unmapped_config.target_kmer.clone(),
+                unmapped_config.combine_revcomp,
+                false, // Don't show progress - batch mode has its own progress bar
+            )
+        },
+    ));
 
     // redirect is dropped here, restoring stdout
 
     match result {
-        Ok(_) => Ok(()),
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(e)) => Err(e.message), // Propagate the InquiSTRError
         Err(e) => {
             // Try to extract error message from panic
             if let Some(s) = e.downcast_ref::<&str>() {
@@ -468,7 +488,9 @@ pub fn batch_process(config: BatchConfig, mode: BatchMode) {
                 && target_config.region_file.is_none()
                 && target_config.preset.is_none()
             {
-                eprintln!("ERROR: For STR genotyping mode, you must provide --region, --region-file, or --preset");
+                eprintln!(
+                    "ERROR: For STR genotyping mode, you must provide --region, --region-file, or --preset"
+                );
                 std::process::exit(1);
             }
         }
@@ -499,7 +521,9 @@ pub fn batch_process(config: BatchConfig, mode: BatchMode) {
         for dup in &dup_list {
             eprintln!("  - {}", dup);
         }
-        eprintln!("\nSample names must be unique. Please fix the manifest or ensure unique sample_name column values.");
+        eprintln!(
+            "\nSample names must be unique. Please fix the manifest or ensure unique sample_name column values."
+        );
         std::process::exit(1);
     }
 
@@ -604,14 +628,18 @@ pub fn batch_process(config: BatchConfig, mode: BatchMode) {
                     // Will skip processing and jump directly to combine step
                 } else {
                     // All samples in output but output file doesn't exist (shouldn't happen)
-                    eprintln!("\nERROR: Inconsistent state - samples marked as complete but no files found.");
+                    eprintln!(
+                        "\nERROR: Inconsistent state - samples marked as complete but no files found."
+                    );
                     std::process::exit(1);
                 }
             } else {
                 eprintln!("  Will process {} remaining sample(s)", samples.len());
             }
         } else {
-            eprintln!("Resume mode: No existing output or individual files found, will process all samples");
+            eprintln!(
+                "Resume mode: No existing output or individual files found, will process all samples"
+            );
         }
     } else {
         eprintln!("Found {} samples in manifest", samples.len());
@@ -877,6 +905,14 @@ pub fn batch_process(config: BatchConfig, mode: BatchMode) {
                                 .unwrap()
                                 .push(sample.sample_name.clone());
                             pb.finish_with_message(format!("✗ {}", sample.sample_name));
+
+                            // If keep_going is not set, stop processing immediately
+                            if !config.keep_going {
+                                overall_pb.finish_with_message("Stopping due to error (use --keep-going to continue)");
+                                eprintln!("\nStopping batch processing due to error.");
+                                eprintln!("Use --keep-going to continue processing remaining samples despite failures.");
+                                std::process::exit(1);
+                            }
                         }
                     }
 
@@ -905,10 +941,20 @@ pub fn batch_process(config: BatchConfig, mode: BatchMode) {
         }
     }
 
-    // Combine individual files
+    // Check if we should proceed with combining files
     if individual_files.is_empty() {
         eprintln!("\nERROR: No samples were successfully processed. Cannot create combined file.");
         std::process::exit(1);
+    }
+
+    // If some samples failed, warn but continue to create combined file with successful samples
+    if !failed_samples.is_empty() {
+        eprintln!(
+            "\nWARNING: {} sample(s) failed, but {} succeeded.",
+            failed_samples.len(),
+            individual_files.len()
+        );
+        eprintln!("Creating combined file with successful samples only.");
     }
 
     // Get thread count from adjusted_mode
@@ -998,4 +1044,18 @@ pub fn batch_process(config: BatchConfig, mode: BatchMode) {
     eprintln!("  Successful: {}", individual_files.len());
     eprintln!("  Failed: {}", failed_samples.len());
     eprintln!("  Output: {}", config.output.display());
+
+    // If we reach here with failures, it means --keep-going was set
+    // (otherwise we would have exited immediately on first failure)
+    if !failed_samples.is_empty() {
+        eprintln!(
+            "\nWARNING: {} sample(s) failed but --keep-going was specified.",
+            failed_samples.len()
+        );
+        eprintln!(
+            "Combined file contains only the {} successful sample(s).",
+            individual_files.len()
+        );
+        std::process::exit(1); // Exit with error code to indicate failures occurred
+    }
 }

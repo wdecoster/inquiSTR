@@ -8,8 +8,9 @@ use std::io::{self, Write};
 use std::path::PathBuf;
 
 // Phasing validation now happens lazily on first batch via get_bam_reader_with_validation
+use crate::errors::{InquiSTRError, InquiSTRResult};
 use crate::locus_batching::{create_batches, process_batch_worker};
-use crate::repeats::{get_targets, RepeatInterval, RepeatIntervalIterator};
+use crate::repeats::{RepeatInterval, RepeatIntervalIterator, get_targets};
 
 /// Predefined tandem repeat (TR) catalogs for genotyping
 ///
@@ -79,7 +80,11 @@ pub struct TargetConfig {
 
 impl TargetConfig {
     /// Get target intervals based on the configuration
-    pub fn get_targets(&self, bam: &str, reference: &Option<String>) -> RepeatIntervalIterator {
+    pub fn get_targets(
+        &self,
+        bam: &str,
+        reference: &Option<String>,
+    ) -> InquiSTRResult<RepeatIntervalIterator> {
         get_targets(self.clone(), bam, reference)
     }
 }
@@ -172,7 +177,7 @@ pub fn genotype_repeats(
     sample_name: Option<String>,
     reference: Option<String>,
     show_progress: bool,
-) {
+) -> InquiSTRResult<()> {
     // only test if path.is_file() if the file is local
     if !PathBuf::from(&bam).is_file()
         && !bam.starts_with("s3")
@@ -180,10 +185,10 @@ pub fn genotype_repeats(
         && !bam.starts_with("ftp://")
     {
         error!("ERROR: path to bam file {} is not valid!\n\n", &bam);
-        std::process::exit(1);
+        return Err(InquiSTRError::new(format!("path to bam file {} is not valid", &bam)));
     };
 
-    let repeats = targets.get_targets(&bam, &reference);
+    let repeats = targets.get_targets(&bam, &reference)?;
 
     // Unified batch-level producer-consumer approach for both single and multi-threaded
     // Batch size is configurable for performance optimization
@@ -220,27 +225,27 @@ pub fn genotype_repeats(
                 .into_par_iter()
                 .map(|batch| {
                     let batch_size = batch.repeats.len();
-                    let results = process_batch_worker(batch, &bam, &reference, genotype);
+                    let results = process_batch_worker(batch, &bam, &reference, genotype)?;
                     if let Some(ref pb) = pb {
                         pb.inc(batch_size as u64);
                     }
-                    results
+                    Ok(results)
                 })
-                .collect()
-        })
+                .collect::<InquiSTRResult<Vec<Vec<Genotype>>>>()
+        })?
     } else {
         // Single-threaded: Process batches sequentially
         batches
             .into_iter()
             .map(|batch| {
                 let batch_size = batch.repeats.len();
-                let results = process_batch_worker(batch, &bam, &reference, genotype);
+                let results = process_batch_worker(batch, &bam, &reference, genotype)?;
                 if let Some(ref pb) = pb {
                     pb.inc(batch_size as u64);
                 }
-                results
+                Ok(results)
             })
-            .collect()
+            .collect::<InquiSTRResult<Vec<Vec<Genotype>>>>()?
     };
 
     if let Some(ref pb) = pb {
@@ -292,6 +297,8 @@ pub fn genotype_repeats(
     for genotype in &all_genotypes {
         writeln!(handle, "{genotype}").expect("Failed writing the result.");
     }
+
+    Ok(())
 }
 
 /// Write genotypes to VCF format
@@ -327,7 +334,11 @@ fn write_vcf(vcf_path: &PathBuf, genotypes: &[Genotype], sample: &str, reference
     // Add FORMAT fields
     writeln!(writer, "##FORMAT=<ID=GT,Number=1,Type=String,Description=\"Genotype\">")
         .expect("Failed writing VCF header");
-    writeln!(writer, "##FORMAT=<ID=AL,Number=.,Type=Float,Description=\"Allele length (relative to reference)\">").expect("Failed writing VCF header");
+    writeln!(
+        writer,
+        "##FORMAT=<ID=AL,Number=.,Type=Float,Description=\"Allele length (relative to reference)\">"
+    )
+    .expect("Failed writing VCF header");
 
     // Add ALT definition for STR
     writeln!(writer, "##ALT=<ID=STR,Description=\"Short Tandem Repeat\">")
@@ -443,34 +454,30 @@ fn test_region() {
         Some("sample".to_string()),
         None,
         true, // show_progress
-    );
+    ).expect("genotype_repeats failed");
 }
 
 #[test]
 #[ignore] // Requires network access - can be enabled with: cargo test -- --ignored
 fn test_region_from_url() {
     genotype_repeats(
-        String::from("https://ftp.1000genomes.ebi.ac.uk/vol1/ftp/data_collections/1KG_ONT_VIENNA/hg38/HG00096.hg38.cram"),
+        String::from(
+            "https://ftp.1000genomes.ebi.ac.uk/vol1/ftp/data_collections/1KG_ONT_VIENNA/hg38/HG00096.hg38.cram",
+        ),
         TargetConfig {
             region: Some("chr7:154778571-154779363".to_string()),
             region_file: None,
             preset: None,
             max_locus: None,
         },
-        GenotypeConfig {
-            minlen: 5,
-            support: 3,
-            unphased: true,
-        },
-        ProcessingConfig {
-            threads: 4,
-            batch_size_kb: 50,
-            output_vcf: None,
-        },
+        GenotypeConfig { minlen: 5, support: 3, unphased: true },
+        ProcessingConfig { threads: 4, batch_size_kb: 50, output_vcf: None },
         Some("sample".to_string()),
-        Some(String::from("https://ftp.1000genomes.ebi.ac.uk/vol1/ftp/technical/reference/GRCh38_reference_genome/GRCh38_full_analysis_set_plus_decoy_hla.fa")),
+        Some(String::from(
+            "https://ftp.1000genomes.ebi.ac.uk/vol1/ftp/technical/reference/GRCh38_reference_genome/GRCh38_full_analysis_set_plus_decoy_hla.fa",
+        )),
         true, // show_progress
-    );
+    ).expect("genotype_repeats failed");
 }
 
 #[test]
@@ -488,7 +495,7 @@ fn test_region_bed() {
         Some("sample".to_string()),
         None,
         true, // show_progress
-    );
+    ).expect("genotype_repeats failed");
 }
 #[test]
 fn test_unphased() {
@@ -505,7 +512,7 @@ fn test_unphased() {
         Some("sample".to_string()),
         None,
         true, // show_progress
-    );
+    ).expect("genotype_repeats failed");
 }
 
 // NOTE: Previously had a test_region_wrong_chromosome test with #[should_panic]
@@ -539,7 +546,7 @@ fn test_phasing_validation_triggers() {
         Some("sample".to_string()),
         None,
         true, // show_progress
-    );
+    ).expect("genotype_repeats failed");
 }
 
 #[test]
@@ -568,7 +575,7 @@ fn test_nan_genotype_for_unphased_loci() {
         Some("test_sample".to_string()),
         None,
         true, // show_progress
-    );
+    ).expect("genotype_repeats failed");
 
     // Clean up
     std::fs::remove_file("test_temp_nan_fix.bed").expect("Could not remove test file");

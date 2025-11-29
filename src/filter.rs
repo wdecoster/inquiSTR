@@ -99,20 +99,18 @@ fn verify_sorted<R: BufRead>(reader: &mut R, file_name: &str, skip_header: bool)
         })?;
 
         // Check if sorted
-        if let Some(ref prev_chr) = prev_chrom {
-            if chrom == *prev_chr {
-                if let Some(prev_pos) = prev_start {
-                    if start < prev_pos {
-                        return Err(io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            format!(
-                                "File {} is not sorted: found {}:{} after {}:{}",
-                                file_name, chrom, start, prev_chr, prev_pos
-                            ),
-                        ));
-                    }
-                }
-            }
+        if let Some(ref prev_chr) = prev_chrom
+            && chrom == *prev_chr
+            && let Some(prev_pos) = prev_start
+            && start < prev_pos
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "File {} is not sorted: found {}:{} after {}:{}",
+                    file_name, chrom, start, prev_chr, prev_pos
+                ),
+            ));
         }
 
         prev_chrom = Some(chrom);
@@ -204,11 +202,11 @@ pub fn filter(
     min_cv: Option<f64>,
 ) {
     // Validate call_rate range
-    if let Some(rate) = call_rate {
-        if !(0.0..=1.0).contains(&rate) {
-            eprintln!("ERROR: call-rate must be between 0.0 and 1.0");
-            std::process::exit(1);
-        }
+    if let Some(rate) = call_rate
+        && !(0.0..=1.0).contains(&rate)
+    {
+        eprintln!("ERROR: call-rate must be between 0.0 and 1.0");
+        std::process::exit(1);
     }
 
     // Check if input exists
@@ -341,11 +339,11 @@ pub fn filter(
         // Apply filters in order
 
         // 1. BED overlap filter (using efficient sorted traversal)
-        if let Some(ref intervals) = bed_intervals {
-            if !overlaps_bed(chrom, start, end, intervals, &mut bed_index) {
-                filtered_by_bed += 1;
-                continue;
-            }
+        if let Some(ref intervals) = bed_intervals
+            && !overlaps_bed(chrom, start, end, intervals, &mut bed_index)
+        {
+            filtered_by_bed += 1;
+            continue;
         }
 
         // Parse allele values (columns 4 onwards, skipping info at column 3)
@@ -384,41 +382,41 @@ pub fn filter(
         }
 
         // 4. Call rate filter (only for combined files)
-        if let Some(rate) = call_rate {
-            if is_combined {
-                let total_samples = alleles.len();
-                let genotyped_samples = alleles
-                    .iter()
-                    .filter(|&&a| {
-                        if let Ok(val) = a.parse::<f64>() {
-                            val.is_finite()
-                        } else {
-                            false
-                        }
-                    })
-                    .count();
+        if let Some(rate) = call_rate
+            && is_combined
+        {
+            let total_samples = alleles.len();
+            let genotyped_samples = alleles
+                .iter()
+                .filter(|&&a| {
+                    if let Ok(val) = a.parse::<f64>() {
+                        val.is_finite()
+                    } else {
+                        false
+                    }
+                })
+                .count();
 
-                let actual_rate = genotyped_samples as f64 / total_samples as f64;
-                if actual_rate < rate {
-                    filtered_by_call_rate += 1;
-                    continue;
-                }
+            let actual_rate = genotyped_samples as f64 / total_samples as f64;
+            if actual_rate < rate {
+                filtered_by_call_rate += 1;
+                continue;
             }
         }
 
         // 5. Coefficient of variation filter (only for combined files)
-        if let Some(min_cv_threshold) = min_cv {
-            if is_combined {
-                let values: Vec<f64> = alleles
-                    .iter()
-                    .filter_map(|&a| a.parse::<f64>().ok())
-                    .collect();
+        if let Some(min_cv_threshold) = min_cv
+            && is_combined
+        {
+            let values: Vec<f64> = alleles
+                .iter()
+                .filter_map(|&a| a.parse::<f64>().ok())
+                .collect();
 
-                let cv = calculate_cv(&values);
-                if cv < min_cv_threshold {
-                    filtered_by_cv += 1;
-                    continue;
-                }
+            let cv = calculate_cv(&values);
+            if cv < min_cv_threshold {
+                filtered_by_cv += 1;
+                continue;
             }
         }
 

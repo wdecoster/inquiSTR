@@ -179,16 +179,18 @@ pub fn outlier(
         .expect("Failed to build thread pool");
 
     // Validate that input is a combined file, not individual
-    if let Some(file_type) = crate::filetype::read_file_type_metadata(&combined) {
-        if !matches!(
+    if let Some(file_type) = crate::filetype::read_file_type_metadata(&combined)
+        && !matches!(
             file_type,
             crate::filetype::FileType::CombinedCall | crate::filetype::FileType::CombinedKmer
-        ) {
-            eprintln!("ERROR: Outlier detection requires a combined file (combined_call or combined_kmer).");
-            eprintln!("The provided file appears to be: {:?}", file_type);
-            eprintln!("\nPlease use 'inquiSTR combine' to merge individual sample files first.");
-            std::process::exit(1);
-        }
+        )
+    {
+        eprintln!(
+            "ERROR: Outlier detection requires a combined file (combined_call or combined_kmer)."
+        );
+        eprintln!("The provided file appears to be: {:?}", file_type);
+        eprintln!("\nPlease use 'inquiSTR combine' to merge individual sample files first.");
+        std::process::exit(1);
     }
 
     // Detect file format
@@ -439,7 +441,7 @@ fn process_chunk(
         println!("{}	{}	{}	{}", chrom, begin, end, expanded_str);
 
         // Update counts if tracking
-        if let Some(ref mut counts) = outlier_counts {
+        if let Some(counts) = outlier_counts {
             for sample in &expanded {
                 *counts.entry(sample.clone()).or_insert(0) += 1;
             }
@@ -502,7 +504,7 @@ fn process_kmer_chunk(
         println!("{}	{}", kmer, expanded_str);
 
         // Update counts if tracking
-        if let Some(ref mut counts) = outlier_counts {
+        if let Some(counts) = outlier_counts {
             for sample in &expanded {
                 *counts.entry(sample.clone()).or_insert(0) += 1;
             }

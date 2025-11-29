@@ -1,7 +1,7 @@
 [package]
 name = "inquiSTR"
-version = "0.21.0"
-edition = "2021"
+version = "0.22.0"
+edition = "2024"
 rust-version = "1.88.0"
 authors = ["Wouter De Coster <wouter.decoster@gmail.com>"]
 description = "A toolset to genotype and analyze STRs from long read sequencing data"

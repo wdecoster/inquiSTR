@@ -5,6 +5,7 @@
 //! kmers of all sizes from 2 to a specified maximum length.
 
 use crate::bam_utils::setup_index_caching;
+use crate::errors::{InquiSTRError, InquiSTRResult};
 use indicatif::{ProgressBar, ProgressStyle};
 use log::{info, warn};
 use rayon::prelude::{IntoParallelIterator, ParallelIterator};
@@ -23,7 +24,7 @@ pub fn count_unmapped_kmers(
     target_kmer: Option<String>,
     combine_revcomp: bool,
     show_progress: bool,
-) {
+) -> InquiSTRResult<()> {
     info!("Starting kmer counting for unmapped reads");
     info!("BAM file: {}", bam_path);
     info!("Maximum kmer length: {}", klength);
@@ -35,7 +36,7 @@ pub fn count_unmapped_kmers(
     if let Some(ref target) = target_kmer {
         info!("Target kmer: {}", target);
         // If target kmer is specified, only count that specific kmer
-        count_target_kmer(
+        return count_target_kmer(
             &bam_path,
             target,
             sample_name,
@@ -44,12 +45,13 @@ pub fn count_unmapped_kmers(
             combine_revcomp,
             show_progress,
         );
-        return;
     }
 
     if klength < 2 {
-        eprintln!("ERROR: klength must be at least 2 (provided: {})", klength);
-        std::process::exit(1);
+        return Err(InquiSTRError::new(format!(
+            "klength must be at least 2 (provided: {})",
+            klength
+        )));
     }
 
     // Set up thread pool (ignore error if already initialized)
@@ -87,7 +89,7 @@ pub fn count_unmapped_kmers(
     {
         warn!("No valid unmapped reads found in the BAM file");
         output_empty_results(&sample_name, klength);
-        return;
+        return Ok(());
     }
 
     // Canonicalize the counts (sum rotations together)
@@ -95,6 +97,8 @@ pub fn count_unmapped_kmers(
 
     // Output results
     output_results(&canonical_counts, &sample_name, klength, total_reads);
+
+    Ok(())
 }
 
 /// Get unmapped read count and total read count from BAM index statistics using rust-htslib
@@ -242,12 +246,11 @@ fn collect_unmapped_sequences_in_batches(
     progress: Option<ProgressBar>,
 ) -> (Vec<Vec<Vec<u8>>>, u64) {
     // Try indexed approach first
-    if let Some((expected_unmapped, _expected_total)) = counts_from_index {
-        if let Some((batches, total_reads)) =
+    if let Some((expected_unmapped, _expected_total)) = counts_from_index
+        && let Some((batches, total_reads)) =
             try_collect_indexed(bam_path, reference, expected_unmapped, progress.clone())
-        {
-            return (batches, total_reads);
-        }
+    {
+        return (batches, total_reads);
     }
 
     // Fall back to full file traversal
@@ -309,13 +312,12 @@ fn try_collect_indexed(
     };
 
     // Set reference for CRAM files
-    if bam_path.ends_with(".cram") {
-        if let Some(ref_path) = reference {
-            if let Err(e) = reader.set_reference(ref_path) {
-                info!("Failed to set reference for IndexedReader: {}", e);
-                return None;
-            }
-        }
+    if bam_path.ends_with(".cram")
+        && let Some(ref_path) = reference
+        && let Err(e) = reader.set_reference(ref_path)
+    {
+        info!("Failed to set reference for IndexedReader: {}", e);
+        return None;
     }
 
     // Try to fetch unmapped reads specifically
@@ -405,12 +407,12 @@ fn collect_fallback(
     };
 
     // Set reference for CRAM files
-    if bam_path.ends_with(".cram") {
-        if let Some(ref_path) = reference {
-            reader
-                .set_reference(ref_path)
-                .expect("Failed to set reference");
-        }
+    if bam_path.ends_with(".cram")
+        && let Some(ref_path) = reference
+    {
+        reader
+            .set_reference(ref_path)
+            .expect("Failed to set reference");
     }
 
     let mut current_batch = Vec::new();
@@ -443,14 +445,14 @@ fn collect_fallback(
                 }
 
                 // Update progress periodically
-                if total_reads.is_multiple_of(10_000) {
-                    if let Some(ref pb) = progress {
-                        pb.set_message(format!(
-                            "{} reads processed, {} unmapped",
-                            total_reads, unmapped_count
-                        ));
-                        pb.tick();
-                    }
+                if total_reads.is_multiple_of(10_000)
+                    && let Some(ref pb) = progress
+                {
+                    pb.set_message(format!(
+                        "{} reads processed, {} unmapped",
+                        total_reads, unmapped_count
+                    ));
+                    pb.tick();
                 }
 
                 // Safety checks
@@ -588,34 +590,26 @@ fn count_target_kmer(
     threads: usize,
     combine_revcomp: bool,
     show_progress: bool,
-) {
+) -> InquiSTRResult<()> {
     // Expand shorthand notation if present (e.g., (CT)4 -> CTCTCTCT)
-    let expanded_kmer = match expand_kmer_shorthand(target_kmer) {
-        Ok(k) => k,
-        Err(e) => {
-            eprintln!("ERROR: {}", e);
-            std::process::exit(1);
-        }
-    };
+    let expanded_kmer = expand_kmer_shorthand(target_kmer).map_err(InquiSTRError::new)?;
 
     // Validate target kmer contains only ACGT
     if !expanded_kmer
         .bytes()
         .all(|b| matches!(b, b'A' | b'C' | b'G' | b'T'))
     {
-        eprintln!(
-            "ERROR: Target kmer must contain only A, C, G, T characters (provided: '{}')",
+        return Err(InquiSTRError::new(format!(
+            "Target kmer must contain only A, C, G, T characters (provided: '{}')",
             target_kmer
-        );
-        std::process::exit(1);
+        )));
     }
 
     let target_bytes = expanded_kmer.as_bytes();
     let k = target_bytes.len();
 
     if k < 1 {
-        eprintln!("ERROR: Target kmer must be at least 1 base long");
-        std::process::exit(1);
+        return Err(InquiSTRError::new("Target kmer must be at least 1 base long".to_string()));
     }
 
     if expanded_kmer != target_kmer.to_uppercase() {
@@ -693,6 +687,8 @@ fn count_target_kmer(
         "{}\t{}\t{}\t{}\t{}\t{}\t{:.6}",
         sample_name, expanded_kmer, canonical, k, total_count, total_reads, frequency
     );
+
+    Ok(())
 }
 
 /// Stream unmapped reads and count occurrences of target kmer rotations
@@ -741,12 +737,12 @@ fn stream_and_count_target_kmer(
     };
 
     // Set reference for CRAM files
-    if bam_path.ends_with(".cram") {
-        if let Some(ref_path) = reference {
-            reader
-                .set_reference(ref_path)
-                .expect("Failed to set reference");
-        }
+    if bam_path.ends_with(".cram")
+        && let Some(ref_path) = reference
+    {
+        reader
+            .set_reference(ref_path)
+            .expect("Failed to set reference");
     }
 
     let mut batch = Vec::with_capacity(BATCH_SIZE);

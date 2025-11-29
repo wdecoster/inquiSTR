@@ -1,12 +1,13 @@
 use human_sort::compare as human_compare;
 use log::{error, warn};
-use rust_htslib::bam::ext::BamRecordExtensions;
 use rust_htslib::bam::Read;
+use rust_htslib::bam::ext::BamRecordExtensions;
 use std::collections::HashMap;
 use std::sync::Mutex;
 
 use crate::bam_utils::{get_bam_reader, get_bam_reader_with_validation, is_accidental_2d};
-use crate::call::{median_str_length, Call, Genotype};
+use crate::call::{Call, Genotype, median_str_length};
+use crate::errors::{InquiSTRError, InquiSTRResult};
 use crate::repeats::RepeatInterval;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -110,7 +111,7 @@ pub fn process_batch_worker(
     bamp: &String,
     reference: &Option<String>,
     genotype: crate::call::GenotypeConfig,
-) -> Vec<Genotype> {
+) -> InquiSTRResult<Vec<Genotype>> {
     // Serialize BAM reader creation and fetch to prevent concurrent htslib index operations
     // This prevents segfaults in cram_index_free when multiple threads open the same CRAM
     // On the first batch (if not unphased), also validate phasing using the same reader
@@ -122,9 +123,9 @@ pub fn process_batch_worker(
 
         if need_validation {
             PHASING_VALIDATED.store(true, Ordering::Relaxed);
-            get_bam_reader_with_validation(bamp, reference)
+            get_bam_reader_with_validation(bamp, reference)?
         } else {
-            get_bam_reader(bamp, reference)
+            get_bam_reader(bamp, reference)?
         }
     };
     let mut results = Vec::new();
@@ -138,7 +139,7 @@ pub fn process_batch_worker(
             Some(t) => t,
             None => {
                 warn!("Chromosome {} not found in BAM header", batch.chromosome);
-                return results;
+                return Ok(results);
             }
         };
 
@@ -147,10 +148,10 @@ pub fn process_batch_worker(
 
     if let Err(e) = fetch_result {
         warn!(
-            "Failed to fetch batch region {}:{}-{}: {}",
+            "Warning: Failed to fetch region {}:{}-{}: {}",
             batch.chromosome, batch.start, batch.end, e
         );
-        return results;
+        return Ok(results);
     }
 
     // Smart overlap filtering: only store reads that intersect with STR targets
@@ -202,11 +203,21 @@ pub fn process_batch_worker(
             Err(e) => {
                 let error_str = e.to_string();
                 if error_str.contains("CRC32 failure") || error_str.contains("truncated record") {
-                    error!("CRAM format error in batch {}: {}. This usually indicates that the reference genome doesn't match the CRAM file or CRAM index is corrupted.", batch.chromosome, error_str);
+                    error!(
+                        "CRAM format error in batch {}: {}. This usually indicates that the reference genome doesn't match the CRAM file or CRAM index is corrupted.",
+                        batch.chromosome, error_str
+                    );
+                    return Err(InquiSTRError::new(format!(
+                        "CRAM format error in batch {}: {}. This usually indicates that the reference genome doesn't match the CRAM file or CRAM index is corrupted.",
+                        batch.chromosome, error_str
+                    )));
                 } else {
                     error!("Error reading BAM record in batch {}: {}", batch.chromosome, e);
+                    return Err(InquiSTRError::new(format!(
+                        "Error reading BAM record in batch {}: {}",
+                        batch.chromosome, e
+                    )));
                 }
-                std::process::exit(1);
             }
         }
     }
@@ -228,7 +239,7 @@ pub fn process_batch_worker(
         }
     }
 
-    results
+    Ok(results)
 }
 
 /// Memory-efficient read information - stores pre-computed STR calls instead of full BAM record

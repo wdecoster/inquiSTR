@@ -116,7 +116,11 @@ fn combine_str_files(calls: Vec<PathBuf>, _actual_threads: usize) {
             eprintln!(
                 "Error: Cannot combine multiple combined files together.\nFound {} combined files: {}",
                 combined_files.len(),
-                combined_files.iter().map(|f| f.display().to_string()).collect::<Vec<_>>().join(", ")
+                combined_files
+                    .iter()
+                    .map(|f| f.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
             );
             eprintln!(
                 "\nTo merge these cohorts, you can add individual samples to one combined file:"

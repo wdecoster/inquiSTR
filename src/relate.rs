@@ -128,11 +128,11 @@ fn parse_combined_file(combined: &std::path::Path) -> (GenotypeMatrix, Vec<Strin
     let mut seen_samples = std::collections::HashSet::new();
 
     for field in header_fields.iter().skip(3) {
-        if let Some(sample) = field.strip_suffix("_H1") {
-            if !seen_samples.contains(sample) {
-                sample_names.push(sample.to_string());
-                seen_samples.insert(sample.to_string());
-            }
+        if let Some(sample) = field.strip_suffix("_H1")
+            && !seen_samples.contains(sample)
+        {
+            sample_names.push(sample.to_string());
+            seen_samples.insert(sample.to_string());
         }
     }
 

@@ -67,6 +67,10 @@ struct BatchCommonArgs {
     /// Show what would be processed without actually running
     #[clap(long, value_parser)]
     dry_run: bool,
+
+    /// Continue processing even if some samples fail (by default, exits with error if any sample fails)
+    #[clap(long, value_parser)]
+    keep_going: bool,
 }
 
 /// Mode selection for batch processing
@@ -141,6 +145,7 @@ pub mod batch_process;
 pub mod benchmark;
 pub mod call;
 pub mod combine;
+pub mod errors;
 pub mod filetype;
 pub mod filter;
 pub mod histogram;
@@ -555,23 +560,29 @@ fn main() {
             max_locus,
             batch_size,
             vcf,
-        } => call::genotype_repeats(
-            bam,
-            call::TargetConfig { region, region_file, preset, max_locus },
-            call::GenotypeConfig { minlen, support, unphased },
-            call::ProcessingConfig { threads, batch_size_kb: batch_size, output_vcf: vcf },
-            sample_name,
-            reference,
-            true, // show_progress
-        ),
+        } => {
+            if let Err(e) = call::genotype_repeats(
+                bam,
+                call::TargetConfig { region, region_file, preset, max_locus },
+                call::GenotypeConfig { minlen, support, unphased },
+                call::ProcessingConfig { threads, batch_size_kb: batch_size, output_vcf: vcf },
+                sample_name,
+                reference,
+                true, // show_progress
+            ) {
+                eprintln!("ERROR: {}", e.message);
+                std::process::exit(1);
+            }
+        }
         Commands::Batch { common, mode, str_args, unmapped_args } => {
-            let config = batch_process::BatchConfig {
+            let batch_config = batch_process::BatchConfig {
                 manifest: common.manifest,
                 output: common.output,
                 save_individual: common.save_individual,
                 tmpdir: common.tmpdir,
                 resume: common.resume,
                 dry_run: common.dry_run,
+                keep_going: common.keep_going,
                 reference: common.reference,
                 parallel_samples: common.parallel_samples,
             };
@@ -610,7 +621,7 @@ fn main() {
                 }
             };
 
-            batch_process::batch_process(config, batch_mode);
+            batch_process::batch_process(batch_config, batch_mode);
         }
         Commands::Combine { calls, threads } => {
             combine::combine(calls, threads);
@@ -682,7 +693,7 @@ fn main() {
             target_kmer,
             combine_revcomp,
         } => {
-            unmapped::count_unmapped_kmers(
+            if let Err(e) = unmapped::count_unmapped_kmers(
                 bam,
                 klength,
                 sample_name,
@@ -691,7 +702,10 @@ fn main() {
                 target_kmer,
                 combine_revcomp,
                 true, // show_progress
-            );
+            ) {
+                eprintln!("ERROR: {}", e.message);
+                std::process::exit(1);
+            }
         }
         Commands::Benchmark {
             inquistr,

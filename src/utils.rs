@@ -111,12 +111,16 @@ pub fn skip_metadata_lines(
 pub fn process_region(reg: String) -> Result<(String, u32, u32), Box<dyn std::error::Error>> {
     let reg = reg.replace(',', "");
     if reg.matches(':').count() != 1 {
-        eprintln!("ERROR: Invalid region format. Expected format: 'chr:start-end' (e.g., 'chr1:1000-2000')");
+        eprintln!(
+            "ERROR: Invalid region format. Expected format: 'chr:start-end' (e.g., 'chr1:1000-2000')"
+        );
         eprintln!("Got: {}", reg);
         std::process::exit(1);
     }
     if reg.matches('-').count() != 1 {
-        eprintln!("ERROR: Invalid region format. Could not find exactly one '-' character separating start and end");
+        eprintln!(
+            "ERROR: Invalid region format. Could not find exactly one '-' character separating start and end"
+        );
         eprintln!("Expected format: 'chr:start-end' (e.g., 'chr1:1000-2000')");
         eprintln!("Got: {}", reg);
         std::process::exit(1);

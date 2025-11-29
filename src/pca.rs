@@ -1389,16 +1389,16 @@ pub fn pca(
     let file_type = crate::filetype::read_file_type_metadata(&combined);
     let is_kmer_file = matches!(file_type, Some(crate::filetype::FileType::CombinedKmer));
 
-    if let Some(ref ftype) = file_type {
-        if !matches!(
+    if let Some(ref ftype) = file_type
+        && !matches!(
             ftype,
             crate::filetype::FileType::CombinedCall | crate::filetype::FileType::CombinedKmer
-        ) {
-            eprintln!("ERROR: PCA requires a combined file (combined_call or combined_kmer).");
-            eprintln!("The provided file appears to be: {:?}", ftype);
-            eprintln!("\nPlease use 'inquiSTR combine' to merge individual sample files first.");
-            std::process::exit(1);
-        }
+        )
+    {
+        eprintln!("ERROR: PCA requires a combined file (combined_call or combined_kmer).");
+        eprintln!("The provided file appears to be: {:?}", ftype);
+        eprintln!("\nPlease use 'inquiSTR combine' to merge individual sample files first.");
+        std::process::exit(1);
     }
 
     let data_type = if is_kmer_file {
@@ -1432,12 +1432,18 @@ pub fn pca(
     let max_features = if estimated_features > 100_000 {
         // For massive datasets (>100k loci), be very aggressive
         let suggested_features = 3000;
-        println!("Massive dataset detected ({} loci). Using aggressive feature selection to {} most informative loci...", estimated_features, suggested_features);
+        println!(
+            "Massive dataset detected ({} loci). Using aggressive feature selection to {} most informative loci...",
+            estimated_features, suggested_features
+        );
         Some(suggested_features)
     } else if estimated_features > 10_000 {
         // For very large datasets (>10k loci), use intelligent selection
         let suggested_features = 5000;
-        println!("Large dataset detected ({} loci). Using memory-efficient parsing with feature selection to {} loci...", estimated_features, suggested_features);
+        println!(
+            "Large dataset detected ({} loci). Using memory-efficient parsing with feature selection to {} loci...",
+            estimated_features, suggested_features
+        );
         Some(suggested_features)
     } else if estimated_features > 1000 {
         // For medium datasets, use moderate selection

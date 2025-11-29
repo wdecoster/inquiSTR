@@ -1,5 +1,5 @@
 use crate::locus_search::{
-    extract_clean_sample_names, find_locus, LocusSearchConfig, OverlapStrategy,
+    LocusSearchConfig, OverlapStrategy, extract_clean_sample_names, find_locus,
 };
 use plotly::{Histogram, Plot};
 use std::collections::HashMap;
@@ -22,16 +22,16 @@ pub fn plot(
     }
 
     // Validate that input is a combined file, not individual
-    if let Some(file_type) = crate::filetype::read_file_type_metadata(&combined) {
-        if !matches!(
+    if let Some(file_type) = crate::filetype::read_file_type_metadata(&combined)
+        && !matches!(
             file_type,
             crate::filetype::FileType::CombinedCall | crate::filetype::FileType::CombinedKmer
-        ) {
-            eprintln!("ERROR: Plot requires a combined file (combined_call or combined_kmer).");
-            eprintln!("The provided file appears to be: {:?}", file_type);
-            eprintln!("\nPlease use 'inquiSTR combine' to merge individual sample files first.");
-            std::process::exit(1);
-        }
+        )
+    {
+        eprintln!("ERROR: Plot requires a combined file (combined_call or combined_kmer).");
+        eprintln!("The provided file appears to be: {:?}", file_type);
+        eprintln!("\nPlease use 'inquiSTR combine' to merge individual sample files first.");
+        std::process::exit(1);
     }
 
     // Read header to get sample names

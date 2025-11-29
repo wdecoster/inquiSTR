@@ -1,6 +1,7 @@
 use hts_sys;
 use log::{debug, error, warn};
 
+use crate::errors::{InquiSTRError, InquiSTRResult};
 use rust_htslib::bam::ext::BamRecordExtensions;
 use rust_htslib::bam::record::Aux;
 use rust_htslib::{bam, bam::Read};
@@ -13,18 +14,18 @@ use url::Url;
 pub fn get_chrom_lengths_from_bam_header(
     bam: String,
     reference: &Option<String>,
-) -> HashMap<String, u64> {
+) -> InquiSTRResult<HashMap<String, u64>> {
     // Prefer FAI for CRAM to avoid opening CRAM before main processing
     if bam.ends_with(".cram") {
         if let Some(ref_path) = reference {
-            if let Some(map) = read_fai_lengths(ref_path) {
-                if !map.is_empty() {
-                    debug!(
-                        "get_chrom_lengths_from_bam_header: using reference FAI for chrom lengths ({} entries)",
-                        map.len()
-                    );
-                    return map;
-                }
+            if let Some(map) = read_fai_lengths(ref_path)
+                && !map.is_empty()
+            {
+                debug!(
+                    "get_chrom_lengths_from_bam_header: using reference FAI for chrom lengths ({} entries)",
+                    map.len()
+                );
+                return Ok(map);
             }
             warn!(
                 "Reference FAI not found or empty for '{}', falling back to CRAM header read",
@@ -36,7 +37,7 @@ pub fn get_chrom_lengths_from_bam_header(
     }
 
     debug!("get_chrom_lengths_from_bam_header: opening file to read header");
-    let reader = get_bam_reader(&bam, reference);
+    let reader = get_bam_reader(&bam, reference)?;
     let header = bam::Header::from_template(reader.header());
 
     let mut chrom_lengts = HashMap::new();
@@ -58,7 +59,7 @@ pub fn get_chrom_lengths_from_bam_header(
         "get_chrom_lengths_from_bam_header: completed successfully, found {} chromosomes",
         chrom_lengts.len()
     );
-    chrom_lengts
+    Ok(chrom_lengts)
 }
 
 /// Read chromosome lengths from a .fai next to the reference FASTA
@@ -87,10 +88,10 @@ fn read_fai_lengths(reference_fasta: &str) -> Option<HashMap<String, u64>> {
             continue;
         }
         let mut fields = line.split('\t');
-        if let (Some(name), Some(len_str)) = (fields.next(), fields.next()) {
-            if let Ok(len) = len_str.parse::<u64>() {
-                map.insert(name.to_string(), len);
-            }
+        if let (Some(name), Some(len_str)) = (fields.next(), fields.next())
+            && let Ok(len) = len_str.parse::<u64>()
+        {
+            map.insert(name.to_string(), len);
         }
     }
     Some(map)
@@ -131,20 +132,16 @@ fn cleanup_old_cache_files(cache_dir: &PathBuf, max_age_days: u64) {
     let mut removed_count = 0;
 
     for entry in entries.flatten() {
-        if let Ok(metadata) = entry.metadata() {
-            if metadata.is_file() {
-                if let Ok(modified) = metadata.modified() {
-                    if let Ok(modified_duration) = modified.duration_since(UNIX_EPOCH) {
-                        let age_seconds = current_time.saturating_sub(modified_duration.as_secs());
+        if let Ok(metadata) = entry.metadata()
+            && metadata.is_file()
+            && let Ok(modified) = metadata.modified()
+            && let Ok(modified_duration) = modified.duration_since(UNIX_EPOCH)
+        {
+            let age_seconds = current_time.saturating_sub(modified_duration.as_secs());
 
-                        if age_seconds > max_age_seconds
-                            && std::fs::remove_file(entry.path()).is_ok()
-                        {
-                            removed_count += 1;
-                            debug!("Removed old cache file: {:?}", entry.path());
-                        }
-                    }
-                }
+            if age_seconds > max_age_seconds && std::fs::remove_file(entry.path()).is_ok() {
+                removed_count += 1;
+                debug!("Removed old cache file: {:?}", entry.path());
             }
         }
     }
@@ -175,42 +172,48 @@ pub fn setup_index_caching(bam_path: &str) {
     }
 
     // Only set up remote caching if the path is a URL
-    if let Ok(url) = Url::parse(bam_path) {
-        if ["http", "https", "ftp", "s3"].contains(&url.scheme()) {
-            debug!(
-                "Remote file detected - index will be downloaded and cached in current directory"
-            );
+    if let Ok(url) = Url::parse(bam_path)
+        && ["http", "https", "ftp", "s3"].contains(&url.scheme())
+    {
+        debug!("Remote file detected - index will be downloaded and cached in current directory");
 
-            // Set up cache directory for reference sequences (CRAM files)
-            let cache_dir = if let Ok(home) = env::var("HOME") {
-                PathBuf::from(home).join(".cache").join("inquistr")
-            } else {
-                PathBuf::from(".inquistr_cache")
-            };
+        // Set up cache directory for reference sequences (CRAM files)
+        let cache_dir = if let Ok(home) = env::var("HOME") {
+            PathBuf::from(home).join(".cache").join("inquistr")
+        } else {
+            PathBuf::from(".inquistr_cache")
+        };
 
-            // Create the cache directory if it doesn't exist
-            if let Err(e) = std::fs::create_dir_all(&cache_dir) {
-                warn!("Failed to create cache directory: {}", e);
-                return;
-            }
+        // Create the cache directory if it doesn't exist
+        if let Err(e) = std::fs::create_dir_all(&cache_dir) {
+            warn!("Failed to create cache directory: {}", e);
+            return;
+        }
 
-            // Clean up old cache files (older than 30 days by default)
-            let max_age_days = env::var("INQUISTR_CACHE_MAX_AGE_DAYS")
-                .ok()
-                .and_then(|s| s.parse::<u64>().ok())
-                .unwrap_or(30);
+        // Clean up old cache files (older than 30 days by default)
+        let max_age_days = env::var("INQUISTR_CACHE_MAX_AGE_DAYS")
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(30);
 
-            cleanup_old_cache_files(&cache_dir, max_age_days);
+        cleanup_old_cache_files(&cache_dir, max_age_days);
 
-            let cache_path = cache_dir.to_string_lossy().to_string();
+        let cache_path = cache_dir.to_string_lossy().to_string();
 
-            // Set htslib caching environment variables for CRAM reference sequences
-            if env::var("HTS_REF_CACHE").is_err() {
+        // Set htslib caching environment variables for CRAM reference sequences
+        // SAFETY: These set_var calls are safe because:
+        // 1. They occur during initialization before any parallel processing
+        // 2. These variables are only read by htslib, not by other Rust threads
+        // 3. We check if they're already set to avoid unnecessary modifications
+        if env::var("HTS_REF_CACHE").is_err() {
+            unsafe {
                 env::set_var("HTS_REF_CACHE", &cache_path);
-                debug!("Set HTS_REF_CACHE to: {} (for CRAM reference caching)", cache_path);
             }
+            debug!("Set HTS_REF_CACHE to: {} (for CRAM reference caching)", cache_path);
+        }
 
-            if env::var("REF_CACHE").is_err() {
+        if env::var("REF_CACHE").is_err() {
+            unsafe {
                 env::set_var("REF_CACHE", &cache_path);
             }
         }
@@ -238,7 +241,13 @@ fn setup_ssl_certificates() {
     // Try each path in order
     for path in possible_paths {
         if std::path::Path::new(path).exists() {
-            env::set_var("CURL_CA_BUNDLE", path);
+            // SAFETY: This set_var call is safe because:
+            // 1. It occurs during initialization, before parallel processing
+            // 2. The variable is only used by libcurl for SSL certificate validation
+            // 3. It's set once and not modified afterward
+            unsafe {
+                env::set_var("CURL_CA_BUNDLE", path);
+            }
             return;
         }
     }
@@ -254,7 +263,10 @@ fn setup_ssl_certificates() {
 /// Create a BAM reader from path or URL with appropriate configuration
 /// Note: This returns IndexedReader for compatibility with existing code, but we should
 /// consider using Reader for sequential access
-pub fn get_bam_reader(bamp: &String, reference: &Option<String>) -> bam::IndexedReader {
+pub fn get_bam_reader(
+    bamp: &String,
+    reference: &Option<String>,
+) -> InquiSTRResult<bam::IndexedReader> {
     get_bam_reader_internal(bamp, reference, false)
 }
 
@@ -262,7 +274,7 @@ pub fn get_bam_reader(bamp: &String, reference: &Option<String>) -> bam::Indexed
 pub fn get_bam_reader_with_validation(
     bamp: &String,
     reference: &Option<String>,
-) -> bam::IndexedReader {
+) -> InquiSTRResult<bam::IndexedReader> {
     get_bam_reader_internal(bamp, reference, true)
 }
 
@@ -271,7 +283,7 @@ fn get_bam_reader_internal(
     bamp: &String,
     reference: &Option<String>,
     validate_phasing: bool,
-) -> bam::IndexedReader {
+) -> InquiSTRResult<bam::IndexedReader> {
     debug!("Opening BAM/CRAM file: {}", bamp);
 
     // Set up index caching before opening the file
@@ -281,15 +293,15 @@ fn get_bam_reader_internal(
         if bamp.starts_with("s3") || bamp.starts_with("https://") || bamp.starts_with("ftp://") {
             setup_ssl_certificates();
             bam::IndexedReader::from_url(&Url::parse(bamp.as_str()).expect("Failed to parse URL"))
-                .unwrap_or_else(|err| {
-                    error!("Error opening remote BAM file: {err}");
-                    std::process::exit(1);
-                })
+                .map_err(|err| {
+                error!("Error opening remote BAM file: {err}");
+                InquiSTRError::new(format!("Error opening remote BAM file: {err}"))
+            })?
         } else {
-            bam::IndexedReader::from_path(bamp).unwrap_or_else(|err| {
+            bam::IndexedReader::from_path(bamp).map_err(|err| {
                 error!("Error opening local BAM file: {err}");
-                std::process::exit(1);
-            })
+                InquiSTRError::new(format!("Error opening local BAM file: {err}"))
+            })?
         };
     if bamp.ends_with(".cram") {
         debug!("Detected CRAM file, setting CRAM options...");
@@ -308,14 +320,16 @@ fn get_bam_reader_internal(
             let ref_path = reference.as_ref().unwrap();
             debug!("Setting CRAM reference to: {}", ref_path);
             bam.set_reference(ref_path)
-                .unwrap_or_else(|err| {
+                .map_err(|err| {
                     error!("Failed to set CRAM reference '{}': {}. This usually means the reference genome doesn't match the CRAM file.", ref_path, err);
-                    std::process::exit(1);
-                });
+                    InquiSTRError::new(format!("Failed to set CRAM reference '{}': {}. This usually means the reference genome doesn't match the CRAM file.", ref_path, err))
+                })?;
             debug!("CRAM reference set successfully");
         } else {
-            error!("No reference provided for CRAM file. Use --reference option to specify the reference genome.");
-            std::process::exit(1);
+            error!(
+                "No reference provided for CRAM file. Use --reference option to specify the reference genome."
+            );
+            return Err(InquiSTRError::new("No reference provided for CRAM file. Use --reference option to specify the reference genome.".to_string()));
         }
     }
 
@@ -327,13 +341,13 @@ fn get_bam_reader_internal(
         debug!("About to call validate_phasing_on_reader");
         if let Err(e) = validate_phasing_on_reader(&mut bam, 10000) {
             error!("ERROR: {}", e);
-            std::process::exit(1);
+            return Err(InquiSTRError::new(e));
         }
         debug!("validate_phasing_on_reader completed successfully");
     }
 
     debug!("Returning BAM reader from get_bam_reader_internal");
-    bam
+    Ok(bam)
 }
 
 /// Validate phasing using an existing IndexedReader (avoids opening file twice)
@@ -388,8 +402,12 @@ fn validate_phasing_on_reader(
 
                             // Check for HP tag
                             if record.aux(b"HP").is_ok() {
-                                debug!("Found HP tag in read {} on {} (total reads checked: {}), validation successful", 
-                                       chrom_reads, chrom, reads_checked + 1);
+                                debug!(
+                                    "Found HP tag in read {} on {} (total reads checked: {}), validation successful",
+                                    chrom_reads,
+                                    chrom,
+                                    reads_checked + 1
+                                );
                                 return Ok(());
                             }
 
@@ -481,7 +499,9 @@ fn get_sequential_bam_reader(bamp: &String, reference: &Option<String>) -> bam::
                 });
             debug!("CRAM reference set successfully for sequential reader");
         } else {
-            error!("No reference provided for CRAM file. Use --reference option to specify the reference genome.");
+            error!(
+                "No reference provided for CRAM file. Use --reference option to specify the reference genome."
+            );
             std::process::exit(1);
         }
     }
@@ -517,7 +537,8 @@ pub fn validate_phasing_early(
 
     // Wrap reader creation and usage in a scope to ensure it's dropped before
     // the main processing opens an IndexedReader to the same file
-    let validation_result = {
+
+    {
         let mut seq_bam = get_sequential_bam_reader(&bam_path_string, reference);
         debug!("Sequential BAM/CRAM reader opened successfully");
 
@@ -558,7 +579,10 @@ pub fn validate_phasing_early(
                     let error_str = e.to_string();
                     if error_str.contains("CRC32 failure") || error_str.contains("truncated record")
                     {
-                        error!("CRAM format error detected: {}. This usually indicates that the reference genome doesn't match the CRAM file. Please verify that you're using the correct reference genome.", error_str);
+                        error!(
+                            "CRAM format error detected: {}. This usually indicates that the reference genome doesn't match the CRAM file. Please verify that you're using the correct reference genome.",
+                            error_str
+                        );
                         std::process::exit(1);
                     }
                     warn!("Error reading record during phasing validation: {}", e);
@@ -569,9 +593,7 @@ pub fn validate_phasing_early(
 
         result
         // seq_bam is explicitly dropped here when this scope ends
-    };
-
-    validation_result
+    }
 }
 
 /// Checks if read alignment might be an accidental 2D read (ONT artefact)
@@ -710,37 +732,37 @@ pub fn clean_cache(dry_run: bool, all: bool, max_age_days: u64) {
     let mut removed_size = 0u64;
 
     for entry in entries.flatten() {
-        if let Ok(metadata) = entry.metadata() {
-            if metadata.is_file() {
-                let file_size = metadata.len();
-                total_size += file_size;
-                total_files += 1;
+        if let Ok(metadata) = entry.metadata()
+            && metadata.is_file()
+        {
+            let file_size = metadata.len();
+            total_size += file_size;
+            total_files += 1;
 
-                let should_delete = if all {
-                    true
-                } else if let Ok(modified) = metadata.modified() {
-                    if let Ok(modified_duration) = modified.duration_since(UNIX_EPOCH) {
-                        let age_seconds = current_time.saturating_sub(modified_duration.as_secs());
-                        age_seconds > max_age_seconds
-                    } else {
-                        false
-                    }
+            let should_delete = if all {
+                true
+            } else if let Ok(modified) = metadata.modified() {
+                if let Ok(modified_duration) = modified.duration_since(UNIX_EPOCH) {
+                    let age_seconds = current_time.saturating_sub(modified_duration.as_secs());
+                    age_seconds > max_age_seconds
                 } else {
                     false
-                };
+                }
+            } else {
+                false
+            };
 
-                if should_delete {
-                    if dry_run {
-                        println!(
-                            "  [DRY RUN] Would delete: {} ({} bytes)",
-                            entry.path().display(),
-                            file_size
-                        );
-                    } else if std::fs::remove_file(entry.path()).is_ok() {
-                        println!("  Deleted: {} ({} bytes)", entry.path().display(), file_size);
-                        removed_count += 1;
-                        removed_size += file_size;
-                    }
+            if should_delete {
+                if dry_run {
+                    println!(
+                        "  [DRY RUN] Would delete: {} ({} bytes)",
+                        entry.path().display(),
+                        file_size
+                    );
+                } else if std::fs::remove_file(entry.path()).is_ok() {
+                    println!("  Deleted: {} ({} bytes)", entry.path().display(), file_size);
+                    removed_count += 1;
+                    removed_size += file_size;
                 }
             }
         }
@@ -807,7 +829,8 @@ mod tests {
     #[test]
     fn test_get_chrom_lengths_from_bam_header() {
         let bam = String::from("test-data/small-test.bam");
-        let chrom_lengths = get_chrom_lengths_from_bam_header(bam, &None);
+        let chrom_lengths = get_chrom_lengths_from_bam_header(bam, &None)
+            .expect("Failed to get chromosome lengths");
         assert_eq!(chrom_lengths.get("chr7").unwrap(), &159345973);
     }
 }

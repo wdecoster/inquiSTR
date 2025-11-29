@@ -1,4 +1,4 @@
-use crate::locus_search::{find_locus, LocusSearchConfig, OverlapStrategy};
+use crate::locus_search::{LocusSearchConfig, OverlapStrategy, find_locus};
 use histo_fp::Histogram;
 use std::path::PathBuf;
 
@@ -9,18 +9,16 @@ pub fn histogram(combined: PathBuf, region: String) {
     }
 
     // Validate that input is a combined file, not individual
-    if let Some(file_type) = crate::filetype::read_file_type_metadata(&combined) {
-        if !matches!(
+    if let Some(file_type) = crate::filetype::read_file_type_metadata(&combined)
+        && !matches!(
             file_type,
             crate::filetype::FileType::CombinedCall | crate::filetype::FileType::CombinedKmer
-        ) {
-            eprintln!(
-                "ERROR: Histogram requires a combined file (combined_call or combined_kmer)."
-            );
-            eprintln!("The provided file appears to be: {:?}", file_type);
-            eprintln!("\nPlease use 'inquiSTR combine' to merge individual sample files first.");
-            std::process::exit(1);
-        }
+        )
+    {
+        eprintln!("ERROR: Histogram requires a combined file (combined_call or combined_kmer).");
+        eprintln!("The provided file appears to be: {:?}", file_type);
+        eprintln!("\nPlease use 'inquiSTR combine' to merge individual sample files first.");
+        std::process::exit(1);
     }
 
     // Use the new locus search utility with containment strategy (original behavior)
