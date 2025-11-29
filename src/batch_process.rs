@@ -602,9 +602,7 @@ pub fn batch_process(config: BatchConfig, mode: BatchMode) {
         // Also check for existing individual files
         for sample in &samples {
             let individual_file = individual_dir.join(format!("{}.inq", sample.sample_name));
-            if individual_file.exists()
-                && !completed_samples.contains(&sample.sample_name)
-            {
+            if individual_file.exists() && !completed_samples.contains(&sample.sample_name) {
                 completed_samples.push(sample.sample_name.clone());
                 samples_with_individual_files += 1;
                 eprintln!("  Found existing file: {}", individual_file.display());
