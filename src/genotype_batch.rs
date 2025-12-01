@@ -1,0 +1,570 @@
+use log::{error, warn};
+use rust_htslib::bam::Read;
+use rust_htslib::bam::ext::BamRecordExtensions;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use crate::bam_utils::{get_bam_reader, get_bam_reader_with_validation, is_accidental_2d};
+use crate::batching::Batch;
+use crate::call::Genotype;
+use crate::errors::{InquiSTRError, InquiSTRResult};
+use crate::repeats::RepeatInterval;
+
+// Global mutex to serialize BAM/CRAM reader creation and fetch operations
+// This prevents concurrent htslib index operations that can cause segfaults in cram_index_free
+static BAM_READER_LOCK: Mutex<()> = Mutex::new(());
+
+// Track whether phasing validation has been performed (only needed once, on first batch)
+static PHASING_VALIDATED: AtomicBool = AtomicBool::new(false);
+
+/// Represents a STR call from a single read
+#[derive(Clone, Copy)] // Make it Copy for better performance
+pub enum Call {
+    Span(i64),
+    Clip(i64),
+}
+
+impl Call {
+    /// Extract the numeric STR length difference regardless of call type
+    ///
+    /// Returns the signed length difference from reference for both
+    /// spanning reads (Call::Span) and soft-clipped reads (Call::Clip).
+    #[inline]
+    pub fn value(&self) -> i64 {
+        match self {
+            Call::Span(v) | Call::Clip(v) => *v,
+        }
+    }
+}
+
+/// Calculate the median STR length difference from reference genome
+///
+/// Spanning reads (Call::Span) are preferred over soft-clipped reads (Call::Clip)
+/// for more accurate genotyping. The algorithm:
+///
+/// 1. If fewer than `support` calls, return NaN (insufficient data)
+/// 2. Separate calls into spanning and clipped groups
+/// 3. If ≥ `support` spanning reads exist, use only those for median
+/// 4. Otherwise, use all spanning reads + largest soft-clips to reach `support` threshold
+/// 5. Return median of the selected reads
+///
+/// # Arguments
+/// * `array` - Array of STR calls (sorted or unsorted)
+/// * `support` - Minimum number of reads required
+///
+/// # Returns
+/// Median STR length difference from reference, or NaN if insufficient support
+pub fn median_str_length(array: &[Call], support: usize) -> f64 {
+    if array.len() < support {
+        return f64::NAN;
+    }
+
+    // Separate spanning and clipped reads
+    // Pre-size to actual array length since we'll likely use most/all of them
+    let mut spanning = Vec::with_capacity(array.len());
+    let mut clipped = Vec::with_capacity(array.len());
+
+    for call in array {
+        match call {
+            Call::Span(v) => spanning.push(*v),
+            Call::Clip(v) => clipped.push(*v),
+        }
+    }
+
+    // Use spanning reads if we have enough, otherwise supplement with largest clips
+    let mut values = if spanning.len() >= support {
+        spanning
+    } else {
+        // Sort clipped from large to small to get the largest clips
+        clipped.sort_unstable_by(|a, b| b.cmp(a));
+        spanning.extend_from_slice(&clipped[0..(support - spanning.len()).min(clipped.len())]);
+        spanning
+    };
+
+    values.sort_unstable();
+
+    // Calculate median
+    if (values.len() % 2) == 0 {
+        let ind_left = values.len() / 2 - 1;
+        let ind_right = values.len() / 2;
+        (values[ind_left] + values[ind_right]) as f64 / 2.0
+    } else {
+        values[values.len() / 2] as f64
+    }
+}
+
+/// Memory-efficient read information - stores pre-computed STR calls instead of full BAM record
+#[derive(Clone)]
+struct ReadInfo {
+    hp_tag: Option<u8>,
+    // Instead of storing the full record, store pre-computed STR calls for overlapping targets
+    str_calls: Vec<(u32, u32, Call)>, // (target_start, target_end, str_call)
+}
+
+impl ReadInfo {
+    /// Create ReadInfo by pre-computing STR calls for all overlapping targets in the batch
+    ///
+    /// **Key optimization**: This function computes the STR call (insertions/deletions from CIGAR)
+    /// for EVERY target in the batch that overlaps with this read. These pre-computed calls are
+    /// stored and later retrieved by `get_str_call_for_region()`, eliminating redundant CIGAR
+    /// parsing when the same read is processed for multiple nearby STR targets.
+    ///
+    /// The function:
+    /// 1. Extracts the HP (haplotype) tag if present for phased genotyping
+    /// 2. For each target interval that overlaps the read's aligned region:
+    ///    - Computes the STR call from the CIGAR string
+    ///    - Stores the call with the target coordinates for later retrieval
+    ///
+    /// Overlap detection uses aligned coordinates, so soft-clipped reads are included
+    /// as long as their aligned portion overlaps the target region.
+    ///
+    /// # Arguments
+    /// * `record` - BAM record to process
+    /// * `minlen` - Minimum indel/clip length to count as STR variation
+    /// * `target_intervals` - Padded target intervals (start, end, batch_index) that may overlap
+    /// * `batch` - Original repeat coordinates for calculating analysis regions
+    ///
+    /// # Returns
+    /// ReadInfo with HP tag and pre-computed STR calls for all overlapping targets
+    fn from_record_with_targets(
+        record: rust_htslib::bam::Record,
+        minlen: u32,
+        target_intervals: &[(u32, u32, usize)], // (start, end, batch_index)
+        batch: &[RepeatInterval],               // Access to original repeat coordinates
+    ) -> Self {
+        // Extract HP tag if present
+        let hp_tag = record.aux(b"HP").ok().and_then(|aux| match aux {
+            rust_htslib::bam::record::Aux::U8(val) => Some(val),
+            rust_htslib::bam::record::Aux::I32(val) if (0..=255).contains(&val) => Some(val as u8),
+            _ => None,
+        });
+
+        let read_start = record.reference_start() as u32;
+        let read_end = record.reference_end() as u32;
+
+        // Pre-compute STR calls for all overlapping targets
+        let mut str_calls = Vec::new();
+        for &(target_start, target_end, batch_idx) in target_intervals {
+            // Get any overlap with target
+            if read_start < target_end && read_end > target_start {
+                // Get the original repeat coordinates (without padding)
+                let original_repeat = &batch[batch_idx];
+                let original_start = original_repeat.start;
+                let original_end = original_repeat.end;
+
+                // Calculate STR call using the original coordinates + analysis padding
+                let analysis_start = original_start.saturating_sub(10);
+                let analysis_end = original_end + 10;
+                let str_call = Self::calculate_str_call_for_region_static(
+                    &record,
+                    minlen,
+                    analysis_start,
+                    analysis_end,
+                );
+
+                // Store with original coordinates for later matching
+                str_calls.push((analysis_start, analysis_end, str_call));
+            }
+        }
+
+        ReadInfo { hp_tag, str_calls }
+    }
+
+    /// Retrieve pre-computed STR call for a specific target region
+    ///
+    /// Looks up the STR call that was computed during `from_record_with_targets()`
+    /// for the given target coordinates. Returns `None` if this read doesn't overlap
+    /// the specified target (overlap was checked during ReadInfo creation).
+    ///
+    /// # Arguments
+    /// * `target_start` - Start coordinate of the target region (with 10bp padding)
+    /// * `target_end` - End coordinate of the target region (with 10bp padding)
+    ///
+    /// # Returns
+    /// The pre-computed STR call if this read overlaps the target, None otherwise
+    #[inline]
+    fn get_str_call_for_region(&self, target_start: u32, target_end: u32) -> Option<Call> {
+        self.str_calls
+            .iter()
+            .find(|(start, end, _)| *start == target_start && *end == target_end)
+            .map(|(_, _, call)| *call)
+    }
+
+    /// Calculate STR call from BAM record by analyzing CIGAR string
+    ///
+    /// Walks through the CIGAR string to identify insertions, deletions, and soft-clips
+    /// within the specified target region that exceed the minimum length threshold.
+    ///
+    /// The algorithm:
+    /// - Insertions (I) and soft-clips (S) add to the call value (expansions)
+    /// - Deletions (D) subtract from the call value (contractions)
+    /// - Only events occurring within the target region and exceeding minlen are counted
+    /// - Returns `Call::Clip` if soft-clips contributed, `Call::Span` otherwise
+    ///
+    /// # Arguments
+    /// * `record` - BAM record containing CIGAR string
+    /// * `minlen` - Minimum length for indels/clips to be counted
+    /// * `start` - Start of target region
+    /// * `end` - End of target region
+    ///
+    /// # Returns
+    /// Call::Span or Call::Clip with the computed STR length difference
+    fn calculate_str_call_for_region_static(
+        record: &rust_htslib::bam::Record,
+        minlen: u32,
+        start: u32,
+        end: u32,
+    ) -> Call {
+        let mut call: i64 = 0;
+        let mut reference_position = record.reference_start() as u32;
+        let mut clipped = false;
+
+        for entry in record.cigar().iter() {
+            match entry {
+                rust_htslib::bam::record::Cigar::Match(len)
+                | rust_htslib::bam::record::Cigar::Equal(len)
+                | rust_htslib::bam::record::Cigar::Diff(len) => {
+                    reference_position += *len;
+                }
+                rust_htslib::bam::record::Cigar::Del(len) => {
+                    if *len > minlen && start < reference_position && reference_position < end {
+                        call -= i64::from(*len);
+                    }
+                    reference_position += *len;
+                }
+                rust_htslib::bam::record::Cigar::SoftClip(len) => {
+                    if !is_accidental_2d(record)
+                        && *len > minlen
+                        && start < reference_position
+                        && reference_position < end
+                    {
+                        call += i64::from(*len);
+                        clipped = true;
+                    }
+                }
+                rust_htslib::bam::record::Cigar::Ins(len) => {
+                    if *len > minlen && start < reference_position && reference_position < end {
+                        call += i64::from(*len);
+                    }
+                }
+                rust_htslib::bam::record::Cigar::RefSkip(len) => reference_position += *len,
+                _ => (),
+            }
+        }
+
+        if clipped {
+            Call::Clip(call)
+        } else {
+            Call::Span(call)
+        }
+    }
+}
+
+/// Process a single STR target using pre-computed read information
+///
+/// Uses the lightweight ReadInfo structures (which contain pre-computed STR calls)
+/// to genotype a single STR target. This avoids re-parsing BAM records and CIGAR strings.
+///
+/// Depending on the genotype configuration:
+/// - **Unphased mode**: Splits all reads into two groups and returns median of each
+/// - **Phased mode**: Separates reads by HP tag (1 vs 2) and returns median per haplotype
+///   - Falls back to unphased if insufficient reads in either phase
+///   - Returns NaN if no phased reads found at all
+///
+/// # Arguments
+/// * `read_infos` - Pre-computed read information for all reads in the batch
+/// * `repeat` - The STR target to genotype
+/// * `genotype` - Configuration (minlen, support threshold, phasing)
+///
+/// # Returns
+/// Tuple of (Genotype, found_hp_tags) or error if insufficient read support
+fn process_target_from_read_info(
+    read_infos: &[ReadInfo],
+    repeat: &RepeatInterval,
+    genotype: &crate::call::GenotypeConfig,
+) -> Result<(Genotype, bool), String> {
+    let start_ext = repeat.start.saturating_sub(10);
+    let end_ext = repeat.end + 10;
+
+    if genotype.unphased {
+        let mut calls = Vec::with_capacity(50);
+
+        for read_info in read_infos {
+            // Get pre-computed STR call for this target region
+            if let Some(str_call) = read_info.get_str_call_for_region(start_ext, end_ext) {
+                calls.push(str_call);
+            }
+        }
+
+        if calls.len() < genotype.support {
+            return Err(format!("Insufficient support: {} < {}", calls.len(), genotype.support));
+        }
+
+        calls.sort_unstable_by_key(|call| call.value());
+        let (hap1, hap2) = calls.split_at(calls.len() / 2);
+
+        Ok((
+            Genotype {
+                repeat: repeat.clone(),
+                phase1: median_str_length(hap1, genotype.support),
+                phase2: median_str_length(hap2, genotype.support),
+            },
+            false,
+        )) // unphased mode never has HP tags
+    } else {
+        // Phased processing
+        let mut phase1_calls = Vec::with_capacity(25);
+        let mut phase2_calls = Vec::with_capacity(25);
+        let mut unphased_calls = Vec::with_capacity(10);
+        let mut found_hp_tags = false;
+
+        for read_info in read_infos {
+            // Check for phasing information
+            if let Some(hp_tag) = read_info.hp_tag {
+                found_hp_tags = true;
+
+                // Get pre-computed STR call for this target region
+                if let Some(str_call) = read_info.get_str_call_for_region(start_ext, end_ext) {
+                    match hp_tag {
+                        1 => phase1_calls.push(str_call),
+                        2 => phase2_calls.push(str_call),
+                        _ => unphased_calls.push(str_call),
+                    }
+                }
+            } else {
+                // Get pre-computed STR call for this target region
+                if let Some(str_call) = read_info.get_str_call_for_region(start_ext, end_ext) {
+                    unphased_calls.push(str_call);
+                }
+            }
+        }
+
+        let total_reads = phase1_calls.len() + phase2_calls.len() + unphased_calls.len();
+        if total_reads < genotype.support {
+            return Err(format!("Insufficient support: {total_reads} < {}", genotype.support));
+        }
+
+        phase1_calls.sort_unstable_by_key(|call| call.value());
+        phase2_calls.sort_unstable_by_key(|call| call.value());
+        unphased_calls.sort_unstable_by_key(|call| call.value());
+
+        let is_phased = !phase1_calls.is_empty() && !phase2_calls.is_empty();
+
+        if is_phased {
+            Ok((
+                Genotype {
+                    repeat: repeat.clone(),
+                    phase1: median_str_length(&phase1_calls, genotype.support),
+                    phase2: median_str_length(&phase2_calls, genotype.support),
+                },
+                found_hp_tags,
+            ))
+        } else {
+            // If no phased reads found, should return NaN (not split unphased reads)
+            if phase1_calls.is_empty() && phase2_calls.is_empty() {
+                Ok((
+                    Genotype { repeat: repeat.clone(), phase1: f64::NAN, phase2: f64::NAN },
+                    found_hp_tags,
+                ))
+            } else {
+                // Fall back to unphased processing only if we have some phased reads but insufficient in one phase
+                let mut all_calls = phase1_calls;
+                all_calls.extend(phase2_calls);
+                all_calls.extend(unphased_calls);
+                all_calls.sort_unstable_by_key(|call| call.value());
+
+                let (hap1, hap2) = all_calls.split_at(all_calls.len() / 2);
+                Ok((
+                    Genotype {
+                        repeat: repeat.clone(),
+                        phase1: median_str_length(hap1, genotype.support),
+                        phase2: median_str_length(hap2, genotype.support),
+                    },
+                    found_hp_tags,
+                ))
+            }
+        }
+    }
+}
+
+/// Process a batch with an existing BAM reader (more efficient, avoids reopening file)
+///
+/// This is the preferred method for processing multiple batches from the same file,
+/// as it reuses the BAM reader and avoids file descriptor exhaustion.
+///
+/// The function:
+/// 1. Fetches all reads in the batch region from the BAM file
+/// 2. Filters reads by quality (MAPQ > 10) and overlap with STR targets
+/// 3. Pre-computes STR calls for all overlapping targets during read processing
+/// 4. Processes each target using the pre-computed read information
+///
+/// # Arguments
+/// * `batch` - The batch of STR targets to process
+/// * `bam` - Mutable reference to an indexed BAM/CRAM reader
+/// * `genotype` - Configuration for genotyping (minlen, support, phasing)
+///
+/// # Returns
+/// Vector of genotypes for each target in the batch (NaN for failed targets)
+pub fn process_batch_with_reader(
+    batch: &Batch,
+    bam: &mut rust_htslib::bam::IndexedReader,
+    genotype: &crate::call::GenotypeConfig,
+) -> InquiSTRResult<Vec<Genotype>> {
+    let mut results = Vec::new();
+
+    // Serialize both header access and fetch for CRAM stability
+    let fetch_result = {
+        let _guard = BAM_READER_LOCK.lock().unwrap();
+
+        let tid = match bam.header().tid(batch.chromosome.as_bytes()) {
+            Some(t) => t,
+            None => {
+                warn!("Chromosome {} not found in BAM header", batch.chromosome);
+                return Ok(results);
+            }
+        };
+
+        bam.fetch((tid, batch.start, batch.end))
+    };
+
+    if let Err(e) = fetch_result {
+        warn!(
+            "Warning: Failed to fetch region {}:{}-{}: {}",
+            batch.chromosome, batch.start, batch.end, e
+        );
+        return Ok(results);
+    }
+
+    // Smart overlap filtering: only store reads that intersect with STR targets
+    let target_intervals_with_idx: Vec<(u32, u32, usize)> = batch
+        .repeats
+        .iter()
+        .enumerate()
+        .map(|(idx, repeat)| (repeat.start.saturating_sub(100), repeat.end + 100, idx))
+        .collect();
+
+    // Pre-allocate with estimated capacity (assume ~20-30 reads per target on average)
+    let estimated_reads = batch.repeats.len() * 25;
+    let mut batch_reads = Vec::with_capacity(estimated_reads);
+
+    for record_result in bam.rc_records() {
+        match record_result {
+            Ok(record) => {
+                // Skip low quality reads early
+                if record.mapq() <= 10 {
+                    continue;
+                }
+                let read_start = record.reference_start() as u32;
+                let read_end = record.reference_end() as u32;
+
+                // Check if read overlaps with any target interval
+                let mut overlapping_targets_buf: smallvec::SmallVec<[(u32, u32, usize); 8]> =
+                    smallvec::SmallVec::new();
+                for &interval in &target_intervals_with_idx {
+                    let (target_start, target_end, _) = interval;
+                    if read_start < target_end && read_end > target_start {
+                        overlapping_targets_buf.push(interval);
+                    }
+                }
+
+                if !overlapping_targets_buf.is_empty() {
+                    let read_info = ReadInfo::from_record_with_targets(
+                        (*record).clone(),
+                        genotype.minlen,
+                        &overlapping_targets_buf,
+                        &batch.repeats,
+                    );
+                    batch_reads.push(read_info);
+                }
+            }
+            Err(e) => {
+                let error_str = e.to_string();
+                if error_str.contains("CRC32 failure") || error_str.contains("truncated record") {
+                    error!(
+                        "CRAM format error in batch {}: {}. This usually indicates that the reference genome doesn't match the CRAM file or CRAM index is corrupted.",
+                        batch.chromosome, error_str
+                    );
+                    return Err(InquiSTRError::new(format!(
+                        "CRAM format error in batch {}: {}. This usually indicates that the reference genome doesn't match the CRAM file or CRAM index is corrupted.",
+                        batch.chromosome, error_str
+                    )));
+                } else {
+                    error!("Error reading BAM record in batch {}: {}", batch.chromosome, e);
+                    return Err(InquiSTRError::new(format!(
+                        "Error reading BAM record in batch {}: {}",
+                        batch.chromosome, e
+                    )));
+                }
+            }
+        }
+    }
+
+    // Process each target in the batch using the lightweight read info
+    for repeat in &batch.repeats {
+        let result = process_target_from_read_info(&batch_reads, repeat, genotype);
+
+        match result {
+            Ok((genotype, _had_hp_tags)) => {
+                results.push(genotype);
+            }
+            Err(_e) => {
+                // Output NaN genotype for failed targets (matches original behavior)
+                let failed_genotype =
+                    Genotype { repeat: repeat.clone(), phase1: f64::NAN, phase2: f64::NAN };
+                results.push(failed_genotype);
+            }
+        }
+    }
+
+    Ok(results)
+}
+
+/// Unified batch processor that handles a single batch and returns results
+///
+/// **NOTE**: This creates a new BAM reader for each batch. For processing many batches,
+/// use `process_batch_with_reader()` instead to reuse a single reader and avoid
+/// file descriptor exhaustion.
+///
+/// This function is thread-safe and serializes BAM reader creation to prevent
+/// concurrent htslib index operations that can cause segfaults. On the first batch
+/// (if phasing is enabled), it also validates that HP tags are present in the BAM.
+///
+/// # Arguments
+/// * `batch` - The batch of STR targets to process
+/// * `bamp` - Path to the BAM/CRAM file
+/// * `reference` - Optional path to reference genome (required for CRAM)
+/// * `genotype` - Configuration for genotyping (minlen, support, phasing)
+///
+/// # Returns
+/// Vector of genotypes for each target in the batch (NaN for failed targets)
+pub fn process_batch_worker(
+    batch: Batch,
+    bamp: &String,
+    reference: &Option<String>,
+    genotype: crate::call::GenotypeConfig,
+) -> InquiSTRResult<Vec<Genotype>> {
+    // Serialize BAM reader creation and fetch to prevent concurrent htslib index operations
+    // This prevents segfaults in cram_index_free when multiple threads open the same CRAM
+    // On the first batch (if not unphased), also validate phasing using the same reader
+    let mut bam = {
+        let _guard = BAM_READER_LOCK.lock().unwrap();
+
+        // Check if we need to validate phasing (only once, on first batch)
+        let need_validation = !genotype.unphased && !PHASING_VALIDATED.load(Ordering::Relaxed);
+
+        if need_validation {
+            PHASING_VALIDATED.store(true, Ordering::Relaxed);
+            get_bam_reader_with_validation(bamp, reference)?
+        } else {
+            get_bam_reader(bamp, reference)?
+        }
+    };
+
+    // Use the new efficient function
+    let results = process_batch_with_reader(&batch, &mut bam, &genotype)?;
+
+    // Explicitly drop the BAM reader to free file descriptors immediately
+    drop(bam);
+
+    Ok(results)
+}
