@@ -1,8 +1,86 @@
 use bio::io::bed;
-use std::{collections::HashMap, fmt};
+use clap::ValueEnum;
+use std::{collections::HashMap, fmt, path::PathBuf};
 
 use crate::bam_utils::get_chrom_lengths_from_bam_header;
 use crate::errors::{InquiSTRError, InquiSTRResult};
+
+/// Predefined tandem repeat (TR) catalogs for genotyping
+///
+/// These presets allow quick access to well-known TR catalogs without manually
+/// downloading and specifying BED files. Downloaded catalogs are cached locally
+/// for 7 days to avoid repeated downloads.
+///
+/// # Adding new presets
+/// To add a new TR catalog preset:
+/// 1. Add a new variant to this enum with a descriptive doc comment
+/// 2. Add its metadata (URL, cache filename) to the `TRPreset::metadata()` method
+/// 3. Update tests if needed
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum TRPreset {
+    /// STRchive pathogenic disease-associated STRs
+    Pathogenic,
+    /// ADOTTO TR regions catalog v1.2.1
+    Adotto,
+    /// Broad Institute TR Explorer catalog (1-1000bp motifs)
+    Trexplorer,
+    /// CODIS forensic STR markers (USAT catalog)
+    Codis,
+}
+
+impl TRPreset {
+    /// Get metadata for this preset (URL and cache filename)
+    pub fn metadata(&self) -> (&'static str, &'static str) {
+        match self {
+            TRPreset::Pathogenic => (
+                "https://raw.githubusercontent.com/dashnowlab/STRchive/refs/heads/main/data/catalogs/STRchive-disease-loci.hg38.longTR.bed",
+                "STRchive-disease-loci.hg38.TRGT.bed",
+            ),
+            TRPreset::Adotto => (
+                "https://zenodo.org/records/13987414/files/adotto_TRregions_v1.2.1.bed.gz",
+                "adotto_TRregions_v1.2.1.bed.gz",
+            ),
+            TRPreset::Trexplorer => (
+                "https://github.com/broadinstitute/tandem-repeat-catalog/releases/download/v1.0/repeat_catalog_v1.hg38.1_to_1000bp_motifs.bed.gz",
+                "repeat_catalog_v1.hg38.1_to_1000bp_motifs.bed.gz",
+            ),
+            TRPreset::Codis => (
+                "https://raw.githubusercontent.com/XuewenWangUGA/USAT/refs/heads/main/settings/STRRegionsV5xwlinuxBest.bed",
+                "USAT-CODIS-STRRegionsV5.bed",
+            ),
+        }
+    }
+
+    /// Get a human-readable name for this preset
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            TRPreset::Pathogenic => "STRchive pathogenic STRs",
+            TRPreset::Adotto => "ADOTTO TR regions v1.2.1",
+            TRPreset::Trexplorer => "TR Explorer catalog (1-1000bp motifs)",
+            TRPreset::Codis => "CODIS forensic markers (USAT)",
+        }
+    }
+}
+
+/// Configuration for target selection (what STRs to genotype)
+#[derive(Clone, Debug)]
+pub struct TargetConfig {
+    pub region: Option<String>,
+    pub region_file: Option<PathBuf>,
+    pub preset: Option<TRPreset>,
+    pub max_locus: Option<u32>,
+}
+
+impl TargetConfig {
+    /// Get target intervals based on the configuration
+    pub fn get_targets(
+        &self,
+        bam: &str,
+        reference: &Option<String>,
+    ) -> InquiSTRResult<Vec<RepeatInterval>> {
+        get_targets(self.clone(), bam, reference)
+    }
+}
 
 #[derive(Debug)]
 pub struct RepeatIntervalIterator {
@@ -138,7 +216,7 @@ impl RepeatIntervalIterator {
     /// locally for 7 days, and handling network failures gracefully by falling back
     /// to cached versions when available.
     pub fn from_preset(
-        preset: crate::call::TRPreset,
+        preset: TRPreset,
         chrom_lengths: HashMap<String, u64>,
         max_locus: Option<u32>,
     ) -> Self {
@@ -501,31 +579,32 @@ impl RepeatInterval {
 
 /// Get targets from region string, region file, or preset catalog
 pub fn get_targets(
-    targets: crate::call::TargetConfig,
+    targets: TargetConfig,
     bam: &str,
     reference: &Option<String>,
-) -> InquiSTRResult<RepeatIntervalIterator> {
+) -> InquiSTRResult<Vec<RepeatInterval>> {
     let chrom_lengths = get_chrom_lengths_from_bam_header(bam.to_string(), reference)?;
-    match (&targets.region, &targets.region_file, &targets.preset) {
+    let iterator = match (&targets.region, &targets.region_file, &targets.preset) {
         // a region string
-        (Some(region), None, None) => Ok(RepeatIntervalIterator::from_string(region, chrom_lengths)),
+        (Some(region), None, None) => RepeatIntervalIterator::from_string(region, chrom_lengths),
         // a region file
-        (None, Some(region_file), None) => Ok(RepeatIntervalIterator::from_bed(
+        (None, Some(region_file), None) => RepeatIntervalIterator::from_bed(
             &region_file.to_string_lossy(),
             chrom_lengths,
             targets.max_locus,
-        )),
+        ),
         // preset catalog
         (None, None, Some(preset)) => {
-            Ok(RepeatIntervalIterator::from_preset(*preset, chrom_lengths, targets.max_locus))
+            RepeatIntervalIterator::from_preset(*preset, chrom_lengths, targets.max_locus)
         }
         // invalid input
         _ => {
-            Err(InquiSTRError::new(
+            return Err(InquiSTRError::new(
                 "Specify a region string (-r), a region_file (-R), or --preset <pathogenic|adotto|trexplorer>".to_string()
             ))
         }
-    }
+    };
+    Ok(iterator.collect())
 }
 
 #[cfg(test)]
@@ -575,7 +654,7 @@ mod tests {
     #[test]
     #[ignore]
     fn test_preset_urls_accessible() {
-        use crate::call::TRPreset;
+        use super::TRPreset;
 
         let presets = vec![TRPreset::Pathogenic, TRPreset::Adotto, TRPreset::Trexplorer];
 
@@ -614,7 +693,7 @@ mod tests {
     #[test]
     #[ignore]
     fn test_preset_urls_content() {
-        use crate::call::TRPreset;
+        use super::TRPreset;
 
         let presets = vec![TRPreset::Pathogenic, TRPreset::Adotto, TRPreset::Trexplorer];
         let mut failed_presets = Vec::new();

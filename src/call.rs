@@ -1,4 +1,3 @@
-use clap::ValueEnum;
 use human_sort::compare as human_compare;
 use log::error;
 use rayon::prelude::*;
@@ -8,86 +7,10 @@ use std::io::{self, Write};
 use std::path::PathBuf;
 
 // Phasing validation now happens lazily on first batch via get_bam_reader_with_validation
+use crate::batching::create_batches;
 use crate::errors::{InquiSTRError, InquiSTRResult};
-use crate::locus_batching::{create_batches, process_batch_worker};
-use crate::repeats::{RepeatInterval, RepeatIntervalIterator, get_targets};
-
-/// Predefined tandem repeat (TR) catalogs for genotyping
-///
-/// These presets allow quick access to well-known TR catalogs without manually
-/// downloading and specifying BED files. Downloaded catalogs are cached locally
-/// for 7 days to avoid repeated downloads.
-///
-/// # Adding new presets
-/// To add a new TR catalog preset:
-/// 1. Add a new variant to this enum with a descriptive doc comment
-/// 2. Add its metadata (URL, cache filename) to the `TRPreset::metadata()` method
-/// 3. Update tests if needed
-#[derive(Debug, Clone, Copy, ValueEnum)]
-pub enum TRPreset {
-    /// STRchive pathogenic disease-associated STRs
-    Pathogenic,
-    /// ADOTTO TR regions catalog v1.2.1
-    Adotto,
-    /// Broad Institute TR Explorer catalog (1-1000bp motifs)
-    Trexplorer,
-    /// CODIS forensic STR markers (USAT catalog)
-    Codis,
-}
-
-impl TRPreset {
-    /// Get metadata for this preset (URL and cache filename)
-    pub fn metadata(&self) -> (&'static str, &'static str) {
-        match self {
-            TRPreset::Pathogenic => (
-                "https://raw.githubusercontent.com/dashnowlab/STRchive/refs/heads/main/data/catalogs/STRchive-disease-loci.hg38.longTR.bed",
-                "STRchive-disease-loci.hg38.TRGT.bed",
-            ),
-            TRPreset::Adotto => (
-                "https://zenodo.org/records/13987414/files/adotto_TRregions_v1.2.1.bed.gz",
-                "adotto_TRregions_v1.2.1.bed.gz",
-            ),
-            TRPreset::Trexplorer => (
-                "https://github.com/broadinstitute/tandem-repeat-catalog/releases/download/v1.0/repeat_catalog_v1.hg38.1_to_1000bp_motifs.bed.gz",
-                "repeat_catalog_v1.hg38.1_to_1000bp_motifs.bed.gz",
-            ),
-            TRPreset::Codis => (
-                "https://raw.githubusercontent.com/XuewenWangUGA/USAT/refs/heads/main/settings/STRRegionsV5xwlinuxBest.bed",
-                "USAT-CODIS-STRRegionsV5.bed",
-            ),
-        }
-    }
-
-    /// Get a human-readable name for this preset
-    pub fn display_name(&self) -> &'static str {
-        match self {
-            TRPreset::Pathogenic => "STRchive pathogenic STRs",
-            TRPreset::Adotto => "ADOTTO TR regions v1.2.1",
-            TRPreset::Trexplorer => "TR Explorer catalog (1-1000bp motifs)",
-            TRPreset::Codis => "CODIS forensic markers (USAT)",
-        }
-    }
-}
-
-/// Configuration for target selection (what STRs to genotype)
-#[derive(Clone, Debug)]
-pub struct TargetConfig {
-    pub region: Option<String>,
-    pub region_file: Option<PathBuf>,
-    pub preset: Option<TRPreset>,
-    pub max_locus: Option<u32>,
-}
-
-impl TargetConfig {
-    /// Get target intervals based on the configuration
-    pub fn get_targets(
-        &self,
-        bam: &str,
-        reference: &Option<String>,
-    ) -> InquiSTRResult<RepeatIntervalIterator> {
-        get_targets(self.clone(), bam, reference)
-    }
-}
+use crate::genotype_batch::{process_batch_with_reader, process_batch_worker};
+use crate::repeats::{RepeatInterval, TargetConfig};
 
 /// Configuration for genotyping parameters (how to call STRs)
 #[derive(Clone, Copy, Debug)]
@@ -151,24 +74,9 @@ impl fmt::Display for Genotype {
     }
 }
 
-#[derive(Clone, Copy)] // Make it Copy for better performance
-pub enum Call {
-    Span(i64),
-    Clip(i64),
-}
-
-impl Call {
-    // Helper method to extract the value without pattern matching everywhere
-    #[inline]
-    pub fn value(&self) -> i64 {
-        match self {
-            Call::Span(v) | Call::Clip(v) => *v,
-        }
-    }
-}
-
 /// This function genotypes STRs, either from a region string or from a bed file
 /// For a bed file the genotyping is done in parallel
+/// show_progress can be silenced for inquiSTR batch, but this is not explicitly exposed to the CLI
 pub fn genotype_repeats(
     bam: String,
     targets: TargetConfig,
@@ -188,13 +96,11 @@ pub fn genotype_repeats(
         return Err(InquiSTRError::new(format!("path to bam file {} is not valid", &bam)));
     };
 
-    let repeats = targets.get_targets(&bam, &reference)?;
-
     // Unified batch-level producer-consumer approach for both single and multi-threaded
     // Batch size is configurable for performance optimization
-    let all_repeats: Vec<RepeatInterval> = repeats.collect();
-    let total_loci = all_repeats.len();
-    let batches = create_batches(all_repeats, processing.batch_size_kb * 1000); // Convert kb to basepair
+    let repeats = targets.get_targets(&bam, &reference)?;
+    let total_loci = repeats.len();
+    let batches = create_batches(repeats, processing.batch_size_kb * 1000); // Convert kb to basepair
 
     // Setup progress bar with smoothed ETA
     let pb = if show_progress {
@@ -215,6 +121,8 @@ pub fn genotype_repeats(
     // Process batches using producer-consumer pattern with configurable worker count
     let results: Vec<Vec<Genotype>> = if processing.threads > 1 {
         // Multi-threaded: Process batches in parallel
+        // NOTE: Cannot share BAM reader across threads, so each worker creates its own
+        // This means parallel processing with CRAM may still hit FD limits
         let thread_pool = rayon::ThreadPoolBuilder::new()
             .num_threads(processing.threads)
             .build()
@@ -234,12 +142,20 @@ pub fn genotype_repeats(
                 .collect::<InquiSTRResult<Vec<Vec<Genotype>>>>()
         })?
     } else {
-        // Single-threaded: Process batches sequentially
+        // Single-threaded: Create a SINGLE BAM reader and reuse it for all batches
+        // This dramatically reduces file descriptor usage with CRAM files
+        let mut bam_reader = if !genotype.unphased {
+            crate::bam_utils::get_bam_reader_with_validation(&bam, &reference)?
+        } else {
+            crate::bam_utils::get_bam_reader(&bam, &reference)?
+        };
+
+        // BAM reader will be dropped here automatically
         batches
-            .into_iter()
+            .iter()
             .map(|batch| {
                 let batch_size = batch.repeats.len();
-                let results = process_batch_worker(batch, &bam, &reference, genotype)?;
+                let results = process_batch_with_reader(batch, &mut bam_reader, &genotype)?;
                 if let Some(ref pb) = pb {
                     pb.inc(batch_size as u64);
                 }
@@ -254,23 +170,7 @@ pub fn genotype_repeats(
 
     // Collect and sort all results
     let mut all_genotypes: Vec<Genotype> = results.into_iter().flatten().collect();
-
-    // Create a new progress bar for sorting if we have a large number of results
-    if show_progress && all_genotypes.len() > 10000 {
-        let sort_pb = indicatif::ProgressBar::new_spinner();
-        // Use {msg} placeholder instead of invalid Rust-style `{}` in indicatif templates
-        sort_pb.set_style(
-            indicatif::ProgressStyle::default_spinner()
-                .template("{spinner:.green} {msg}")
-                .expect("Failed to set spinner template"),
-        );
-        sort_pb.set_message(format!("Sorting {} results...", all_genotypes.len()));
-
-        all_genotypes.sort_unstable();
-        sort_pb.finish_with_message("Sorting completed, writing output...");
-    } else {
-        all_genotypes.sort_unstable();
-    }
+    all_genotypes.sort_unstable();
 
     // Output results in consistent format
     // Use either the sample_name provided as command line argument or extract one from the path
@@ -392,49 +292,6 @@ fn write_vcf(vcf_path: &PathBuf, genotypes: &[Genotype], sample: &str, reference
             chrom, pos, id, info, format_str, sample_data
         )
         .expect("Failed writing VCF record");
-    }
-}
-
-/// Take the median of the lengths of the STRs, relative to the reference genome
-/// If the vector has fewer than <support> calls then return NAN
-/// Spanning reads have the preference, so if more than <support> spanning reads are present the median is calculated for those
-/// Otherwise, the longest softclipped reads are added up to <support> reads
-pub fn median_str_length(array: &[Call], support: usize) -> f64 {
-    if array.len() < support {
-        return f64::NAN;
-    }
-
-    // Separate spanning and clipped reads
-    // Pre-size to actual array length since we'll likely use most/all of them
-    let mut spanning = Vec::with_capacity(array.len());
-    let mut clipped = Vec::with_capacity(array.len());
-
-    for call in array {
-        match call {
-            Call::Span(v) => spanning.push(*v),
-            Call::Clip(v) => clipped.push(*v),
-        }
-    }
-
-    // Use spanning reads if we have enough, otherwise supplement with largest clips
-    let mut values = if spanning.len() >= support {
-        spanning
-    } else {
-        // Sort clipped from large to small to get the largest clips
-        clipped.sort_unstable_by(|a, b| b.cmp(a));
-        spanning.extend_from_slice(&clipped[0..(support - spanning.len()).min(clipped.len())]);
-        spanning
-    };
-
-    values.sort_unstable();
-
-    // Calculate median
-    if (values.len() % 2) == 0 {
-        let ind_left = values.len() / 2 - 1;
-        let ind_right = values.len() / 2;
-        (values[ind_left] + values[ind_right]) as f64 / 2.0
-    } else {
-        values[values.len() / 2] as f64
     }
 }
 
