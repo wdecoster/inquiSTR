@@ -40,15 +40,14 @@ pub fn parse_phenotypes(
         .filter(|(_, col)| col == &pheno_column)
         .map(|(index, _)| index)
         .next()
-        .unwrap_or_else(|| {
-            eprintln!(
-                "ERROR: Could not find column '{}' in sample metadata file: {}",
+        .ok_or_else(|| {
+            format!(
+                "Could not find column '{}' in sample metadata file: {}. Available columns: {}",
                 pheno_column,
-                sample_metadata.display()
-            );
-            eprintln!("Available columns: {}", header);
-            std::process::exit(1);
-        });
+                sample_metadata.display(),
+                header
+            )
+        })?;
     let mut samples_of_interest: Vec<Individual> = vec![];
     for line in lines {
         let line = line.unwrap();
