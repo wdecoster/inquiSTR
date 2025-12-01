@@ -334,6 +334,28 @@ fn get_bam_reader_internal(
                             bamp
                         ))
                     }
+                } else if err_msg.contains("No file descriptors available") 
+                    || err_msg.contains("Too many open files") {
+                    error!("Error opening local BAM/CRAM file: {err}");
+                    error!("Note: System has run out of available file descriptors.");
+                    error!("This typically happens with CRAM files when processing too many samples in parallel.");
+                    error!("Each CRAM file opens 10-20 file descriptors (file + index + reference + buffers).");
+                    error!("Solutions (in order of effectiveness):");
+                    error!("  1. Reduce --parallel-samples to 1 (process samples sequentially)");
+                    error!("  2. Increase --batch-size to 100-500 (reduces number of BAM reopens per sample)");
+                    error!("  3. Increase system limit: ulimit -n 4096");
+                    error!("  4. Convert CRAM to BAM (uses fewer file descriptors)");
+                    InquiSTRError::new(format!(
+                        "Error opening local BAM/CRAM file: {err}\n\
+                        Note: System has run out of available file descriptors.\n\
+                        This typically happens with CRAM files when processing too many samples in parallel.\n\
+                        Each CRAM file opens 10-20 file descriptors (file + index + reference + buffers).\n\
+                        Solutions (in order of effectiveness):\n\
+                          1. Reduce --parallel-samples to 1 (process samples sequentially)\n\
+                          2. Increase --batch-size to 100-500 (reduces number of BAM reopens per sample)\n\
+                          3. Increase system limit: ulimit -n 4096\n\
+                          4. Convert CRAM to BAM (uses fewer file descriptors)"
+                    ))
                 } else {
                     error!("Error opening local BAM/CRAM file: {err}");
                     InquiSTRError::new(format!("Error opening local BAM/CRAM file: {err}"))
@@ -846,7 +868,18 @@ mod tests {
     // this one should have reads that are identified as 2D reads
     // this test is ignored because the test data is not included in the repository
     fn test_is_accidental_2d() {
-        let mut bam = bam::Reader::from_path("test-data/2D-candidates_test_set.bam").unwrap();
+        let test_file = "test-data/2D-candidates_test_set.bam";
+
+        // Skip test if file doesn't exist (not included in repository)
+        if !std::path::Path::new(test_file).exists() {
+            println!(
+                "Skipping test: {} not found (test data not included in repository)",
+                test_file
+            );
+            return;
+        }
+
+        let mut bam = bam::Reader::from_path(test_file).unwrap();
         let mut count = 0;
         let mut all_reads = 0;
         for r in bam.records() {
