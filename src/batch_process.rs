@@ -1,11 +1,34 @@
-use crate::call::{GenotypeConfig, ProcessingConfig, TargetConfig};
-use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use crate::call::{GenotypeConfig, ProcessingConfig};
+use crate::repeats::TargetConfig;
+use indicatif::{ProgressBar, ProgressStyle};
 use log::debug;
 use rayon::prelude::*;
 use std::fs;
 use std::io::{self, BufRead};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+
+/// Helper function to catch panics and convert them to string errors
+/// This unifies panic handling across different sample processing functions
+fn catch_sample_panic<F>(f: F) -> Result<(), String>
+where
+    F: FnOnce() -> crate::errors::InquiSTRResult<()> + std::panic::UnwindSafe,
+{
+    match std::panic::catch_unwind(f) {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(e)) => Err(e.message),
+        Err(e) => {
+            // Try to extract error message from panic
+            if let Some(s) = e.downcast_ref::<&str>() {
+                Err(s.to_string())
+            } else if let Some(s) = e.downcast_ref::<String>() {
+                Err(s.clone())
+            } else {
+                Err("Unknown panic occurred during sample processing".to_string())
+            }
+        }
+    }
+}
 
 /// Configuration for unmapped kmer counting
 #[derive(Debug, Clone)]
@@ -27,6 +50,16 @@ pub struct BatchConfig {
     pub keep_going: bool,
     pub reference: Option<String>,
     pub parallel_samples: usize,
+    pub profile: bool,
+}
+
+/// Performance profiling data for a sample
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+struct SampleProfile {
+    sample_name: String,
+    duration_secs: f64,
+    success: bool,
 }
 
 /// Mode-specific configuration for batch processing
@@ -158,45 +191,39 @@ fn process_sample(
 ) -> Result<(), String> {
     use std::fs::File;
     use std::io::{BufWriter, Write};
-    use std::panic;
 
-    // Catch panics and convert to errors
-    let result = panic::catch_unwind(panic::AssertUnwindSafe(
-        || -> Result<(), crate::errors::InquiSTRError> {
-            // Get all genotypes
-            let repeats = target_config.get_targets(&sample.bam_path, reference)?;
-            let all_repeats: Vec<crate::repeats::RepeatInterval> = repeats.collect();
-            let batches = crate::locus_batching::create_batches(
-                all_repeats,
-                processing_config.batch_size_kb * 1000,
-            );
+    // Catch panics and convert to errors using helper
+    catch_sample_panic(|| {
+        // Get all genotypes
+        let all_repeats = target_config.get_targets(&sample.bam_path, reference)?;
+        let batches =
+            crate::batching::create_batches(all_repeats, processing_config.batch_size_kb * 1000);
 
-            let results: Result<Vec<Vec<crate::call::Genotype>>, crate::errors::InquiSTRError> =
-                if processing_config.threads > 1 {
-                    use rayon::prelude::*;
-                    let thread_pool = rayon::ThreadPoolBuilder::new()
-                        .num_threads(processing_config.threads)
-                        .build()
-                        .expect("Failed to build thread pool");
+        // CRITICAL FIX: Create a SINGLE BAM reader and reuse it for all batches
+        // This prevents file descriptor exhaustion with CRAM files
+        let mut bam = if !genotype_config.unphased && !batches.is_empty() {
+            // First batch needs phasing validation
+            crate::bam_utils::get_bam_reader_with_validation(&sample.bam_path, reference)?
+        } else {
+            crate::bam_utils::get_bam_reader(&sample.bam_path, reference)?
+        };
 
-                    thread_pool.install(|| {
-                        batches
-                            .into_par_iter()
-                            .map(|batch| {
-                                crate::locus_batching::process_batch_worker(
-                                    batch,
-                                    &sample.bam_path,
-                                    reference,
-                                    *genotype_config,
-                                )
-                            })
-                            .collect()
-                    })
-                } else {
+        let results: Result<Vec<Vec<crate::call::Genotype>>, crate::errors::InquiSTRError> =
+            if processing_config.threads > 1 {
+                // For parallel processing, we CANNOT share the BAM reader across threads
+                // So we must fall back to the old approach (each batch opens its own reader)
+                // This is a known limitation with CRAM files + parallel processing
+                use rayon::prelude::*;
+                let thread_pool = rayon::ThreadPoolBuilder::new()
+                    .num_threads(processing_config.threads)
+                    .build()
+                    .expect("Failed to build thread pool");
+
+                thread_pool.install(|| {
                     batches
-                        .into_iter()
+                        .into_par_iter()
                         .map(|batch| {
-                            crate::locus_batching::process_batch_worker(
+                            crate::genotype_batch::process_batch_worker(
                                 batch,
                                 &sample.bam_path,
                                 reference,
@@ -204,74 +231,68 @@ fn process_sample(
                             )
                         })
                         .collect()
-                };
-
-            // Propagate the error if any batch failed
-            let results = results?;
-
-            let mut all_genotypes: Vec<crate::call::Genotype> =
-                results.into_iter().flatten().collect();
-            all_genotypes.sort_unstable();
-
-            // Write to output file
-            let file = File::create(output_path)
-                .map_err(|e| {
-                    format!("Failed to create output file {}: {}", output_path.display(), e)
                 })
-                .unwrap();
-            let mut writer = BufWriter::new(file);
+            } else {
+                // Sequential processing: Reuse the single BAM reader for all batches
+                // This dramatically reduces file descriptor usage
+                batches
+                    .iter()
+                    .map(|batch| {
+                        crate::genotype_batch::process_batch_with_reader(
+                            batch,
+                            &mut bam,
+                            genotype_config,
+                        )
+                    })
+                    .collect()
+            };
 
-            debug!("Writing individual file: {}", output_path.display());
+        // Explicitly drop the BAM reader now that we're done with all batches
+        drop(bam);
 
-            let sample_name = sample.sample_name.as_str();
+        // Propagate the error if any batch failed
+        let results = results?;
 
-            // Write metadata header
-            writeln!(writer, "# file_type=individual_call").unwrap();
-            writeln!(writer, "# version={}", crate::VERSION).unwrap();
-            writeln!(writer, "# command=batch").unwrap();
-            writeln!(writer, "# sample={}", sample_name).unwrap();
-            writeln!(writer, "# minlen={}", genotype_config.minlen).unwrap();
-            writeln!(writer, "# support={}", genotype_config.support).unwrap();
-            writeln!(writer, "# unphased={}", genotype_config.unphased).unwrap();
+        let mut all_genotypes: Vec<crate::call::Genotype> = results.into_iter().flatten().collect();
+        all_genotypes.sort_unstable();
 
-            // Write data header
-            writeln!(
-                writer,
-                "chromosome\tbegin\tend\tinfo\t{}_H1\t{}_H2",
-                sample_name, sample_name
-            )
+        // Write to output file
+        let file = File::create(output_path)
+            .map_err(|e| format!("Failed to create output file {}: {}", output_path.display(), e))
+            .unwrap();
+        let mut writer = BufWriter::new(file);
+
+        debug!("Writing individual file: {}", output_path.display());
+
+        let sample_name = sample.sample_name.as_str();
+
+        // Write metadata header
+        writeln!(writer, "# file_type=individual_call").unwrap();
+        writeln!(writer, "# version={}", crate::VERSION).unwrap();
+        writeln!(writer, "# command=batch").unwrap();
+        writeln!(writer, "# sample={}", sample_name).unwrap();
+        writeln!(writer, "# minlen={}", genotype_config.minlen).unwrap();
+        writeln!(writer, "# support={}", genotype_config.support).unwrap();
+        writeln!(writer, "# unphased={}", genotype_config.unphased).unwrap();
+
+        // Write data header
+        writeln!(writer, "chromosome\tbegin\tend\tinfo\t{}_H1\t{}_H2", sample_name, sample_name)
             .unwrap();
 
-            // Write genotypes
-            for genotype in &all_genotypes {
-                writeln!(writer, "{}", genotype).unwrap();
-            }
-
-            // Ensure all data is flushed to disk
-            writer
-                .flush()
-                .map_err(|e| format!("Failed to flush output file: {}", e))
-                .unwrap();
-            debug!("Successfully wrote individual file: {}", output_path.display());
-
-            Ok(())
-        },
-    ));
-
-    match result {
-        Ok(Ok(())) => Ok(()),
-        Ok(Err(e)) => Err(e.message), // Propagate the InquiSTRError
-        Err(e) => {
-            // Try to extract error message from panic
-            if let Some(s) = e.downcast_ref::<&str>() {
-                Err(s.to_string())
-            } else if let Some(s) = e.downcast_ref::<String>() {
-                Err(s.clone())
-            } else {
-                Err("Unknown panic occurred during sample processing".to_string())
-            }
+        // Write genotypes
+        for genotype in &all_genotypes {
+            writeln!(writer, "{}", genotype).unwrap();
         }
-    }
+
+        // Ensure all data is flushed to disk
+        writer
+            .flush()
+            .map_err(|e| format!("Failed to flush output file: {}", e))
+            .unwrap();
+        debug!("Successfully wrote individual file: {}", output_path.display());
+
+        Ok(())
+    })
 }
 
 /// Process a single sample for unmapped kmer counting and write to output file
@@ -283,7 +304,6 @@ fn process_sample_unmapped(
     output_path: &Path,
 ) -> Result<(), String> {
     use std::fs::OpenOptions;
-    use std::panic;
 
     // Open output file
     let output_file = OpenOptions::new()
@@ -297,43 +317,26 @@ fn process_sample_unmapped(
     let _redirect = gag::Redirect::stdout(output_file)
         .map_err(|e| format!("Failed to redirect stdout: {}", e))?;
 
-    // Catch panics and convert to errors
-    let result = panic::catch_unwind(panic::AssertUnwindSafe(
-        || -> Result<(), crate::errors::InquiSTRError> {
-            crate::unmapped::count_unmapped_kmers(
-                sample.bam_path.clone(),
-                unmapped_config.klength,
-                Some(sample.sample_name.clone()),
-                reference.clone(),
-                processing_config.threads,
-                unmapped_config.target_kmer.clone(),
-                unmapped_config.combine_revcomp,
-                false, // Don't show progress - batch mode has its own progress bar
-            )
-        },
-    ));
-
+    // Catch panics and convert to errors using helper
+    catch_sample_panic(|| {
+        crate::unmapped::count_unmapped_kmers(
+            sample.bam_path.clone(),
+            unmapped_config.klength,
+            Some(sample.sample_name.clone()),
+            reference.clone(),
+            processing_config.threads,
+            unmapped_config.target_kmer.clone(),
+            unmapped_config.combine_revcomp,
+            false, // Don't show progress - batch mode has its own progress bar
+        )
+    })
     // redirect is dropped here, restoring stdout
-
-    match result {
-        Ok(Ok(())) => Ok(()),
-        Ok(Err(e)) => Err(e.message), // Propagate the InquiSTRError
-        Err(e) => {
-            // Try to extract error message from panic
-            if let Some(s) = e.downcast_ref::<&str>() {
-                Err(s.to_string())
-            } else if let Some(s) = e.downcast_ref::<String>() {
-                Err(s.clone())
-            } else {
-                Err("Unknown panic occurred during sample processing".to_string())
-            }
-        }
-    }
 }
 
-/// Extract sample names from a combined STR file header
+/// Unified function to extract sample names from any combined output file
+/// Automatically detects file format (STR, kmer regular, or kmer target) and extracts samples
 /// Returns None if file doesn't exist or isn't a valid combined file
-fn get_samples_from_combined_str_file(file_path: &Path) -> Option<Vec<String>> {
+fn get_samples_from_combined_file(file_path: &Path) -> Option<Vec<String>> {
     if !file_path.exists() {
         return None;
     }
@@ -362,27 +365,33 @@ fn get_samples_from_combined_str_file(file_path: &Path) -> Option<Vec<String>> {
         first_line
     };
 
-    // Check if it's a valid STR file header
     let fields: Vec<&str> = header.split('\t').collect();
-    if fields.first() != Some(&"chromosome") {
-        return None;
-    }
 
+    // Detect format and extract samples accordingly
+    match fields.first() {
+        Some(&"chromosome") => extract_str_samples(&fields),
+        Some(&"kmer") => extract_kmer_regular_samples(&fields),
+        Some(&"Sample") => extract_kmer_target_samples(lines),
+        _ => None,
+    }
+}
+
+/// Extract sample names from STR file header columns
+fn extract_str_samples(fields: &[&str]) -> Option<Vec<String>> {
     // Check if it has more than 5 columns (indicating it's a combined file)
     if fields.len() <= 5 {
         return None; // Individual file, not combined
     }
 
-    // Extract sample names from column headers
-    // Format: chromosome, begin, end, then pairs of (sample_H1, sample_H2) for each sample
+    // Format: chromosome, begin, end, info, then pairs of (sample_H1, sample_H2)
     let mut sample_names = Vec::new();
     let mut seen_samples = std::collections::HashSet::new();
-    let mut i = 3; // Start after chromosome, begin, end
+    let mut i = 4; // Start after chromosome, begin, end, info
 
     while i < fields.len() {
         if i + 1 < fields.len() {
             // Extract base sample name by removing _H1 or _H2 suffix
-            let col_name = fields[i + 1];
+            let col_name = fields[i];
             let base_name = col_name
                 .strip_suffix("_H1")
                 .or_else(|| col_name.strip_suffix("_H2"))
@@ -403,65 +412,50 @@ fn get_samples_from_combined_str_file(file_path: &Path) -> Option<Vec<String>> {
     Some(sample_names)
 }
 
-/// Extract sample names from a combined kmer file header
-/// Returns None if file doesn't exist or isn't a valid combined kmer file
-fn get_samples_from_combined_kmer_file(file_path: &Path) -> Option<Vec<String>> {
-    if !file_path.exists() {
-        return None;
-    }
+/// Extract sample names from regular kmer file header (columns after "kmer")
+fn extract_kmer_regular_samples(fields: &[&str]) -> Option<Vec<String>> {
+    // Sample names are all columns after the first (kmer column)
+    Some(fields[1..].iter().map(|s| s.to_string()).collect())
+}
 
-    let file = match fs::File::open(file_path) {
-        Ok(f) => f,
-        Err(_) => return None,
-    };
+/// Extract sample names from target kmer file (samples listed in rows)
+fn extract_kmer_target_samples<I>(lines: I) -> Option<Vec<String>>
+where
+    I: Iterator<Item = Result<String, std::io::Error>>,
+{
+    // Read all rows to get sample names from first column
+    let sample_names: Vec<String> = lines
+        .map_while(Result::ok)
+        .filter_map(|line| {
+            let fields: Vec<&str> = line.split('\t').collect();
+            fields.first().map(|s| s.to_string())
+        })
+        .collect();
 
-    let reader = io::BufReader::new(file);
-    let mut lines = reader.lines();
-
-    // Read first line (might be metadata or header)
-    let first_line = match lines.next() {
-        Some(Ok(line)) => line,
-        _ => return None,
-    };
-
-    // Skip metadata line if present
-    let header = if first_line.starts_with("# file_type=") {
-        match lines.next() {
-            Some(Ok(line)) => line,
-            _ => return None,
-        }
+    if sample_names.is_empty() {
+        None
     } else {
-        first_line
-    };
-
-    // Check if it's a valid kmer file header
-    let fields: Vec<&str> = header.split('\t').collect();
-
-    // Check for regular kmer file format (kmer, sample1, sample2, ...)
-    if fields.first() == Some(&"kmer") {
-        // Sample names are all columns after the first
-        return Some(fields[1..].iter().map(|s| s.to_string()).collect());
+        Some(sample_names)
     }
+}
 
-    // Check for target kmer file format (Sample, count, ...)
-    if fields.first() == Some(&"Sample") {
-        // This format lists samples in rows, not columns
-        // Read all rows to get sample names
-        let mut sample_names = Vec::new();
-        for line in lines.map_while(Result::ok) {
-            let line_fields: Vec<&str> = line.split('\t').collect();
-            if !line_fields.is_empty() {
-                sample_names.push(line_fields[0].to_string());
-            }
-        }
-        return Some(sample_names);
-    }
+/// Legacy wrapper for backward compatibility - delegates to unified function
+#[allow(dead_code)]
+fn get_samples_from_combined_str_file(file_path: &Path) -> Option<Vec<String>> {
+    get_samples_from_combined_file(file_path)
+}
 
-    None
+/// Legacy wrapper for backward compatibility - delegates to unified function
+#[allow(dead_code)]
+fn get_samples_from_combined_kmer_file(file_path: &Path) -> Option<Vec<String>> {
+    get_samples_from_combined_file(file_path)
 }
 
 /// Main batch processing function
 pub fn batch_process(config: BatchConfig, mode: BatchMode) {
+    use std::time::Instant;
+
+    let start_time = Instant::now();
     eprintln!("Starting batch processing...");
 
     // Get thread count and calculate threads per sample
@@ -479,6 +473,19 @@ pub fn batch_process(config: BatchConfig, mode: BatchMode) {
             "Thread allocation: {} threads total, {} threads per sample",
             total_threads, threads_per_sample
         );
+
+        if threads_per_sample == 1 {
+            eprintln!(
+                "  Mode: Samples in parallel, batches sequential per sample (optimal for CRAM)"
+            );
+        } else {
+            eprintln!(
+                "  Mode: Samples in parallel, {} threads per sample for batch parallelism",
+                threads_per_sample
+            );
+        }
+    } else {
+        eprintln!("Sequential processing: 1 sample at a time with {} thread(s)", total_threads);
     }
 
     match &mode {
@@ -585,10 +592,7 @@ pub fn batch_process(config: BatchConfig, mode: BatchMode) {
         eprintln!("Resume mode: Checking for existing output in: {}", individual_dir.display());
 
         // First check the combined output file
-        let completed_from_output = match &mode {
-            BatchMode::StrGenotyping { .. } => get_samples_from_combined_str_file(&config.output),
-            BatchMode::UnmappedKmer { .. } => get_samples_from_combined_kmer_file(&config.output),
-        };
+        let completed_from_output = get_samples_from_combined_file(&config.output);
 
         if let Some(completed_list) = completed_from_output {
             samples_in_output = completed_list.len();
@@ -742,6 +746,45 @@ pub fn batch_process(config: BatchConfig, mode: BatchMode) {
     // Create progress tracking
     let individual_files = Arc::new(Mutex::new(Vec::new()));
     let failed_samples = Arc::new(Mutex::new(Vec::new()));
+    let sample_profiles = if config.profile {
+        Some(Arc::new(Mutex::new(Vec::new())))
+    } else {
+        None
+    };
+
+    // IMPORTANT WARNING: Check for CRAM files with parallel processing
+    if parallel_samples > 1 {
+        let cram_count = samples
+            .iter()
+            .filter(|s| s.bam_path.ends_with(".cram"))
+            .count();
+        if cram_count > 0 && threads_per_sample > 1 {
+            // Warn only if using parallel batches per sample (threads_per_sample > 1)
+            // This is the problematic configuration that opens many readers
+            eprintln!(
+                "\n⚠️  WARNING: Processing {} CRAM file(s) with {} threads per sample",
+                cram_count, threads_per_sample
+            );
+            eprintln!("   Each sample will process batches in parallel, opening multiple readers.");
+            eprintln!("   This may cause file descriptor exhaustion.");
+            eprintln!("   RECOMMENDED: Set --parallel-samples equal to --threads (e.g., both 4)");
+            eprintln!(
+                "   This processes samples in parallel but batches sequentially (FD-efficient)."
+            );
+            eprintln!();
+        } else if cram_count > 0 && threads_per_sample == 1 {
+            // Good configuration! Acknowledge it
+            eprintln!(
+                "\n✓ Optimal CRAM configuration: {} samples in parallel, sequential batches per sample",
+                parallel_samples
+            );
+            eprintln!(
+                "  Each sample uses 1 thread (batches processed sequentially with single reader)"
+            );
+            eprintln!("  Estimated file descriptors: ~{} (very manageable)", parallel_samples * 15);
+            eprintln!();
+        }
+    }
 
     // If all samples are already processed, skip processing and collect existing files
     if samples.is_empty() && samples_with_individual_files > 0 {
@@ -788,6 +831,11 @@ pub fn batch_process(config: BatchConfig, mode: BatchMode) {
                 continue;
             }
 
+            let sample_start = if config.profile {
+                Some(Instant::now())
+            } else {
+                None
+            };
             let result = match &adjusted_mode {
                 BatchMode::UnmappedKmer { unmapped_config, processing_config } => {
                     process_sample_unmapped(
@@ -813,6 +861,13 @@ pub fn batch_process(config: BatchConfig, mode: BatchMode) {
             match result {
                 Ok(()) => {
                     individual_files.lock().unwrap().push(individual_file);
+                    if let (Some(profiles), Some(start)) = (&sample_profiles, sample_start) {
+                        profiles.lock().unwrap().push(SampleProfile {
+                            sample_name: sample.sample_name.clone(),
+                            duration_secs: start.elapsed().as_secs_f64(),
+                            success: true,
+                        });
+                    }
                 }
                 Err(e) => {
                     eprintln!("\nERROR: Failed to process sample '{}': {}", sample.sample_name, e);
@@ -821,6 +876,13 @@ pub fn batch_process(config: BatchConfig, mode: BatchMode) {
                         .lock()
                         .unwrap()
                         .push(sample.sample_name.clone());
+                    if let (Some(profiles), Some(start)) = (&sample_profiles, sample_start) {
+                        profiles.lock().unwrap().push(SampleProfile {
+                            sample_name: sample.sample_name.clone(),
+                            duration_secs: start.elapsed().as_secs_f64(),
+                            success: false,
+                        });
+                    }
                 }
             }
 
@@ -829,15 +891,15 @@ pub fn batch_process(config: BatchConfig, mode: BatchMode) {
 
         pb.finish_with_message("Sample processing complete");
     } else {
-        // Parallel processing with multi-progress
-        let multi = MultiProgress::new();
-        let overall_pb = multi.add(ProgressBar::new(samples.len() as u64));
+        // Parallel processing with overall progress bar
+        let overall_pb = ProgressBar::new(samples.len() as u64);
         overall_pb.set_style(
             ProgressStyle::default_bar()
-                .template("[{elapsed_precise}] {bar:40.cyan/blue} {pos}/{len} (ETA: {eta}) Overall progress")
+                .template("[{elapsed_precise}] {bar:40.cyan/blue} {pos}/{len} (ETA: {eta}) {msg}")
                 .unwrap()
                 .progress_chars("=>-"),
         );
+        overall_pb.set_message(format!("Processing {} samples in parallel", parallel_samples));
 
         // Set up rayon thread pool
         rayon::ThreadPoolBuilder::new()
@@ -846,13 +908,6 @@ pub fn batch_process(config: BatchConfig, mode: BatchMode) {
             .unwrap()
             .install(|| {
                 samples.par_iter().for_each(|sample| {
-                    let pb = multi.add(ProgressBar::new_spinner());
-                    pb.set_style(
-                        ProgressStyle::default_spinner()
-                            .template("{spinner:.green} {msg}")
-                            .unwrap(),
-                    );
-                    pb.set_message(format!("Processing {}", sample.sample_name));
 
                     let individual_file =
                         individual_dir.join(format!("{}.inq", sample.sample_name));
@@ -873,11 +928,11 @@ pub fn batch_process(config: BatchConfig, mode: BatchMode) {
                             .lock()
                             .unwrap()
                             .push(sample.sample_name.clone());
-                        pb.finish_with_message(format!("✗ {}", sample.sample_name));
                         overall_pb.inc(1);
                         return;
                     }
 
+                    let sample_start = if config.profile { Some(Instant::now()) } else { None };
                     let result = match &adjusted_mode {
                         BatchMode::UnmappedKmer { unmapped_config, processing_config } => {
                             process_sample_unmapped(
@@ -905,7 +960,13 @@ pub fn batch_process(config: BatchConfig, mode: BatchMode) {
                     match result {
                         Ok(()) => {
                             individual_files.lock().unwrap().push(individual_file);
-                            pb.finish_with_message(format!("✓ {}", sample.sample_name));
+                            if let (Some(profiles), Some(start)) = (&sample_profiles, sample_start) {
+                                profiles.lock().unwrap().push(SampleProfile {
+                                    sample_name: sample.sample_name.clone(),
+                                    duration_secs: start.elapsed().as_secs_f64(),
+                                    success: true,
+                                });
+                            }
                         }
                         Err(e) => {
                             eprintln!(
@@ -917,7 +978,13 @@ pub fn batch_process(config: BatchConfig, mode: BatchMode) {
                                 .lock()
                                 .unwrap()
                                 .push(sample.sample_name.clone());
-                            pb.finish_with_message(format!("✗ {}", sample.sample_name));
+                            if let (Some(profiles), Some(start)) = (&sample_profiles, sample_start) {
+                                profiles.lock().unwrap().push(SampleProfile {
+                                    sample_name: sample.sample_name.clone(),
+                                    duration_secs: start.elapsed().as_secs_f64(),
+                                    success: false,
+                                });
+                            }
 
                             // If keep_going is not set, stop processing immediately
                             if !config.keep_going {
@@ -934,6 +1001,10 @@ pub fn batch_process(config: BatchConfig, mode: BatchMode) {
             });
 
         overall_pb.finish_with_message("Sample processing complete");
+
+        // Give runtime a chance to clean up file descriptors from parallel processing
+        // This is especially important with CRAM files which open many FDs per sample
+        std::thread::sleep(std::time::Duration::from_millis(100));
     }
 
     // Extract results from Arc<Mutex<>>
@@ -1051,12 +1122,33 @@ pub fn batch_process(config: BatchConfig, mode: BatchMode) {
                 eprintln!("Warning: Failed to remove temporary file {}: {}", file.display(), e);
             }
         }
+    } else {
+        eprintln!(
+            "Individual sample files saved to: {}",
+            config.save_individual.as_ref().unwrap().display()
+        );
     }
 
+    let total_duration = start_time.elapsed();
     eprintln!("\nBatch processing complete!");
     eprintln!("  Successful: {}", individual_files.len());
     eprintln!("  Failed: {}", failed_samples.len());
     eprintln!("  Output: {}", config.output.display());
+    eprintln!("  Total time: {:.1}s", total_duration.as_secs_f64());
+
+    // Generate profiling report if requested
+    if config.profile
+        && let Some(profiles) = sample_profiles
+    {
+        let profiles = profiles.lock().unwrap();
+        generate_profile_report(
+            &profiles,
+            total_duration.as_secs_f64(),
+            total_threads,
+            parallel_samples,
+            &adjusted_mode,
+        );
+    }
 
     // If we reach here with failures, it means --keep-going was set
     // (otherwise we would have exited immediately on first failure)
@@ -1071,4 +1163,174 @@ pub fn batch_process(config: BatchConfig, mode: BatchMode) {
         );
         std::process::exit(1); // Exit with error code to indicate failures occurred
     }
+}
+
+/// Generate a performance profile report with recommendations
+fn generate_profile_report(
+    profiles: &[SampleProfile],
+    total_duration: f64,
+    total_threads: usize,
+    parallel_samples: usize,
+    mode: &BatchMode,
+) {
+    if profiles.is_empty() {
+        return;
+    }
+
+    eprintln!("\n╔════════════════════════════════════════════════════════════╗");
+    eprintln!("║              PERFORMANCE PROFILE REPORT                    ║");
+    eprintln!("╚════════════════════════════════════════════════════════════╝");
+
+    // Calculate statistics
+    let successful: Vec<_> = profiles.iter().filter(|p| p.success).collect();
+    let n = successful.len();
+
+    if n == 0 {
+        eprintln!("\nNo successful samples to profile.");
+        return;
+    }
+
+    let durations: Vec<f64> = successful.iter().map(|p| p.duration_secs).collect();
+    let mean = durations.iter().sum::<f64>() / n as f64;
+    let min = durations.iter().copied().fold(f64::INFINITY, f64::min);
+    let max = durations.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+
+    // Calculate standard deviation
+    let variance = durations.iter().map(|d| (d - mean).powi(2)).sum::<f64>() / n as f64;
+    let stddev = variance.sqrt();
+    let cv = if mean > 0.0 {
+        (stddev / mean) * 100.0
+    } else {
+        0.0
+    };
+
+    eprintln!("\nSample Processing Times:");
+    eprintln!("  Samples:    {}", n);
+    eprintln!("  Mean:       {:.1}s", mean);
+    eprintln!("  Std Dev:    {:.1}s ({:.1}% CV)", stddev, cv);
+    eprintln!("  Min:        {:.1}s", min);
+    eprintln!("  Max:        {:.1}s", max);
+    eprintln!("  Range:      {:.1}s ({:.1}x slower)", max - min, max / min);
+
+    // Configuration info
+    eprintln!("\nConfiguration:");
+    eprintln!("  Total threads:      {}", total_threads);
+    eprintln!("  Parallel samples:   {}", parallel_samples);
+    eprintln!("  Threads per sample: {}", total_threads / parallel_samples);
+
+    if let BatchMode::StrGenotyping { processing_config, .. } = mode {
+        eprintln!("  Batch size:         {}kb", processing_config.batch_size_kb);
+    }
+
+    // Efficiency metrics
+    let theoretical_min = mean * n as f64 / parallel_samples as f64;
+    let parallel_efficiency = if total_duration > 0.0 {
+        (theoretical_min / total_duration) * 100.0
+    } else {
+        0.0
+    };
+
+    eprintln!("\nEfficiency:");
+    eprintln!(
+        "  Theoretical min:    {:.1}s ({} samples / {} parallel)",
+        theoretical_min, n, parallel_samples
+    );
+    eprintln!("  Actual:             {:.1}s", total_duration);
+    eprintln!("  Parallel efficiency: {:.1}%", parallel_efficiency);
+
+    // Generate recommendations
+    eprintln!("\n╔════════════════════════════════════════════════════════════╗");
+    eprintln!("║                    RECOMMENDATIONS                         ║");
+    eprintln!("╚════════════════════════════════════════════════════════════╝");
+
+    let mut recommendations = Vec::new();
+
+    // High variability suggests I/O contention
+    if cv > 30.0 && parallel_samples > 1 {
+        recommendations.push(format!(
+            "⚠️  High variability (CV={:.1}%) with parallel samples suggests I/O contention.\n\
+             →  Try: Reduce --parallel-samples to {} or increase --batch-size to {} (from {}kb)",
+            cv,
+            (parallel_samples / 2).max(1),
+            if let BatchMode::StrGenotyping { processing_config, .. } = mode {
+                processing_config.batch_size_kb * 2
+            } else {
+                100
+            },
+            if let BatchMode::StrGenotyping { processing_config, .. } = mode {
+                processing_config.batch_size_kb
+            } else {
+                50
+            }
+        ));
+    }
+
+    // Low parallel efficiency
+    if parallel_efficiency < 70.0 && parallel_samples > 1 {
+        recommendations.push(format!(
+            "⚠️  Low parallel efficiency ({:.1}%) indicates overhead or I/O bottleneck.\n\
+             →  Try: Process samples sequentially (--parallel-samples 1) with more threads per sample",
+            parallel_efficiency
+        ));
+    }
+
+    // Good efficiency but single sample processing
+    if parallel_samples == 1 && parallel_efficiency > 90.0 && n > 5 {
+        recommendations.push(format!(
+            "✓  Excellent single-sample performance! For large cohorts, consider:\n\
+             →  Try: --parallel-samples {} --threads {} to process multiple samples simultaneously",
+            (total_threads / 2).max(2),
+            total_threads
+        ));
+    }
+
+    // Very fast samples - might benefit from more parallelization
+    if mean < 30.0 && parallel_samples == 1 && n > 10 {
+        recommendations.push(format!(
+            "✓  Fast sample processing ({:.1}s avg). You could process more samples in parallel:\n\
+             →  Try: --parallel-samples {} (will still use {} threads total)",
+            mean,
+            (total_threads / 2).max(2),
+            total_threads
+        ));
+    }
+
+    // Slow samples with low thread count
+    if mean > 300.0 && total_threads < 8 {
+        recommendations.push(format!(
+            "⚠️  Slow sample processing ({:.1}s avg) with only {} threads.\n\
+             →  Try: Increase --threads to use more CPU cores if available",
+            mean, total_threads
+        ));
+    }
+
+    // High variability in sequential mode
+    if cv > 20.0
+        && parallel_samples == 1
+        && let BatchMode::StrGenotyping { processing_config, .. } = mode
+    {
+        recommendations.push(format!(
+            "⚠️  High variability (CV={:.1}%) suggests varying sample complexity or I/O issues.\n\
+                 →  Try: Increase --batch-size to {} (currently {}kb) to reduce I/O overhead",
+            cv,
+            processing_config.batch_size_kb * 2,
+            processing_config.batch_size_kb
+        ));
+    }
+
+    if recommendations.is_empty() {
+        eprintln!("\n✓  Performance looks good! Configuration appears well-tuned for your system.");
+    } else {
+        eprintln!();
+        for (i, rec) in recommendations.iter().enumerate() {
+            if i > 0 {
+                eprintln!();
+            }
+            eprintln!("{}", rec);
+        }
+    }
+
+    eprintln!("\n╔════════════════════════════════════════════════════════════╗");
+    eprintln!("║  Note: Run with --profile again after adjusting settings  ║");
+    eprintln!("╚════════════════════════════════════════════════════════════╝\n");
 }

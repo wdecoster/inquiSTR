@@ -40,13 +40,17 @@ struct BatchCommonArgs {
     #[clap(short, long, value_parser, required = true)]
     output: PathBuf,
 
-    /// Number of parallel threads to use (total, divided among parallel samples)
+    /// Number of parallel threads to use. By default, this parallelizes across samples
+    /// (processes N samples with 1 thread each - optimal for CRAM files).
+    /// Use --parallel-samples to override this behavior.
     #[clap(short, long, value_parser, default_value_t = 1)]
     threads: usize,
 
-    /// Number of samples to process in parallel (threads will be divided among them)
-    #[clap(long, value_parser, default_value_t = 1)]
-    parallel_samples: usize,
+    /// Number of samples to process in parallel (threads will be divided among them).
+    /// If not specified, defaults to --threads value (optimal for CRAM: N samples with 1 thread each).
+    /// Set explicitly for advanced use cases (e.g., --threads 16 --parallel-samples 4 = 4 threads per sample).
+    #[clap(long, value_parser)]
+    parallel_samples: Option<usize>,
 
     /// Reference fasta for CRAM decoding (applies to all samples)
     #[clap(long, value_parser)]
@@ -71,6 +75,10 @@ struct BatchCommonArgs {
     /// Continue processing even if some samples fail (by default, exits with error if any sample fails)
     #[clap(long, value_parser)]
     keep_going: bool,
+
+    /// Enable performance profiling and recommendations (minimal overhead)
+    #[clap(long, value_parser)]
+    profile: bool,
 }
 
 /// Mode selection for batch processing
@@ -98,10 +106,10 @@ struct BatchStrArgs {
 
     /// Use a predefined TR catalog (pathogenic, adotto, trexplorer, or codis)
     #[clap(long, value_parser)]
-    preset: Option<call::TRPreset>,
+    preset: Option<repeats::TRPreset>,
 
     /// Minimal length of insertion/deletion operation
-    #[clap(short, long, value_parser, default_value_t = 5)]
+    #[clap(short, long, value_parser, default_value_t = 1)]
     minlen: u32,
 
     /// Minimal number of supporting reads
@@ -142,14 +150,15 @@ struct BatchUnmappedArgs {
 pub mod assoc;
 pub mod bam_utils;
 pub mod batch_process;
+pub mod batching;
 pub mod benchmark;
 pub mod call;
 pub mod combine;
 pub mod errors;
 pub mod filetype;
 pub mod filter;
+pub mod genotype_batch;
 pub mod histogram;
-pub mod locus_batching;
 pub mod locus_search;
 pub mod outlier;
 pub mod pca;
@@ -188,10 +197,10 @@ enum Commands {
 
         /// Use a predefined TR catalog (pathogenic, adotto, trexplorer, or codis)
         #[clap(long, value_parser)]
-        preset: Option<call::TRPreset>,
+        preset: Option<repeats::TRPreset>,
 
         /// minimal length of insertion/deletion operation
-        #[clap(short, long, value_parser, default_value_t = 5)]
+        #[clap(short, long, value_parser, default_value_t = 1)]
         minlen: u32,
 
         /// minimal number of supporting reads
@@ -563,7 +572,7 @@ fn main() {
         } => {
             if let Err(e) = call::genotype_repeats(
                 bam,
-                call::TargetConfig { region, region_file, preset, max_locus },
+                repeats::TargetConfig { region, region_file, preset, max_locus },
                 call::GenotypeConfig { minlen, support, unphased },
                 call::ProcessingConfig { threads, batch_size_kb: batch_size, output_vcf: vcf },
                 sample_name,
@@ -575,6 +584,10 @@ fn main() {
             }
         }
         Commands::Batch { common, mode, str_args, unmapped_args } => {
+            // Smart default: if parallel_samples not specified, set it equal to threads
+            // This gives optimal CRAM performance (N samples in parallel, 1 thread each)
+            let parallel_samples = common.parallel_samples.unwrap_or(common.threads);
+
             let batch_config = batch_process::BatchConfig {
                 manifest: common.manifest,
                 output: common.output,
@@ -584,7 +597,8 @@ fn main() {
                 dry_run: common.dry_run,
                 keep_going: common.keep_going,
                 reference: common.reference,
-                parallel_samples: common.parallel_samples,
+                parallel_samples,
+                profile: common.profile,
             };
 
             let batch_mode = if mode.unmapped {
@@ -602,7 +616,7 @@ fn main() {
                 }
             } else {
                 batch_process::BatchMode::StrGenotyping {
-                    target_config: call::TargetConfig {
+                    target_config: repeats::TargetConfig {
                         region: str_args.region,
                         region_file: str_args.region_file,
                         preset: str_args.preset,
