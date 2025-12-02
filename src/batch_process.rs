@@ -1135,6 +1135,20 @@ pub fn batch_process(config: BatchConfig, mode: BatchMode) {
     }
 
     let total_duration = start_time.elapsed();
+    
+    // Clean up any downloaded index files for all samples in the manifest
+    // Re-parse manifest to get bam paths for cleanup
+    eprintln!("\nCleaning up downloaded index files...");
+    if let Ok(all_samples) = parse_manifest(&config.manifest) {
+        let mut cleaned_paths = std::collections::HashSet::new();
+        for sample in &all_samples {
+            // Only clean each unique path once (in case manifest has duplicates)
+            if cleaned_paths.insert(&sample.bam_path) {
+                crate::bam_utils::cleanup_index_files(&sample.bam_path);
+            }
+        }
+    }
+    
     eprintln!("\nBatch processing complete!");
     eprintln!("  Successful: {}", individual_files.len());
     eprintln!("  Failed: {}", failed_samples.len());

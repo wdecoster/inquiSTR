@@ -538,21 +538,6 @@ enum Commands {
         #[clap(short, long, value_parser, default_value_t = 1)]
         threads: usize,
     },
-    /// Clean the index cache directory (hidden command)
-    #[clap(hide = true)]
-    CleanCache {
-        /// Show what would be deleted without actually deleting
-        #[clap(long)]
-        dry_run: bool,
-
-        /// Delete all cached files regardless of age
-        #[clap(long)]
-        all: bool,
-
-        /// Maximum age in days (files older than this will be deleted)
-        #[clap(long, default_value_t = 30)]
-        max_age_days: u64,
-    },
     /// Convert VCF files to inquiSTR format
     #[clap(arg_required_else_help = true)]
     Convert {
@@ -763,9 +748,6 @@ fn main() {
         }
         Commands::Relate { combined, output, threads } => {
             relate::compute_relatedness(combined, output, threads);
-        }
-        Commands::CleanCache { dry_run, all, max_age_days } => {
-            bam_utils::clean_cache(dry_run, all, max_age_days);
         }
         Commands::Convert { vcf } => {
             if let Err(e) = convert::convert_vcf(vcf) {

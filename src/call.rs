@@ -198,6 +198,9 @@ pub fn genotype_repeats(
         writeln!(handle, "{genotype}").expect("Failed writing the result.");
     }
 
+    // Clean up any downloaded index files
+    crate::bam_utils::cleanup_index_files(&bam);
+
     Ok(())
 }
 

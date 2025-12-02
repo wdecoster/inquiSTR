@@ -4,7 +4,6 @@
 //! from BAM/CRAM files. It extracts all unmapped reads and counts occurrences of
 //! kmers of all sizes from 2 to a specified maximum length.
 
-use crate::bam_utils::setup_index_caching;
 use crate::errors::{InquiSTRError, InquiSTRResult};
 use indicatif::{ProgressBar, ProgressStyle};
 use log::{info, warn};
@@ -32,6 +31,9 @@ pub fn count_unmapped_kmers(
     if combine_revcomp {
         info!("Combining kmers with their reverse complements");
     }
+
+    // Set up reference caching for remote CRAM files
+    crate::bam_utils::setup_reference_caching(&bam_path);
 
     if let Some(ref target) = target_kmer {
         info!("Target kmer: {}", target);
@@ -98,14 +100,17 @@ pub fn count_unmapped_kmers(
     // Output results
     output_results(&canonical_counts, &sample_name, klength, total_reads);
 
+    // Clean up any downloaded index files
+    crate::bam_utils::cleanup_index_files(&bam_path);
+
     Ok(())
 }
 
 /// Get unmapped read count and total read count from BAM index statistics using rust-htslib
 /// Returns Some((unmapped_count, total_count)) if successful, None if index is not available or other error
 fn get_counts_from_index(bam_path: &str) -> Option<(u64, u64)> {
-    // Set up index caching before opening the file
-    setup_index_caching(bam_path);
+    // Set up reference caching for remote CRAM files
+    crate::bam_utils::setup_reference_caching(bam_path);
 
     // Try to create an IndexedReader and get index statistics
     let reader_result = if bam_path.starts_with("s3")
@@ -285,8 +290,8 @@ fn try_collect_indexed(
     expected_unmapped: u64,
     progress: Option<ProgressBar>,
 ) -> Option<(Vec<Vec<Vec<u8>>>, u64)> {
-    // Set up index caching before opening the file
-    setup_index_caching(bam_path);
+    // Set up reference caching for remote CRAM files
+    crate::bam_utils::setup_reference_caching(bam_path);
 
     // Use the same logic as fetch_unmapped_reads_indexed but stream the results
     let reader_result = if bam_path.starts_with("s3")
@@ -390,8 +395,8 @@ fn collect_fallback(
 ) -> (Vec<Vec<Vec<u8>>>, u64) {
     info!("Using fallback file traversal for sequence production");
 
-    // Set up index caching before opening the file
-    setup_index_caching(bam_path);
+    // Set up reference caching for remote CRAM files
+    crate::bam_utils::setup_reference_caching(bam_path);
 
     let mut reader = if bam_path.starts_with("http")
         || bam_path.starts_with("https")
@@ -688,6 +693,9 @@ fn count_target_kmer(
         sample_name, expanded_kmer, canonical, k, total_count, total_reads, frequency
     );
 
+    // Clean up any downloaded index files
+    crate::bam_utils::cleanup_index_files(bam_path);
+
     Ok(())
 }
 
@@ -719,8 +727,8 @@ fn stream_and_count_target_kmer(
         None
     };
 
-    // Set up index caching before opening the file
-    setup_index_caching(bam_path);
+    // Set up reference caching for remote CRAM files
+    crate::bam_utils::setup_reference_caching(bam_path);
 
     // Open BAM reader
     let mut reader = if bam_path.starts_with("http")

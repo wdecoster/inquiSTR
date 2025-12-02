@@ -1,0 +1,5 @@
+##fileformat=VCFv4.2
+##INFO=<ID=END,Number=1,Type=Integer,Description="End position">
+##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	SAMPLE
+chr1	2000	STR2	CAGCAGCAGCAGCAGCAGCAGCAG	CAGCAGCAGCAG	.	PASS	END=2024	GT	1/1

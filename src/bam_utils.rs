@@ -97,124 +97,81 @@ fn read_fai_lengths(reference_fasta: &str) -> Option<HashMap<String, u64>> {
     Some(map)
 }
 
-/// Check if a local index file exists for the given BAM/CRAM file
-/// Returns the path to the local index if it exists
-fn find_local_index(bam_path: &str) -> Option<PathBuf> {
-    // Try common index extensions
-    let extensions = [".bai", ".crai", ".bam.bai", ".cram.crai"];
-
-    for ext in &extensions {
-        let index_path = PathBuf::from(format!("{}{}", bam_path, ext));
-        if index_path.exists() {
-            debug!("Found local index file: {}", index_path.display());
-            return Some(index_path);
-        }
+/// Sets up CRAM reference caching for remote CRAM files
+/// Configures HTS_REF_CACHE to cache reference sequences in ~/.cache/inquistr/
+/// Only sets up caching when accessing remote CRAM files since local files don't need it
+pub fn setup_reference_caching(bam_path: &str) {
+    // Only set up caching for remote CRAM files
+    // Local CRAM files with local references don't benefit from caching
+    let is_remote = bam_path.starts_with("http://")
+        || bam_path.starts_with("https://")
+        || bam_path.starts_with("ftp://")
+        || bam_path.starts_with("s3://");
+    
+    let is_cram = bam_path.ends_with(".cram");
+    
+    if !is_remote || !is_cram {
+        return;
     }
 
-    None
-}
-
-/// Clean up old cached index files to prevent cache bloat
-/// Removes files older than the specified number of days
-fn cleanup_old_cache_files(cache_dir: &PathBuf, max_age_days: u64) {
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    let Ok(entries) = std::fs::read_dir(cache_dir) else {
-        return;
+    // Set up cache directory for CRAM reference sequences
+    let cache_dir = if let Ok(home) = env::var("HOME") {
+        PathBuf::from(home).join(".cache").join("inquistr")
+    } else {
+        PathBuf::from(".inquistr_cache")
     };
 
-    let current_time = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
-
-    let max_age_seconds = max_age_days * 24 * 60 * 60;
-    let mut removed_count = 0;
-
-    for entry in entries.flatten() {
-        if let Ok(metadata) = entry.metadata()
-            && metadata.is_file()
-            && let Ok(modified) = metadata.modified()
-            && let Ok(modified_duration) = modified.duration_since(UNIX_EPOCH)
-        {
-            let age_seconds = current_time.saturating_sub(modified_duration.as_secs());
-
-            if age_seconds > max_age_seconds && std::fs::remove_file(entry.path()).is_ok() {
-                removed_count += 1;
-                debug!("Removed old cache file: {:?}", entry.path());
-            }
-        }
+    // Create the cache directory if it doesn't exist
+    if let Err(e) = std::fs::create_dir_all(&cache_dir) {
+        warn!("Failed to create cache directory: {}", e);
+        return;
     }
 
-    if removed_count > 0 {
-        debug!("Cleaned up {} old cache files", removed_count);
+    let cache_path = cache_dir.to_string_lossy().to_string();
+
+    // Set htslib caching environment variables for CRAM reference sequences
+    // SAFETY: These set_var calls are safe because:
+    // 1. They occur during initialization before any parallel processing
+    // 2. These variables are only read by htslib, not by other Rust threads
+    // 3. We check if they're already set to avoid unnecessary modifications
+    if env::var("HTS_REF_CACHE").is_err() {
+        unsafe {
+            env::set_var("HTS_REF_CACHE", &cache_path);
+        }
+        debug!("Set HTS_REF_CACHE to: {} (for remote CRAM reference caching)", cache_path);
+    }
+
+    if env::var("REF_CACHE").is_err() {
+        unsafe {
+            env::set_var("REF_CACHE", &cache_path);
+        }
     }
 }
 
-/// Sets up caching for remote files (both index files and CRAM reference sequences)
-/// Checks if local index exists first, then configures cache directory for reference sequences
-/// Also performs periodic cleanup of old cache files (>30 days)
-///
-/// Note: htslib automatically caches downloaded index files (.bai/.crai) in the current
-/// working directory and reuses them on subsequent runs. CRAM reference sequences are
-/// cached in ~/.cache/inquistr/ via HTS_REF_CACHE.
-pub fn setup_index_caching(bam_path: &str) {
-    // Check if caching is explicitly disabled
-    if env::var("INQUISTR_NO_CACHE").is_ok() {
-        debug!("Caching disabled by INQUISTR_NO_CACHE environment variable");
-        return;
-    }
-
-    // First check if there's a local index file in the current directory
-    if let Some(local_index) = find_local_index(bam_path) {
-        debug!("Using existing local index file: {}", local_index.display());
-        return;
-    }
-
-    // Only set up remote caching if the path is a URL
+/// Clean up downloaded index files from the current working directory
+/// htslib downloads .bai/.crai files when accessing remote BAM/CRAM files
+/// This function removes those files to avoid cluttering the working directory
+pub fn cleanup_index_files(bam_path: &str) {
+    // Only clean up if the path is a remote URL
     if let Ok(url) = Url::parse(bam_path)
         && ["http", "https", "ftp", "s3"].contains(&url.scheme())
     {
-        debug!("Remote file detected - index will be downloaded and cached in current directory");
-
-        // Set up cache directory for reference sequences (CRAM files)
-        let cache_dir = if let Ok(home) = env::var("HOME") {
-            PathBuf::from(home).join(".cache").join("inquistr")
-        } else {
-            PathBuf::from(".inquistr_cache")
-        };
-
-        // Create the cache directory if it doesn't exist
-        if let Err(e) = std::fs::create_dir_all(&cache_dir) {
-            warn!("Failed to create cache directory: {}", e);
-            return;
-        }
-
-        // Clean up old cache files (older than 30 days by default)
-        let max_age_days = env::var("INQUISTR_CACHE_MAX_AGE_DAYS")
-            .ok()
-            .and_then(|s| s.parse::<u64>().ok())
-            .unwrap_or(30);
-
-        cleanup_old_cache_files(&cache_dir, max_age_days);
-
-        let cache_path = cache_dir.to_string_lossy().to_string();
-
-        // Set htslib caching environment variables for CRAM reference sequences
-        // SAFETY: These set_var calls are safe because:
-        // 1. They occur during initialization before any parallel processing
-        // 2. These variables are only read by htslib, not by other Rust threads
-        // 3. We check if they're already set to avoid unnecessary modifications
-        if env::var("HTS_REF_CACHE").is_err() {
-            unsafe {
-                env::set_var("HTS_REF_CACHE", &cache_path);
-            }
-            debug!("Set HTS_REF_CACHE to: {} (for CRAM reference caching)", cache_path);
-        }
-
-        if env::var("REF_CACHE").is_err() {
-            unsafe {
-                env::set_var("REF_CACHE", &cache_path);
+        // Try common index extensions that htslib might download
+        let extensions = [".bai", ".crai"];
+        
+        for ext in &extensions {
+            // Extract filename from URL and construct index filename
+            if let Some(filename) = url.path().split('/').next_back() {
+                let index_name = format!("{}{}", filename, ext);
+                let index_path = PathBuf::from(&index_name);
+                
+                if index_path.exists() {
+                    if let Err(e) = std::fs::remove_file(&index_path) {
+                        debug!("Failed to remove index file {}: {}", index_path.display(), e);
+                    } else {
+                        debug!("Cleaned up downloaded index file: {}", index_path.display());
+                    }
+                }
             }
         }
     }
@@ -286,8 +243,8 @@ fn get_bam_reader_internal(
 ) -> InquiSTRResult<bam::IndexedReader> {
     debug!("Opening BAM/CRAM file: {}", bamp);
 
-    // Set up index caching before opening the file
-    setup_index_caching(bamp);
+    // Set up reference caching for remote CRAM files
+    setup_reference_caching(bamp);
 
     let mut bam = if bamp.starts_with("s3")
         || bamp.starts_with("https://")
@@ -517,8 +474,8 @@ fn validate_phasing_on_reader(
 fn get_sequential_bam_reader(bamp: &String, reference: &Option<String>) -> bam::Reader {
     debug!("Opening BAM/CRAM file for sequential reading: {}", bamp);
 
-    // Set up index caching before opening the file (some readers may still use index)
-    setup_index_caching(bamp);
+    // Set up reference caching for remote CRAM files
+    setup_reference_caching(bamp);
 
     let mut bam =
         if bamp.starts_with("s3") || bamp.starts_with("https://") || bamp.starts_with("ftp://") {
@@ -755,107 +712,7 @@ pub fn cigar_to_rlen(cigar: &str) -> i64 {
     rlen
 }
 
-/// Clean the index cache directory
-pub fn clean_cache(dry_run: bool, all: bool, max_age_days: u64) {
-    use std::time::{SystemTime, UNIX_EPOCH};
 
-    // Determine cache directory location
-    let cache_dir = if let Ok(home) = env::var("HOME") {
-        PathBuf::from(home).join(".cache").join("inquistr")
-    } else {
-        PathBuf::from(".inquistr_cache")
-    };
-
-    if !cache_dir.exists() {
-        println!("Cache directory does not exist: {}", cache_dir.display());
-        println!("Nothing to clean.");
-        return;
-    }
-
-    println!("Cleaning cache directory: {}", cache_dir.display());
-
-    let Ok(entries) = std::fs::read_dir(&cache_dir) else {
-        eprintln!("Failed to read cache directory");
-        return;
-    };
-
-    let current_time = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
-
-    let max_age_seconds = max_age_days * 24 * 60 * 60;
-    let mut total_size = 0u64;
-    let mut total_files = 0;
-    let mut removed_count = 0;
-    let mut removed_size = 0u64;
-
-    for entry in entries.flatten() {
-        if let Ok(metadata) = entry.metadata()
-            && metadata.is_file()
-        {
-            let file_size = metadata.len();
-            total_size += file_size;
-            total_files += 1;
-
-            let should_delete = if all {
-                true
-            } else if let Ok(modified) = metadata.modified() {
-                if let Ok(modified_duration) = modified.duration_since(UNIX_EPOCH) {
-                    let age_seconds = current_time.saturating_sub(modified_duration.as_secs());
-                    age_seconds > max_age_seconds
-                } else {
-                    false
-                }
-            } else {
-                false
-            };
-
-            if should_delete {
-                if dry_run {
-                    println!(
-                        "  [DRY RUN] Would delete: {} ({} bytes)",
-                        entry.path().display(),
-                        file_size
-                    );
-                } else if std::fs::remove_file(entry.path()).is_ok() {
-                    println!("  Deleted: {} ({} bytes)", entry.path().display(), file_size);
-                    removed_count += 1;
-                    removed_size += file_size;
-                }
-            }
-        }
-    }
-
-    println!("\n=== Cache Summary ===");
-    println!("Total files: {}", total_files);
-    println!("Total size: {} bytes ({:.2} MB)", total_size, total_size as f64 / 1_048_576.0);
-
-    if dry_run {
-        println!(
-            "\nWould remove {} files ({} bytes, {:.2} MB)",
-            removed_count,
-            removed_size,
-            removed_size as f64 / 1_048_576.0
-        );
-        println!("\nRun without --dry-run to actually delete files.");
-    } else if removed_count > 0 {
-        println!(
-            "\nRemoved {} files ({} bytes, {:.2} MB)",
-            removed_count,
-            removed_size,
-            removed_size as f64 / 1_048_576.0
-        );
-        println!(
-            "Remaining: {} files ({} bytes, {:.2} MB)",
-            total_files - removed_count,
-            total_size - removed_size,
-            (total_size - removed_size) as f64 / 1_048_576.0
-        );
-    } else {
-        println!("\nNo files removed.");
-    }
-}
 
 #[cfg(test)]
 mod tests {

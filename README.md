@@ -6,7 +6,7 @@
 [![Documentation](https://docs.rs/inquiSTR/badge.svg)](https://docs.rs/inquiSTR)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-A toolkit for lightning-fast Short Tandem Repeat (STR) length genotyping and downstream analysis from long-read sequencing data. inquiSTR works with Oxford Nanopore Technologies and PacBio BAM/CRAM files and supports both phased and unphased data. With subcommands for combining results across samples for cohort studies with statistical association testing, outlier detection, relatedness assssment and visualization. inquiSTR provides seamless access to remote files via HTTP/HTTPS/FTP/S3 URLs with automatic index caching and makes efficient use of multi-core systems through parallelized code.
+A toolkit for lightning-fast Short Tandem Repeat (STR) length genotyping and downstream analysis from long-read sequencing data. inquiSTR works with Oxford Nanopore Technologies and PacBio BAM/CRAM files and supports both phased and unphased data. With subcommands for combining results across samples for cohort studies with statistical association testing, outlier detection, relatedness assssment and visualization. inquiSTR provides seamless access to remote files via HTTP/HTTPS/FTP/S3 URLs and makes efficient use of multi-core systems through parallelized code.
 
 ## Quick Start
 
