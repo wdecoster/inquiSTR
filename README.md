@@ -40,6 +40,7 @@ For detailed options, presets and additional commands, see the full documentatio
   - [inquiSTR call - STR Genotyping](#inquistr-call---str-genotyping)
   - [inquiSTR batch - Batch Sample Processing](#inquistr-batch---batch-sample-processing)
   - [inquiSTR combine - Multi-sample Analysis](#inquistr-combine---multi-sample-analysis)
+  - [inquiSTR convert - VCF to inquiSTR Format](#inquistr-convert---vcf-to-inquistr-format)
   - [inquiSTR filter - Filter STR Data](#inquistr-filter---filter-str-data)
   - [inquiSTR query - Genotype Lookup](#inquistr-query---genotype-lookup)
   - [inquiSTR outlier - Outlier Detection](#inquistr-outlier---outlier-detection)
@@ -472,6 +473,43 @@ inquiSTR combine *.inq --threads 8 > combined.tsv
 ```
 
 **Note:** When combining files, you can mix one combined file with any number of individual files. Multiple combined files cannot be combined together.
+
+### `inquiSTR convert` - VCF to inquiSTR Format
+
+Convert VCF files from other STR genotyping tools (e.g., TRGT, Straglr, ExpansionHunter) to inquiSTR's TSV format. This enables use of inquiSTR's downstream analysis tools (outlier detection, association testing, PCA, etc.) with data from other callers.
+
+```text
+Usage: inquiSTR convert <VCF>...
+
+Arguments:
+  <VCF>...  VCF file(s) to convert (can be compressed). Single sample VCF produces 
+            individual_call file, multiple samples or multiple VCFs produce combined_call file
+
+Options:
+  -h, --help  Print help
+```
+
+**Output Format:**
+
+- Single-sample VCF → individual call file (6 columns: chr, begin, end, info, sample_H1, sample_H2)
+- Multi-sample VCF or multiple VCFs → combined file (4+ columns: chr, begin, end, info, sample1_H1, sample1_H2, ...)
+- Allele lengths calculated as ALT - REF (negative values indicate deletions)
+- Missing genotypes (./.) converted to "NA"
+
+**Examples:**
+
+```bash
+# Convert a single-sample VCF to inquiSTR format
+inquiSTR convert sample1.vcf > sample1.inq
+
+# Convert a multi-sample VCF to combined format
+inquiSTR convert cohort.vcf > cohort_combined.tsv
+
+# Combine multiple single-sample VCFs into one file
+inquiSTR convert sample1.vcf sample2.vcf sample3.vcf > combined.tsv
+```
+
+Please let me know if the tool does not work for a specific type of VCF, and I will look into it!
 
 ### `inquiSTR query` - Genotype Lookup
 

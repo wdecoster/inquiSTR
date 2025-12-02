@@ -154,6 +154,7 @@ pub mod batching;
 pub mod benchmark;
 pub mod call;
 pub mod combine;
+pub mod convert;
 pub mod errors;
 pub mod filetype;
 pub mod filter;
@@ -548,6 +549,13 @@ enum Commands {
         #[clap(long, default_value_t = 30)]
         max_age_days: u64,
     },
+    /// Convert VCF files to inquiSTR format
+    #[clap(arg_required_else_help = true)]
+    Convert {
+        /// VCF file(s) to convert (can be compressed). Single sample VCF produces individual_call file, multiple samples or multiple VCFs produce combined_call file.
+        #[clap(value_parser, required = true)]
+        vcf: Vec<PathBuf>,
+    },
 }
 
 fn main() {
@@ -753,6 +761,12 @@ fn main() {
         }
         Commands::CleanCache { dry_run, all, max_age_days } => {
             bam_utils::clean_cache(dry_run, all, max_age_days);
+        }
+        Commands::Convert { vcf } => {
+            if let Err(e) = convert::convert_vcf(vcf) {
+                eprintln!("ERROR: {}", e.message);
+                std::process::exit(1);
+            }
         }
     }
 }
