@@ -105,7 +105,11 @@ fn parse_vcf(vcf_path: &Path) -> Result<(Vec<String>, Vec<VcfVariant>), InquiSTR
         let pos: u32 = fields[1].parse().map_err(|_| InquiSTRError {
             message: format!("Invalid position in VCF: {}", fields[1]),
         })?;
-        let id = if fields[2] == "." { format!("{}:{}", chromosome, pos) } else { fields[2].to_string() };
+        let id = if fields[2] == "." {
+            format!("{}:{}", chromosome, pos)
+        } else {
+            fields[2].to_string()
+        };
         let ref_seq = fields[3].to_string();
         let alt_field = fields[4];
 
@@ -115,7 +119,10 @@ fn parse_vcf(vcf_path: &Path) -> Result<(Vec<String>, Vec<VcfVariant>), InquiSTR
         // Get END from INFO field if present
         let info = fields[7];
         let end = if let Some(end_str) = info.split(';').find(|s| s.starts_with("END=")) {
-            end_str.trim_start_matches("END=").parse().unwrap_or(pos + ref_seq.len() as u32)
+            end_str
+                .trim_start_matches("END=")
+                .parse()
+                .unwrap_or(pos + ref_seq.len() as u32)
         } else {
             pos + ref_seq.len() as u32
         };
@@ -179,8 +186,16 @@ fn parse_genotype(gt: &str) -> (Option<i32>, Option<i32>) {
         return (None, None);
     }
 
-    let allele1 = if alleles[0] == "." { None } else { alleles[0].parse::<i32>().ok() };
-    let allele2 = if alleles[1] == "." { None } else { alleles[1].parse::<i32>().ok() };
+    let allele1 = if alleles[0] == "." {
+        None
+    } else {
+        alleles[0].parse::<i32>().ok()
+    };
+    let allele2 = if alleles[1] == "." {
+        None
+    } else {
+        alleles[1].parse::<i32>().ok()
+    };
 
     (allele1, allele2)
 }
@@ -204,12 +219,14 @@ pub fn convert_vcf(vcf_files: Vec<PathBuf>) -> Result<(), InquiSTRError> {
         for sample in &sample_names {
             let count = sample_counts.entry(sample.clone()).or_insert(0);
             *count += 1;
-            
+
             let final_sample_name = if *count > 1 {
                 let suffix_name = format!("{}_{}", sample, count);
                 eprintln!(
                     "Warning: Sample '{}' appears in multiple VCF files. Renaming to '{}' for file: {}",
-                    sample, suffix_name, vcf_path.display()
+                    sample,
+                    suffix_name,
+                    vcf_path.display()
                 );
                 suffix_name
             } else {
@@ -231,19 +248,29 @@ pub fn convert_vcf(vcf_files: Vec<PathBuf>) -> Result<(), InquiSTRError> {
         // Group variants by locus
         for variant in variants {
             let locus_key = format!("{}:{}:{}", variant.chromosome, variant.pos, variant.end);
-            all_variants_by_locus.entry(locus_key).or_default().push(variant);
+            all_variants_by_locus
+                .entry(locus_key)
+                .or_default()
+                .push(variant);
         }
     }
 
     let is_single_sample = all_samples.len() == 1;
-    let file_type = if is_single_sample { FileType::IndividualCall } else { FileType::CombinedCall };
+    let file_type = if is_single_sample {
+        FileType::IndividualCall
+    } else {
+        FileType::CombinedCall
+    };
 
     // Write metadata header
-    println!("# file_type={}", match file_type {
-        FileType::IndividualCall => "individual_call",
-        FileType::CombinedCall => "combined_call",
-        _ => unreachable!(),
-    });
+    println!(
+        "# file_type={}",
+        match file_type {
+            FileType::IndividualCall => "individual_call",
+            FileType::CombinedCall => "combined_call",
+            _ => unreachable!(),
+        }
+    );
     println!("# source=inquiSTR convert");
     for (i, vcf_path) in vcf_files.iter().enumerate() {
         println!("# input_vcf_{}={}", i + 1, vcf_path.display());
@@ -264,11 +291,17 @@ pub fn convert_vcf(vcf_files: Vec<PathBuf>) -> Result<(), InquiSTRError> {
     locus_keys.sort_by(|a, b| {
         let parse_locus = |s: &str| -> (String, u32, u32) {
             let parts: Vec<&str> = s.split(':').collect();
-            (parts[0].to_string(), parts[1].parse().unwrap_or(0), parts[2].parse().unwrap_or(0))
+            (
+                parts[0].to_string(),
+                parts[1].parse().unwrap_or(0),
+                parts[2].parse().unwrap_or(0),
+            )
         };
         let (chr_a, pos_a, end_a) = parse_locus(a);
         let (chr_b, pos_b, end_b) = parse_locus(b);
-        human_sort::compare(&chr_a, &chr_b).then(pos_a.cmp(&pos_b)).then(end_a.cmp(&end_b))
+        human_sort::compare(&chr_a, &chr_b)
+            .then(pos_a.cmp(&pos_b))
+            .then(end_a.cmp(&end_b))
     });
 
     // Write variant data
@@ -280,7 +313,10 @@ pub fn convert_vcf(vcf_files: Vec<PathBuf>) -> Result<(), InquiSTRError> {
 
         // Use the first variant for locus information
         let first_variant = &variants[0];
-        print!("{}\t{}\t{}\t{}", first_variant.chromosome, first_variant.pos, first_variant.end, first_variant.id);
+        print!(
+            "{}\t{}\t{}\t{}",
+            first_variant.chromosome, first_variant.pos, first_variant.end, first_variant.id
+        );
 
         // Merge genotypes from all variants at this locus
         let mut genotypes_by_sample: HashMap<String, (String, String)> = HashMap::new();
