@@ -79,6 +79,10 @@ struct BatchCommonArgs {
     /// Enable performance profiling and recommendations (minimal overhead)
     #[clap(long, value_parser)]
     profile: bool,
+
+    /// Skip file path validation before processing (faster startup, but errors will occur during processing if paths are invalid)
+    #[clap(long, value_parser)]
+    skip_validation: bool,
 }
 
 /// Mode selection for batch processing
@@ -607,6 +611,7 @@ fn main() {
                 reference: common.reference,
                 parallel_samples,
                 profile: common.profile,
+                skip_validation: common.skip_validation,
             };
 
             let batch_mode = if mode.unmapped {

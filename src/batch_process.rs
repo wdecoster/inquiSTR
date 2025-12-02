@@ -51,6 +51,7 @@ pub struct BatchConfig {
     pub reference: Option<String>,
     pub parallel_samples: usize,
     pub profile: bool,
+    pub skip_validation: bool,
 }
 
 /// Performance profiling data for a sample
@@ -545,22 +546,26 @@ pub fn batch_process(config: BatchConfig, mode: BatchMode) {
     }
 
     // Validate all file paths (especially URLs) before starting processing
-    eprintln!("Validating file paths...");
-    let mut invalid_paths = Vec::new();
-    for sample in &samples {
-        if let Err(e) = validate_file_path(&sample.bam_path) {
-            invalid_paths.push((sample.sample_name.clone(), sample.bam_path.clone(), e));
+    if !config.skip_validation {
+        eprintln!("Validating file paths...");
+        let mut invalid_paths = Vec::new();
+        for sample in &samples {
+            if let Err(e) = validate_file_path(&sample.bam_path) {
+                invalid_paths.push((sample.sample_name.clone(), sample.bam_path.clone(), e));
+            }
         }
-    }
-    if !invalid_paths.is_empty() {
-        eprintln!("ERROR: {} invalid file path(s) found:", invalid_paths.len());
-        for (sample_name, path, error) in &invalid_paths {
-            eprintln!("  - {}: {} ({})", sample_name, path, error);
+        if !invalid_paths.is_empty() {
+            eprintln!("ERROR: {} invalid file path(s) found:", invalid_paths.len());
+            for (sample_name, path, error) in &invalid_paths {
+                eprintln!("  - {}: {} ({})", sample_name, path, error);
+            }
+            eprintln!("\nPlease fix the file paths in the manifest and try again.");
+            std::process::exit(1);
         }
-        eprintln!("\nPlease fix the file paths in the manifest and try again.");
-        std::process::exit(1);
+        eprintln!("  All {} file paths validated successfully", samples.len());
+    } else {
+        eprintln!("Skipping file path validation (--skip-validation enabled)");
     }
-    eprintln!("  All {} file paths validated successfully", samples.len());
 
     // Determine output directory for individual files (need this early for resume logic)
     let individual_dir = if let Some(dir) = config.save_individual.as_ref() {
