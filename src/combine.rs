@@ -704,8 +704,217 @@ fn output_combined_header(headers: &[String]) {
 }
 
 /// Process data lines with optimized sequential reading and parallel line processing
+/// Get the maximum number of open files this process can have
+fn get_max_open_files() -> usize {
+    #[cfg(unix)]
+    {
+        use std::process::Command;
+
+        // Try to get file descriptor limit using ulimit
+        // This works on Linux, macOS, and most Unix systems
+        let result = Command::new("sh")
+            .arg("-c")
+            .arg("ulimit -n")
+            .output()
+            .ok()
+            .and_then(|output| String::from_utf8(output.stdout).ok())
+            .and_then(|limit_str| limit_str.trim().parse::<usize>().ok());
+
+        if let Some(limit) = result {
+            if limit < 100 {
+                eprintln!("  WARNING: Very low file descriptor limit detected: {}", limit);
+                eprintln!(
+                    "  This may cause issues with large cohorts. Consider increasing with 'ulimit -n 1024'"
+                );
+            }
+
+            // Use 60% of limit to leave room for other file operations
+            // Clamp to maximum 1000 (no minimum - respect system limits)
+            let safe_limit = ((limit as f64 * 0.6) as usize).min(1000);
+            eprintln!("  File descriptor limit: {} (using {})", limit, safe_limit);
+            return safe_limit;
+        }
+    }
+
+    // Fallback: conservative default for non-Unix systems or if ulimit fails
+    eprintln!("  Could not detect file descriptor limit, using default: 200");
+    200
+}
+
+/// Process STR data from a large number of files in batches to avoid exhausting file descriptors
+/// Each batch writes to its own temp file (batch 0 has chr/start/end/info, others only genotypes).
+/// Final output merges all temp files line-by-line. Memory usage is minimal.
+fn process_data_batched(calls: &[PathBuf], batch_size: usize) {
+    use std::fs::{File, remove_file};
+    use std::io::{BufRead, BufReader, Write};
+
+    let num_batches = calls.len().div_ceil(batch_size);
+    eprintln!(
+        "  Processing {} files in {} batches of up to {} files each",
+        calls.len(),
+        num_batches,
+        batch_size
+    );
+
+    let mut temp_files: Vec<PathBuf> = Vec::new();
+
+    // Process each batch and write to separate temp file
+    for (batch_idx, file_chunk) in calls.chunks(batch_size).enumerate() {
+        eprintln!(
+            "  Processing batch {}/{} ({} files)...",
+            batch_idx + 1,
+            num_batches,
+            file_chunk.len()
+        );
+
+        let temp_file_path = std::env::temp_dir().join(format!(
+            "inquistr_combine_{}_{}.tmp",
+            std::process::id(),
+            batch_idx
+        ));
+        temp_files.push(temp_file_path.clone());
+
+        let mut temp_file = File::create(&temp_file_path).expect("Failed to create temporary file");
+
+        let mut file_readers: Vec<_> = file_chunk
+            .iter()
+            .map(|file| reader(&file.clone().into_os_string().into_string().unwrap()).lines())
+            .collect();
+
+        // Skip metadata and header
+        for file_reader in &mut file_readers {
+            while let Some(Ok(line)) = file_reader.next() {
+                if line.starts_with('#') {
+                    continue;
+                } else {
+                    break;
+                }
+            }
+        }
+
+        let mut line_count = 0;
+        let chunk_size = 10000;
+
+        loop {
+            let mut data_lines: Vec<String> = Vec::with_capacity(file_chunk.len());
+            let mut all_done = true;
+
+            for file_reader in file_readers.iter_mut() {
+                match file_reader.next() {
+                    Some(Ok(line)) => {
+                        data_lines.push(line);
+                        all_done = false;
+                    }
+                    None => {}
+                    Some(Err(e)) => panic!("Error reading file: {}", e),
+                }
+            }
+
+            if all_done {
+                break;
+            }
+
+            if batch_idx == 0 {
+                // First batch: write chr/start/end/info + genotypes
+                let combined_line = combine_data_lines(&data_lines, line_count);
+                writeln!(temp_file, "{}", combined_line).expect("Failed to write to temp file");
+            } else {
+                // Subsequent batches: only write genotypes (no chr/start/end/info)
+                for (idx, line) in data_lines.iter().enumerate() {
+                    let fields: Vec<&str> = line.split('\t').collect();
+                    if fields.len() >= 2 {
+                        if idx > 0 {
+                            write!(temp_file, "\t").expect("Failed to write tab");
+                        }
+                        write!(
+                            temp_file,
+                            "{}\t{}",
+                            fields[fields.len() - 2],
+                            fields[fields.len() - 1]
+                        )
+                        .expect("Failed to write genotypes");
+                    }
+                }
+                writeln!(temp_file).expect("Failed to write newline");
+            }
+
+            line_count += 1;
+            if line_count % chunk_size == 0 {
+                eprintln!("    Processed {} variants...", line_count);
+            }
+        }
+
+        eprintln!(
+            "  Batch {} complete: {} variants written to {}",
+            batch_idx + 1,
+            line_count,
+            temp_file_path.display()
+        );
+
+        drop(file_readers);
+        drop(temp_file);
+    }
+
+    // Merge all temp files line-by-line and output
+    eprintln!("  Merging {} temporary files...", temp_files.len());
+
+    let mut temp_readers: Vec<_> = temp_files
+        .iter()
+        .map(|path| BufReader::new(File::open(path).expect("Failed to open temp file")).lines())
+        .collect();
+
+    let mut line_count = 0;
+    loop {
+        let mut merged_line = String::new();
+        let mut all_done = true;
+
+        for (idx, temp_reader) in temp_readers.iter_mut().enumerate() {
+            match temp_reader.next() {
+                Some(Ok(line)) => {
+                    if idx == 0 {
+                        merged_line = line;
+                    } else {
+                        merged_line.push('\t');
+                        merged_line.push_str(&line);
+                    }
+                    all_done = false;
+                }
+                None => {}
+                Some(Err(e)) => panic!("Error reading temp file {}: {}", idx, e),
+            }
+        }
+
+        if all_done {
+            break;
+        }
+
+        println!("{}", merged_line);
+        line_count += 1;
+    }
+
+    // Clean up temp files
+    for temp_file in temp_files {
+        remove_file(&temp_file).ok();
+    }
+
+    eprintln!("  Done! Wrote {} variants", line_count);
+}
+
 fn process_data_parallel(calls: &[PathBuf]) {
-    // Create file readers
+    // Dynamically determine safe number of open files
+    let max_open_files = get_max_open_files();
+
+    if calls.len() > max_open_files {
+        eprintln!(
+            "  Large cohort ({} files), processing in batches of {} to avoid file descriptor exhaustion",
+            calls.len(),
+            max_open_files
+        );
+        process_data_batched(calls, max_open_files);
+        return;
+    }
+
+    // Create file readers for small cohorts (original approach)
     let mut file_readers: Vec<_> = calls
         .iter()
         .map(|file| reader(&file.clone().into_os_string().into_string().unwrap()).lines())
