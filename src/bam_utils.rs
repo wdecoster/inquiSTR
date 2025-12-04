@@ -107,9 +107,9 @@ pub fn setup_reference_caching(bam_path: &str) {
         || bam_path.starts_with("https://")
         || bam_path.starts_with("ftp://")
         || bam_path.starts_with("s3://");
-    
+
     let is_cram = bam_path.ends_with(".cram");
-    
+
     if !is_remote || !is_cram {
         return;
     }
@@ -158,13 +158,13 @@ pub fn cleanup_index_files(bam_path: &str) {
     {
         // Try common index extensions that htslib might download
         let extensions = [".bai", ".crai"];
-        
+
         for ext in &extensions {
             // Extract filename from URL and construct index filename
             if let Some(filename) = url.path().split('/').next_back() {
                 let index_name = format!("{}{}", filename, ext);
                 let index_path = PathBuf::from(&index_name);
-                
+
                 if index_path.exists() {
                     if let Err(e) = std::fs::remove_file(&index_path) {
                         debug!("Failed to remove index file {}: {}", index_path.display(), e);
@@ -711,8 +711,6 @@ pub fn cigar_to_rlen(cigar: &str) -> i64 {
     }
     rlen
 }
-
-
 
 #[cfg(test)]
 mod tests {
