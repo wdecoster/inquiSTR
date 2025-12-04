@@ -457,17 +457,18 @@ fn get_r_command(script_path: &str, script_args: &[&str]) -> Result<(String, Vec
             .output();
 
         if let Ok(output) = check
-            && output.status.success() {
-                let mut args = vec![
-                    "run".to_string(),
-                    "-n".to_string(),
-                    "inquiSTR".to_string(),
-                    "Rscript".to_string(),
-                    script_path.to_string(),
-                ];
-                args.extend(script_args.iter().map(|s| s.to_string()));
-                return Ok((conda_cmd.to_string(), args));
-            }
+            && output.status.success()
+        {
+            let mut args = vec![
+                "run".to_string(),
+                "-n".to_string(),
+                "inquiSTR".to_string(),
+                "Rscript".to_string(),
+                script_path.to_string(),
+            ];
+            args.extend(script_args.iter().map(|s| s.to_string()));
+            return Ok((conda_cmd.to_string(), args));
+        }
     }
 
     // Try cached portable R
@@ -535,7 +536,9 @@ fn check_system_conda_r() -> Result<(String, String, String), String> {
             .args(["run", "-n", "inquiSTR", "R", "--version"])
             .output();
 
-        if let Ok(output) = r_check && output.status.success() {
+        if let Ok(output) = r_check
+            && output.status.success()
+        {
             let version_info = String::from_utf8_lossy(&output.stdout);
             let version = version_info.lines().next().unwrap_or("unknown").to_string();
 
@@ -545,7 +548,9 @@ fn check_system_conda_r() -> Result<(String, String, String), String> {
                        "if (!require('data.table', quietly=TRUE)) quit(status=1); if (!require('argparser', quietly=TRUE)) quit(status=1)"])
                 .output();
 
-            if let Ok(pkg_output) = pkg_check && pkg_output.status.success() {
+            if let Ok(pkg_output) = pkg_check
+                && pkg_output.status.success()
+            {
                 let r_path = format!("{} run -n inquiSTR R", conda_cmd);
                 return Ok((
                     r_path,
