@@ -1135,7 +1135,7 @@ pub fn batch_process(config: BatchConfig, mode: BatchMode) {
     }
 
     let total_duration = start_time.elapsed();
-    
+
     // Clean up any downloaded index files for all samples in the manifest
     // Re-parse manifest to get bam paths for cleanup
     eprintln!("\nCleaning up downloaded index files...");
@@ -1148,7 +1148,7 @@ pub fn batch_process(config: BatchConfig, mode: BatchMode) {
             }
         }
     }
-    
+
     eprintln!("\nBatch processing complete!");
     eprintln!("  Successful: {}", individual_files.len());
     eprintln!("  Failed: {}", failed_samples.len());
