@@ -397,6 +397,10 @@ enum Commands {
         /// Do not print progress messages
         #[clap(long)]
         quiet: bool,
+
+        /// Generate QQ plot and Manhattan plot with custom prefix (e.g., --plot myresults). If no prefix given, uses output filename stem.
+        #[clap(long, value_parser)]
+        plot: Option<String>,
     },
     /// Show a histogram with multiple groups for a specific repeat
     Plot {
@@ -669,6 +673,7 @@ fn main() {
             chunk_size,
             binary_order,
             quiet,
+            plot,
         } => {
             assoc::run_association(
                 input,
@@ -684,6 +689,7 @@ fn main() {
                 chunk_size,
                 binary_order,
                 quiet,
+                plot,
             );
         }
         Commands::Plot { combined, sample_metadata, condition, region, output } => {

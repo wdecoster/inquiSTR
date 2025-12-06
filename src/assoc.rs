@@ -14,7 +14,7 @@ use std::process::{Command, Stdio};
 // Embed the R script directly in the binary
 const STR_REGRESSION_SCRIPT: &str = include_str!("../scripts/STR_regression.R");
 
-// Required R packages
+// Required R packages (qqman only needed for --plot)
 const REQUIRED_R_PACKAGES: &[&str] = &["data.table", "argparser", "parallel"];
 
 // Portable R installation constants
@@ -37,6 +37,7 @@ pub fn run_association(
     chunk_size: usize,
     binary_order: Option<String>,
     quiet: bool,
+    plot: Option<String>,
 ) {
     if !quiet {
         info!("Starting STR association testing");
@@ -82,6 +83,7 @@ pub fn run_association(
         chunk_size,
         binary_order,
         quiet,
+        plot.as_deref(),
     );
 
     // Clean up temporary file
@@ -362,6 +364,7 @@ fn execute_r_script(
     chunk_size: usize,
     binary_order: Option<String>,
     quiet: bool,
+    plot: Option<&str>,
 ) -> Result<(), String> {
     let script_path_str = script_path.to_string_lossy();
     let input_str = input.to_string_lossy();
@@ -410,6 +413,13 @@ fn execute_r_script(
         script_args.push("--quiet");
     }
 
+    let plot_prefix_str;
+    if let Some(plot_prefix) = plot {
+        script_args.push("--plot");
+        plot_prefix_str = plot_prefix.to_string();
+        script_args.push(&plot_prefix_str);
+    }
+
     // Determine which R to use based on detection cascade
     let (r_command, r_args) = get_r_command(script_path_str.as_ref(), &script_args)?;
 
@@ -424,11 +434,35 @@ fn execute_r_script(
         let stderr = String::from_utf8_lossy(&output.stderr);
         let stdout = String::from_utf8_lossy(&output.stdout);
 
-        error!("R script execution failed");
-        error!("STDOUT: {}", stdout);
-        error!("STDERR: {}", stderr);
+        eprintln!("\n{}", "=".repeat(60));
+        eprintln!("R SCRIPT EXECUTION FAILED");
+        eprintln!("{}", "=".repeat(60));
 
-        return Err(format!("R script failed with exit code: {:?}", output.status.code()));
+        if !stderr.is_empty() {
+            eprintln!("\nError details:");
+            eprintln!("{}", stderr);
+        }
+
+        if !stdout.is_empty() {
+            eprintln!("\nOutput before failure:");
+            eprintln!("{}", stdout);
+        }
+
+        eprintln!("\n{}", "=".repeat(60));
+
+        return Err(format!(
+            "R script failed with exit code: {}",
+            output
+                .status
+                .code()
+                .map_or("unknown".to_string(), |c| c.to_string())
+        ));
+    }
+
+    // Always show stderr (warnings, plot messages, etc.) even on success
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if !stderr.is_empty() && !quiet {
+        eprintln!("{}", stderr);
     }
 
     if !quiet {
@@ -582,7 +616,10 @@ fn offer_conda_env_creation(conda_cmd: &str, quiet: bool) -> Result<(), String> 
     eprintln!("{}", "=".repeat(60));
     eprintln!("\nFound {} but no 'inquiSTR' environment.", conda_cmd);
     eprintln!("\nWould you like to create an inquiSTR environment with R and required packages?");
-    eprintln!("This will install R {} with data.table and argparser (~250 MB)", R_VERSION);
+    eprintln!(
+        "This will install R {} with data.table, argparser, and qqman (for plotting) (~250 MB)",
+        R_VERSION
+    );
     eprintln!("\nType 'y' to create environment, or any other key to cancel: ");
 
     let mut response = String::new();
@@ -593,7 +630,7 @@ fn offer_conda_env_creation(conda_cmd: &str, quiet: bool) -> Result<(), String> 
     if response.trim().to_lowercase() != "y" {
         eprintln!("\nCancelled. You can create the environment later with:");
         eprintln!(
-            "  {} create -n inquiSTR -c conda-forge r-base={} r-data.table r-argparser",
+            "  {} create -n inquiSTR -c conda-forge r-base={} r-data.table r-argparser r-qqman",
             conda_cmd, R_VERSION
         );
         return Err("User cancelled conda environment creation".to_string());
@@ -618,6 +655,7 @@ fn offer_conda_env_creation(conda_cmd: &str, quiet: bool) -> Result<(), String> 
             &format!("r-base={}", R_VERSION),
             "r-data.table",
             "r-argparser",
+            "r-qqman",
         ])
         .status()
         .map_err(|e| format!("Failed to create environment: {}", e))?;
@@ -647,7 +685,10 @@ fn offer_portable_r_installation(conda_prefix: &Path, quiet: bool) -> Result<(),
     eprintln!("  - Total disk space: ~350 MB");
     eprintln!("  - Install location: {}", conda_prefix.display());
     eprintln!("  - No system changes required");
-    eprintln!("  - Includes R {} with data.table and argparser", R_VERSION);
+    eprintln!(
+        "  - Includes R {} with data.table, argparser, and qqman (for plotting)",
+        R_VERSION
+    );
     eprintln!("  - One-time download, ~2-3 minutes");
     eprintln!("\nWould you like to download and install portable R now?");
     eprintln!("Type 'y' to proceed, or any other key to cancel: ");
@@ -748,6 +789,7 @@ fn install_portable_r(conda_prefix: &Path, quiet: bool) -> Result<(), String> {
             &format!("r-base={}", R_VERSION),
             "r-data.table",
             "r-argparser",
+            "r-qqman",
         ])
         .env("CONDA_PREFIX", conda_prefix)
         .status()
@@ -808,10 +850,14 @@ fn print_r_setup_instructions() {
     eprintln!("   Start R and run:");
     eprintln!("   install.packages(c('data.table', 'argparser'))");
     eprintln!("   # Note: 'parallel' is part of base R");
+    eprintln!("   # Optional: install.packages('qqman') for --plot functionality");
 
     eprintln!("\n3. Alternative: Install using command line:");
     eprintln!(
         "   Rscript -e \"install.packages(c('data.table', 'argparser'), repos='https://cran.rstudio.com/')\""
+    );
+    eprintln!(
+        "   # Optional for plotting: Rscript -e \"install.packages('qqman', repos='https://cran.rstudio.com/')\""
     );
 
     eprintln!("\nOnce R is properly set up, you can run:");

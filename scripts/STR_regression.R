@@ -22,6 +22,7 @@ parse_arguments <- function() {
     p <- argparser::add_argument(p, "--outcometype", help = "binary or continuous", type = "character", nargs = 1)
     p <- argparser::add_argument(p, "--binaryOrder", help = "Binary phenotype order, comma separated (e.g., Control,Patient)", type = "character", nargs = "*")
     p <- argparser::add_argument(p, "--quiet", help = "Do not print progress messages", flag = TRUE)
+    p <- argparser::add_argument(p, "--plot", help = "Prefix for QQ plot and Manhattan plot filenames", type = "character", nargs = "?")
     
     arg <- argparser::parse_args(p)
     
@@ -554,6 +555,138 @@ run_streaming_analysis <- function(arg) {
     }
 }
 
+# Generate QQ and Manhattan plots
+generate_plots <- function(results_file, out_prefix, quiet) {
+    # Check if qqman is available, install if needed
+    if (!requireNamespace("qqman", quietly = TRUE)) {
+        if(!quiet) {
+            cat("qqman package not installed. Installing now...\n")
+        }
+        
+        install_result <- tryCatch({
+            install.packages("qqman", repos = "https://cran.rstudio.com/", quiet = quiet)
+            if(!quiet) {
+                cat("qqman installed successfully.\n")
+            }
+            TRUE
+        }, error = function(e) {
+            cat("Warning: Failed to install qqman package: ", e$message, "\n", sep = "", file = stderr())
+            cat("Skipping plot generation. You can manually install with: install.packages('qqman')\n", file = stderr())
+            FALSE
+        })
+        
+        if (!install_result) {
+            return(invisible(NULL))
+        }
+        
+        # Verify installation succeeded
+        if (!requireNamespace("qqman", quietly = TRUE)) {
+            cat("Warning: qqman installation failed. Skipping plot generation.\n", file = stderr())
+            return(invisible(NULL))
+        }
+    }
+    
+    suppressWarnings(suppressMessages(library(qqman)))
+    
+    if(!quiet) {
+        cat("Generating plots...\n")
+    }
+    
+    # Read results
+    results <- tryCatch({
+        fread(results_file, header = TRUE)
+    }, error = function(e) {
+        cat("Warning: Could not read results file for plotting: ", e$message, "\n", sep = "", file = stderr())
+        NULL
+    })
+    
+    if(is.null(results) || nrow(results) == 0) {
+        cat("Warning: No results to plot\n", file = stderr())
+        return(invisible(NULL))
+    }
+    
+    # Check required columns
+    if(!"Pvalue" %in% colnames(results)) {
+        cat("Warning: Pvalue column not found in results\n", file = stderr())
+        return(invisible(NULL))
+    }
+    
+    # Parse VariantID to get CHR and BP
+    # VariantID format is: chr_start_end (underscore-separated)
+    results[, c("CHR", "BP") := tstrsplit(VariantID, "_", keep = 1:2)]
+    results[, CHR := gsub("^chr", "", CHR)]  # Remove 'chr' prefix if present
+    results[, BP := as.numeric(BP)]
+    
+    # Filter out rows with missing CHR or BP
+    results <- results[!is.na(CHR) & !is.na(BP) & !is.na(Pvalue) & Pvalue > 0]
+    
+    if(nrow(results) == 0) {
+        cat("Warning: No valid variants for plotting after filtering\n", file = stderr())
+        return(invisible(NULL))
+    }
+    
+    # Convert CHR to numeric (handle X, Y, MT)
+    results[, CHR_numeric := CHR]
+    results[CHR == "X", CHR_numeric := "23"]
+    results[CHR == "Y", CHR_numeric := "24"]
+    results[CHR == "MT" | CHR == "M", CHR_numeric := "25"]
+    results[, CHR_numeric := as.numeric(CHR_numeric)]
+    
+    # Filter out chromosomes that couldn't be converted
+    results <- results[!is.na(CHR_numeric)]
+    
+    if(nrow(results) == 0) {
+        cat("Warning: No variants with valid chromosomes for plotting\n", file = stderr())
+        return(invisible(NULL))
+    }
+    
+    # Prepare data for qqman (needs CHR as numeric, BP, P, and SNP columns)
+    plot_data <- data.frame(
+        SNP = results$VariantID,
+        CHR = results$CHR_numeric,
+        BP = results$BP,
+        P = results$Pvalue
+    )
+    
+    # Generate Manhattan plot
+    manhattan_file <- paste0(out_prefix, "_manhattan.png")
+    tryCatch({
+        png(manhattan_file, width = 1200, height = 600, res = 100)
+        manhattan(plot_data, 
+                 chr = "CHR", 
+                 bp = "BP", 
+                 p = "P", 
+                 snp = "SNP",
+                 main = "Manhattan Plot - STR Association",
+                 col = c("blue4", "orange3"),
+                 suggestiveline = -log10(1e-5),
+                 genomewideline = -log10(5e-8),
+                 chrlabs = NULL)
+        dev.off()
+        if(!quiet) {
+            cat("Manhattan plot saved to:", manhattan_file, "\n")
+        }
+    }, error = function(e) {
+        cat("Warning: Failed to generate Manhattan plot: ", e$message, "\n", sep = "", file = stderr())
+        if(dev.cur() > 1) dev.off()
+    })
+    
+    # Generate QQ plot
+    qq_file <- paste0(out_prefix, "_qq.png")
+    tryCatch({
+        png(qq_file, width = 600, height = 600, res = 100)
+        qq(plot_data$P, 
+           main = "QQ Plot - STR Association")
+        dev.off()
+        if(!quiet) {
+            cat("QQ plot saved to:", qq_file, "\n")
+        }
+    }, error = function(e) {
+        cat("Warning: Failed to generate QQ plot: ", e$message, "\n", sep = "", file = stderr())
+        if(dev.cur() > 1) dev.off()
+    })
+}
+
 # Main execution
 main <- function() {
     arg <- parse_arguments()
@@ -563,6 +696,17 @@ main <- function() {
     }
     
     run_streaming_analysis(arg)
+    
+    # Generate plots if requested
+    if(!is.na(arg$plot)) {
+        # Use provided plot prefix, or default to output filename stem
+        plot_prefix <- if(arg$plot != "") {
+            arg$plot
+        } else {
+            sub("\\.[^.]*$", "", arg$out)
+        }
+        generate_plots(arg$out, plot_prefix, arg$quiet)
+    }
 }
 
 # Run main function

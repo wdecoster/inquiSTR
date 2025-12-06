@@ -1041,6 +1041,7 @@ Options:
       --chunk-size <CHUNK_SIZE>          Number of variants to process in each chunk [default: 1000]
       --binary-order <BINARY_ORDER>      Binary phenotype order (e.g., Control,Patient) - required for binary outcomes
       --quiet                            Do not print progress messages
+      --plot <PREFIX>                    Generate QQ plot and Manhattan plot with custom filename prefix (optional)
   -h, --help                             Print help
 ```
 
@@ -1053,16 +1054,20 @@ The association testing functionality requires R with specific packages. inquiST
 - `data.table` - Fast data manipulation
 - `argparser` - Command-line argument parsing
 - `parallel` - Parallel processing (included with base R)
+- `qqman` - QQ and Manhattan plot generation (optional, required only for `--plot`)
 
 **Installation:**
 
 ```bash
-# Install R packages
-Rscript -e "install.packages(c('data.table', 'argparser'), repos='https://cran.rstudio.com/')"
+# Install R packages (including optional qqman for plotting)
+Rscript -e "install.packages(c('data.table', 'argparser', 'qqman'), repos='https://cran.rstudio.com/')"
 
 # Or install interactively in R
 R
-> install.packages(c('data.table', 'argparser'))
+> install.packages(c('data.table', 'argparser', 'qqman'))
+
+# Minimal installation (without plotting capability)
+Rscript -e "install.packages(c('data.table', 'argparser'), repos='https://cran.rstudio.com/')"
 ```
 
 #### Phenotype File Format
@@ -1145,6 +1150,40 @@ inquiSTR association \
   --chunk-size 500 \
   --quiet
 ```
+
+**With visualization (QQ and Manhattan plots):**
+
+```bash
+# Default: uses output filename as prefix
+inquiSTR association \
+  --input combined_strs.tsv \
+  --phenocovar case_control.csv \
+  --phenotype disease_status \
+  --out disease_association.tsv \
+  --str-mode MAX \
+  --outcometype binary \
+  --binary-order Control,Case \
+  --covnames age,sex,population \
+  --threads 8 \
+  --plot
+
+# Custom prefix for plot filenames
+inquiSTR association \
+  --input combined_strs.tsv \
+  --phenocovar case_control.csv \
+  --phenotype disease_status \
+  --out results.tsv \
+  --str-mode MAX \
+  --outcometype binary \
+  --binary-order Control,Case \
+  --plot myproject_disease
+```
+
+When `--plot` is used, inquiSTR will generate two additional files:
+- `<prefix>_manhattan.png` - Manhattan plot showing -log10(p-value) across chromosomes
+- `<prefix>_qq.png` - QQ plot for assessing genomic inflation and deviation from expected p-value distribution
+
+If no prefix is provided to `--plot`, it defaults to the output filename stem (e.g., `results.tsv` → `results_manhattan.png`)
 
 ## Legacy R Script Usage
 
