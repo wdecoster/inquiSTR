@@ -934,7 +934,7 @@ fn process_data_parallel(calls: &[PathBuf]) {
     }
 
     let mut line_count = 0;
-    let chunk_size = 1000; // Process 1000 lines at a time for progress reporting
+    let chunk_size = 100000; // Report progress every 10k lines
 
     loop {
         let mut data_lines: Vec<String> = Vec::with_capacity(calls.len());
@@ -967,11 +967,11 @@ fn process_data_parallel(calls: &[PathBuf]) {
 
         line_count += 1;
         if line_count % chunk_size == 0 {
-            eprintln!("Processed {} lines...", line_count);
+            eprintln!("  Processed {} variants...", line_count);
         }
     }
 
-    eprintln!("Processed {} total lines", line_count);
+    eprintln!("  Completed processing {} variants", line_count);
 }
 
 /// Combine data lines from all files with variant consistency checking
