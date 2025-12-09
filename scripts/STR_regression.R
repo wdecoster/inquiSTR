@@ -26,18 +26,26 @@ parse_arguments <- function() {
     
     arg <- argparser::parse_args(p)
     
+    # Detect input file type (STR vs kmer)
+    input_type <- detect_input_type(arg$input)
+    
     # Validation
     if (is.na(arg$input) || is.na(arg$phenocovar) || is.na(arg$phenotype) || 
-        is.na(arg$out) || is.na(arg$STRmode) || is.na(arg$outcometype)) {
+        is.na(arg$out) || is.na(arg$outcometype)) {
         stop("Error: Missing required arguments")
+    }
+    
+    # STRmode is only required for STR data
+    if (input_type == "str" && is.na(arg$STRmode)) {
+        stop("Error: --STRmode required for STR data")
     }
     
     if (arg$outcometype == "binary" && is.na(arg$binaryOrder)) {
         stop("Error: --binaryOrder required for binary outcomes")
     }
     
-    if (!arg$STRmode %in% c("MEAN", "MAX", "MIN")) {
-        stop("Error: STRmode must be MEAN, MAX, or MIN")
+    if (input_type == "str" && !arg$STRmode %in% c("MEAN", "MAX", "MIN")) {
+        stop("Error: STRmode must be MEAN, MAX, or MIN for STR data")
     }
     
     if (!arg$outcometype %in% c("binary", "continuous")) {
@@ -70,7 +78,57 @@ parse_arguments <- function() {
         stop("Error: chunk_size must be >= 1")
     }
     
+    # Warn if plot flag is used with kmer data (no chromosome/position info)
+    if (input_type == "kmer" && !is.na(arg$plot)) {
+        if(!arg$quiet) {
+            cat("Warning: --plot flag not supported for kmer frequency data (no chromosome/position information)\n", file = stderr())
+            cat("Plots will be skipped. Continuing with association analysis...\n", file = stderr())
+        }
+        arg$plot <- NA  # Disable plotting
+    }
+    
     return(arg)
+}
+
+# Detect input file type (STR vs kmer)
+detect_input_type <- function(input_file) {
+    # Read first non-metadata line to determine file type
+    con <- file(input_file, "r")
+    
+    while(TRUE) {
+        line <- readLines(con, n = 1, warn = FALSE)
+        if(length(line) == 0) {
+            close(con)
+            stop("Error: Empty input file")
+        }
+        
+        # Skip metadata lines
+        if(startsWith(line, "#")) {
+            # Check file_type metadata if present
+            if(grepl("^# file_type=", line)) {
+                if(grepl("kmer", line)) {
+                    close(con)
+                    return("kmer")
+                } else if(grepl("call", line)) {
+                    close(con)
+                    return("str")
+                }
+            }
+            next
+        }
+        
+        # This is the header line - check first column
+        fields <- strsplit(line, "\t")[[1]]
+        close(con)
+        
+        if(fields[1] == "kmer") {
+            return("kmer")
+        } else if(fields[1] == "chromosome") {
+            return("str")
+        } else {
+            stop("Error: Unrecognized file format. Expected 'kmer' or 'chromosome' as first column, got: ", fields[1])
+        }
+    }
 }
 
 # Prepare phenotype data for analysis
@@ -156,6 +214,28 @@ prepare_phenotype_data <- function(phenocovar_file, phenotype_col, covariates_st
         phenotype_col = phenotype_col,
         covariates = covariates,
         binary_levels = if(!is.null(binaryOrder)) trimws(unlist(strsplit(binaryOrder, ","))) else NULL
+    ))
+}
+
+# Parse a single kmer line and extract frequency data
+parse_kmer_line <- function(line_data, sample_names) {
+    # Extract kmer info (first column)
+    kmer_seq <- line_data[1]
+    
+    # Calculate number of samples
+    n_samples <- length(sample_names)
+    
+    # Extract frequency data (columns 2 onwards)
+    if(length(line_data) < (1 + n_samples)) {
+        stop("Error: Kmer line has fewer columns than expected. Expected ", 1 + n_samples, ", got ", length(line_data))
+    }
+    
+    frequency_data <- as.numeric(line_data[2:(1 + n_samples)])
+    names(frequency_data) <- sample_names
+    
+    return(list(
+        kmer_info = list(kmer = kmer_seq),
+        kmer_values = frequency_data
     ))
 }
 
@@ -264,8 +344,15 @@ process_single_variant <- function(variant_data, pheno_info, missing_cutoff, min
                 }
             }
             
+            # Create VariantID based on data type
+            variant_id <- if(!is.null(variant_info$kmer)) {
+                variant_info$kmer
+            } else {
+                paste(variant_info$chrom, variant_info$start, variant_info$end, sep = "_")
+            }
+            
             result <- data.frame(
-                VariantID = paste(variant_info$chrom, variant_info$start, variant_info$end, sep = "_"),
+                VariantID = variant_id,
                 OR = round(or, 3),
                 OR_L95 = round(ci[1], 3),
                 OR_U95 = round(ci[2], 3),
@@ -291,8 +378,15 @@ process_single_variant <- function(variant_data, pheno_info, missing_cutoff, min
             # Calculate confidence intervals
             ci <- confint.default(model)["variant_value", ]
             
+            # Create VariantID based on data type
+            variant_id <- if(!is.null(variant_info$kmer)) {
+                variant_info$kmer
+            } else {
+                paste(variant_info$chrom, variant_info$start, variant_info$end, sep = "_")
+            }
+            
             result <- data.frame(
-                VariantID = paste(variant_info$chrom, variant_info$start, variant_info$end, sep = "_"),
+                VariantID = variant_id,
                 Beta = round(variant_coef["Estimate"], 3),
                 Beta_L95 = round(ci[1], 3),
                 Beta_U95 = round(ci[2], 3),
@@ -317,14 +411,21 @@ process_single_variant <- function(variant_data, pheno_info, missing_cutoff, min
 }
 
 # Process a chunk of variants in parallel
-process_variant_chunk <- function(variant_lines, sample_names, str_mode, pheno_info, missing_cutoff, minimal_length, outcometype, quiet = FALSE) {
+process_variant_chunk <- function(variant_lines, sample_names, str_mode, pheno_info, missing_cutoff, minimal_length, outcometype, quiet = FALSE, input_type = "str") {
     results <- list()
     
     for(i in 1:length(variant_lines)) {
         line_data <- strsplit(variant_lines[i], "\t")[[1]]
         
-        # Parse variant data
-        variant_data <- parse_variant_line(line_data, sample_names, str_mode)
+        # Parse variant data based on input type
+        if(input_type == "kmer") {
+            variant_data <- parse_kmer_line(line_data, sample_names)
+            # Use kmer values directly (no H1/H2 combination needed)
+            variant_data$str_values <- variant_data$kmer_values
+            variant_data$variant_info <- variant_data$kmer_info
+        } else {
+            variant_data <- parse_variant_line(line_data, sample_names, str_mode)
+        }
         
         # Process the variant
         result <- process_single_variant(
@@ -385,13 +486,23 @@ run_streaming_analysis <- function(arg) {
     
     header_cols <- strsplit(header_line, "\t")[[1]]
     
-    # Extract sample names from header (every other column starting from 4th, removing _H1 suffix)
-    h1_cols <- header_cols[seq(4, length(header_cols), by = 2)]
-    sample_names <- gsub("_H1$", "", h1_cols)
+    # Extract sample names based on input type
+    if(input_type == "kmer") {
+        # Kmer format: first column is 'kmer', rest are sample names
+        sample_names <- header_cols[-1]  # Remove first column (kmer)
+    } else {
+        # STR format: extract sample names from header (every other column starting from 5th, removing _H1 suffix)
+        h1_cols <- header_cols[seq(5, length(header_cols), by = 2)]
+        sample_names <- gsub("_H1$", "", h1_cols)
+    }
     
     if(!arg$quiet) {
         cat("Found", length(sample_names), "samples in input file\n")
-        cat("Starting variant processing...\n")
+        if(input_type == "kmer") {
+            cat("Starting kmer frequency processing...\n")
+        } else {
+            cat("Starting variant processing...\n")
+        }
     }
     
     # Write output header
@@ -444,7 +555,8 @@ run_streaming_analysis <- function(arg) {
                         arg$missing_cutoff, 
                         arg$minimal_length, 
                         arg$outcometype, 
-                        arg$quiet
+                        arg$quiet,
+                        input_type
                     )
                 }, mc.cores = num_cores)
                 
@@ -460,7 +572,8 @@ run_streaming_analysis <- function(arg) {
                     arg$missing_cutoff, 
                     arg$minimal_length, 
                     arg$outcometype, 
-                    arg$quiet
+                    arg$quiet,
+                    input_type
                 )
             }
             
@@ -518,7 +631,8 @@ run_streaming_analysis <- function(arg) {
                 arg$missing_cutoff, 
                 arg$minimal_length, 
                 arg$outcometype, 
-                arg$quiet
+                arg$quiet,
+                input_type
             )
         }
         

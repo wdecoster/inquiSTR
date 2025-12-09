@@ -44,8 +44,7 @@ pub fn run_association(
     }
 
     // Validate input arguments
-    if let Err(e) = validate_arguments(&input, &phenocovar, &str_mode, &outcometype, &binary_order)
-    {
+    if let Err(e) = validate_arguments(&input, &phenocovar, &outcometype, &binary_order) {
         error!("Argument validation failed: {}", e);
         std::process::exit(1);
     }
@@ -129,7 +128,6 @@ fn print_error_help_message() {
 fn validate_arguments(
     input: &Path,
     phenocovar: &Path,
-    str_mode: &str,
     outcometype: &str,
     binary_order: &Option<String>,
 ) -> Result<(), String> {
@@ -142,10 +140,8 @@ fn validate_arguments(
         return Err(format!("Phenotype file does not exist: {}", phenocovar.display()));
     }
 
-    // Validate STR mode
-    if !["MEAN", "MAX", "MIN"].contains(&str_mode) {
-        return Err(format!("STR mode must be MEAN, MAX, or MIN, got: {}", str_mode));
-    }
+    // Note: STR mode validation is handled by the R script based on auto-detected file type
+    // The R script will skip STR mode checks for kmer files and validate for STR files
 
     // Validate outcome type
     if !["binary", "continuous"].contains(&outcometype) {
@@ -881,30 +877,11 @@ mod tests {
         std::fs::write(&input_file, "test").unwrap();
         std::fs::write(&phenocovar_file, "test").unwrap();
 
-        let result = validate_arguments(&input_file, &phenocovar_file, "MAX", "continuous", &None);
+        let result = validate_arguments(&input_file, &phenocovar_file, "continuous", &None);
 
         assert!(result.is_ok());
 
         // Clean up
-        std::fs::remove_file(&input_file).unwrap();
-        std::fs::remove_file(&phenocovar_file).unwrap();
-    }
-
-    #[test]
-    fn test_validate_arguments_invalid_str_mode() {
-        let temp_dir = std::env::temp_dir();
-        let input_file = temp_dir.join("test_input2.txt");
-        let phenocovar_file = temp_dir.join("test_pheno2.txt");
-
-        std::fs::write(&input_file, "test").unwrap();
-        std::fs::write(&phenocovar_file, "test").unwrap();
-
-        let result =
-            validate_arguments(&input_file, &phenocovar_file, "INVALID", "continuous", &None);
-
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("STR mode must be"));
-
         std::fs::remove_file(&input_file).unwrap();
         std::fs::remove_file(&phenocovar_file).unwrap();
     }
@@ -918,7 +895,7 @@ mod tests {
         std::fs::write(&input_file, "test").unwrap();
         std::fs::write(&phenocovar_file, "test").unwrap();
 
-        let result = validate_arguments(&input_file, &phenocovar_file, "MAX", "binary", &None);
+        let result = validate_arguments(&input_file, &phenocovar_file, "binary", &None);
 
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("Binary order is required"));

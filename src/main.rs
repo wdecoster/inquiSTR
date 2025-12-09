@@ -343,10 +343,10 @@ enum Commands {
         #[clap(required = true)]
         region: String,
     },
-    /// Perform association testing for STRs using embedded R script
+    /// Perform association testing for STRs or kmer frequencies using embedded R script
     #[clap(arg_required_else_help = true)]
     Association {
-        /// Combined STR file from inquiSTR combine command
+        /// Combined STR or kmer frequency file from inquiSTR combine command
         #[clap(short, long, value_parser)]
         input: PathBuf,
 
@@ -362,8 +362,8 @@ enum Commands {
         #[clap(short, long, value_parser)]
         out: PathBuf,
 
-        /// STR mode: MEAN, MAX, or MIN for H1/H2 combination
-        #[clap(long, value_parser)]
+        /// STR mode: MEAN, MAX, or MIN for H1/H2 combination (not used for kmer data)
+        #[clap(long, value_parser, default_value = "MAX")]
         str_mode: String,
 
         /// Outcome type: binary or continuous
