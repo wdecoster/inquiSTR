@@ -27,7 +27,7 @@ parse_arguments <- function() {
     arg <- argparser::parse_args(p)
     
     # Detect input file type (STR vs kmer)
-    input_type <- detect_input_type(arg$input)
+    arg$input_type <- detect_input_type(arg$input)
     
     # Validation
     if (is.na(arg$input) || is.na(arg$phenocovar) || is.na(arg$phenotype) || 
@@ -36,7 +36,7 @@ parse_arguments <- function() {
     }
     
     # STRmode is only required for STR data
-    if (input_type == "str" && is.na(arg$STRmode)) {
+    if (arg$input_type == "str" && is.na(arg$STRmode)) {
         stop("Error: --STRmode required for STR data")
     }
     
@@ -44,7 +44,7 @@ parse_arguments <- function() {
         stop("Error: --binaryOrder required for binary outcomes")
     }
     
-    if (input_type == "str" && !arg$STRmode %in% c("MEAN", "MAX", "MIN")) {
+    if (arg$input_type == "str" && !arg$STRmode %in% c("MEAN", "MAX", "MIN")) {
         stop("Error: STRmode must be MEAN, MAX, or MIN for STR data")
     }
     
@@ -79,7 +79,7 @@ parse_arguments <- function() {
     }
     
     # Warn if plot flag is used with kmer data (no chromosome/position info)
-    if (input_type == "kmer" && !is.na(arg$plot)) {
+    if (arg$input_type == "kmer" && !is.na(arg$plot)) {
         if(!arg$quiet) {
             cat("Warning: --plot flag not supported for kmer frequency data (no chromosome/position information)\n", file = stderr())
             cat("Plots will be skipped. Continuing with association analysis...\n", file = stderr())
@@ -283,20 +283,6 @@ process_single_variant <- function(variant_data, pheno_info, missing_cutoff, min
     str_values <- variant_data$str_values
     variant_info <- variant_data$variant_info
     
-    # Check missingness for this variant
-    non_missing_rate <- sum(!is.na(str_values)) / length(str_values)
-    if(non_missing_rate < missing_cutoff) {
-        return(NULL)  # Skip this variant due to high missingness
-    }
-    
-    # Check minimal length filter if specified
-    if(!is.na(minimal_length)) {
-        max_length <- max(str_values, na.rm = TRUE)
-        if(is.na(max_length) || max_length <= minimal_length) {
-            return(NULL)  # Skip this variant due to insufficient length
-        }
-    }
-    
     # Create data frame for this variant
     variant_df <- data.frame(
         sample_id = names(str_values),
@@ -308,11 +294,27 @@ process_single_variant <- function(variant_data, pheno_info, missing_cutoff, min
     # Join with phenotype data
     analysis_data <- merge(variant_df, pheno_info$data, by = pheno_info$sample_id_col)
     
+    # Check missingness for this variant AFTER merging with phenotype data
+    # This ensures we only calculate call rate for samples that have phenotype data
+    non_missing_count <- sum(!is.na(analysis_data$variant_value))
+    non_missing_rate <- non_missing_count / nrow(analysis_data)
+    if(non_missing_rate < missing_cutoff) {
+        return(NULL)  # Skip this variant due to high missingness
+    }
+    
     # Remove samples with missing variant data
     analysis_data <- analysis_data[!is.na(analysis_data$variant_value), ]
     
     if(nrow(analysis_data) < 10) {
         return(NULL)  # Skip if too few samples
+    }
+    
+    # Check minimal length filter if specified (after filtering to phenotyped samples)
+    if(!is.na(minimal_length)) {
+        max_length <- max(analysis_data$variant_value, na.rm = TRUE)
+        if(is.na(max_length) || max_length <= minimal_length) {
+            return(NULL)  # Skip this variant due to insufficient length
+        }
     }
     
     # Build formula
@@ -487,7 +489,7 @@ run_streaming_analysis <- function(arg) {
     header_cols <- strsplit(header_line, "\t")[[1]]
     
     # Extract sample names based on input type
-    if(input_type == "kmer") {
+    if(arg$input_type == "kmer") {
         # Kmer format: first column is 'kmer', rest are sample names
         sample_names <- header_cols[-1]  # Remove first column (kmer)
     } else {
@@ -498,7 +500,7 @@ run_streaming_analysis <- function(arg) {
     
     if(!arg$quiet) {
         cat("Found", length(sample_names), "samples in input file\n")
-        if(input_type == "kmer") {
+        if(arg$input_type == "kmer") {
             cat("Starting kmer frequency processing...\n")
         } else {
             cat("Starting variant processing...\n")
@@ -556,7 +558,7 @@ run_streaming_analysis <- function(arg) {
                         arg$minimal_length, 
                         arg$outcometype, 
                         arg$quiet,
-                        input_type
+                        arg$input_type
                     )
                 }, mc.cores = num_cores)
                 
@@ -573,11 +575,11 @@ run_streaming_analysis <- function(arg) {
                     arg$minimal_length, 
                     arg$outcometype, 
                     arg$quiet,
-                    input_type
+                    arg$input_type
                 )
             }
             
-            # Write results
+            # Write final results
             if(length(all_results) > 0) {
                 result_lines <- character(length(all_results))
                 for(i in 1:length(all_results)) {
