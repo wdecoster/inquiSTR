@@ -218,24 +218,25 @@ fn compute_pairwise_relatedness(
         let h1_j_round = h1_j.round();
         let h2_j_round = h2_j.round();
 
-        // Check all possible allele pairings
-        let mut used_j = [false, false]; // Track which alleles from sample j have been matched
+        // Count matching alleles using IBS (Identity By State)
+        // For diploid genotypes, we can have 0, 1, or 2 matching alleles
+        // This follows the same approach as somalier (see: https://github.com/brentp/somalier)
 
-        // Try to match alleles optimally
-        if (h1_i_round - h1_j_round).abs() < 0.5 && !used_j[0] {
-            matches += 1;
-            used_j[0] = true;
-        } else if (h1_i_round - h2_j_round).abs() < 0.5 && !used_j[1] {
-            matches += 1;
-            used_j[1] = true;
-        }
-
-        if (h2_i_round - h1_j_round).abs() < 0.5 && !used_j[0] {
-            matches += 1;
-            used_j[0] = true;
-        } else if (h2_i_round - h2_j_round).abs() < 0.5 && !used_j[1] {
-            matches += 1;
-            used_j[1] = true;
+        // Check if genotypes are identical (both alleles match)
+        if (h1_i_round == h1_j_round && h2_i_round == h2_j_round)
+            || (h1_i_round == h2_j_round && h2_i_round == h1_j_round)
+        {
+            matches = 2;
+        } else {
+            // Check for one matching allele
+            if h1_i_round == h1_j_round
+                || h1_i_round == h2_j_round
+                || h2_i_round == h1_j_round
+                || h2_i_round == h2_j_round
+            {
+                matches = 1;
+            }
+            // Otherwise matches stays at 0
         }
 
         match matches {
@@ -310,5 +311,166 @@ mod tests {
         assert_eq!(n_loci, 2);
         assert_eq!(ibs1, 2);
         assert_eq!(relatedness, 0.5);
+    }
+
+    #[test]
+    fn test_parent_child_relationship() {
+        // Parent-child: child inherits one allele from parent at each locus
+        // Expected relatedness: 0.5 (all loci should be IBS1)
+        let genotype_matrix = vec![
+            // Parent has (10, 12), child has one from parent (10) and one new (14)
+            vec![(10.0, 12.0), (10.0, 14.0)],
+            // Parent has (15, 17), child has one from parent (17) and one new (19)
+            vec![(15.0, 17.0), (17.0, 19.0)],
+            // Parent has (8, 8), child has one from parent (8) and one new (10)
+            vec![(8.0, 8.0), (8.0, 10.0)],
+            // Parent has (20, 22), child has one from parent (20) and one new (24)
+            vec![(20.0, 22.0), (20.0, 24.0)],
+        ];
+
+        let (relatedness, n_loci, _ibs0, ibs1, _ibs2) =
+            compute_pairwise_relatedness(&genotype_matrix, 0, 1);
+
+        assert_eq!(n_loci, 4);
+        assert_eq!(ibs1, 4); // All loci share exactly 1 allele
+        assert!((relatedness - 0.5).abs() < 1e-6, "Parent-child relatedness should be ~0.5");
+    }
+
+    #[test]
+    fn test_full_siblings() {
+        // Full siblings: share both parents, so on average share 1 allele per locus
+        // But can share 0, 1, or 2 alleles at different loci
+        // Expected relatedness: 0.5 overall
+        let genotype_matrix = vec![
+            // Both inherit same alleles from parents
+            vec![(10.0, 12.0), (10.0, 12.0)], // IBS2
+            // Share one allele
+            vec![(15.0, 17.0), (15.0, 19.0)], // IBS1
+            // Share no alleles
+            vec![(8.0, 9.0), (10.0, 11.0)], // IBS0
+            // Share one allele
+            vec![(20.0, 22.0), (20.0, 24.0)], // IBS1
+        ];
+
+        let (relatedness, n_loci, ibs0, ibs1, ibs2) =
+            compute_pairwise_relatedness(&genotype_matrix, 0, 1);
+
+        assert_eq!(n_loci, 4);
+        assert_eq!(ibs2, 1);
+        assert_eq!(ibs1, 2);
+        assert_eq!(ibs0, 1);
+        // Relatedness = (1*2 + 2*1 + 1*0) / 4 = 4/4 = 1.0... wait, that's wrong
+        // Relatedness = (IBS2 + 0.5*IBS1) / n = (1 + 0.5*2) / 4 = 2/4 = 0.5
+        assert!((relatedness - 0.5).abs() < 1e-6, "Full sibling relatedness should be ~0.5");
+    }
+
+    #[test]
+    fn test_half_siblings() {
+        // Half-siblings: share one parent, so on average share 0.5 alleles per locus
+        // Expected relatedness: 0.25
+        let genotype_matrix = vec![
+            // Share one allele (from shared parent)
+            vec![(10.0, 12.0), (10.0, 14.0)], // IBS1
+            // Share no alleles
+            vec![(15.0, 17.0), (19.0, 21.0)], // IBS0
+            // Share one allele
+            vec![(8.0, 9.0), (8.0, 11.0)], // IBS1
+            // Share no alleles
+            vec![(20.0, 22.0), (24.0, 26.0)], // IBS0
+        ];
+
+        let (relatedness, n_loci, ibs0, ibs1, _ibs2) =
+            compute_pairwise_relatedness(&genotype_matrix, 0, 1);
+
+        assert_eq!(n_loci, 4);
+        assert_eq!(ibs1, 2);
+        assert_eq!(ibs0, 2);
+        // Relatedness = (0 + 0.5*2) / 4 = 1/4 = 0.25
+        assert!((relatedness - 0.25).abs() < 1e-6, "Half-sibling relatedness should be ~0.25");
+    }
+
+    #[test]
+    fn test_first_cousins() {
+        // First cousins: share grandparents, expected relatedness: 0.125
+        let genotype_matrix = vec![
+            // Occasionally share alleles from shared grandparents
+            vec![(10.0, 12.0), (10.0, 14.0)], // IBS1
+            vec![(15.0, 17.0), (19.0, 21.0)], // IBS0
+            vec![(8.0, 9.0), (11.0, 13.0)],   // IBS0
+            vec![(20.0, 22.0), (24.0, 26.0)], // IBS0
+            vec![(30.0, 32.0), (34.0, 36.0)], // IBS0
+            vec![(40.0, 42.0), (44.0, 46.0)], // IBS0
+            vec![(50.0, 52.0), (54.0, 56.0)], // IBS0
+            vec![(60.0, 62.0), (60.0, 64.0)], // IBS1
+        ];
+
+        let (relatedness, n_loci, ibs0, ibs1, _ibs2) =
+            compute_pairwise_relatedness(&genotype_matrix, 0, 1);
+
+        assert_eq!(n_loci, 8);
+        assert_eq!(ibs1, 2);
+        assert_eq!(ibs0, 6);
+        // Relatedness = (0 + 0.5*2) / 8 = 1/8 = 0.125
+        assert!((relatedness - 0.125).abs() < 1e-6, "First cousin relatedness should be ~0.125");
+    }
+
+    #[test]
+    fn test_missing_data() {
+        // Test handling of missing data (NaN values)
+        let genotype_matrix = vec![
+            vec![(10.0, 12.0), (10.0, 12.0)],       // Valid, IBS2
+            vec![(f64::NAN, 15.0), (15.0, 17.0)],   // Missing in sample 1, skip
+            vec![(8.0, 9.0), (f64::NAN, f64::NAN)], // Missing in sample 2, skip
+            vec![(20.0, 22.0), (20.0, 24.0)],       // Valid, IBS1
+        ];
+
+        let (relatedness, n_loci, _ibs0, ibs1, ibs2) =
+            compute_pairwise_relatedness(&genotype_matrix, 0, 1);
+
+        assert_eq!(n_loci, 2); // Only 2 loci are informative
+        assert_eq!(ibs2, 1);
+        assert_eq!(ibs1, 1);
+        // Relatedness = (1 + 0.5*1) / 2 = 1.5/2 = 0.75
+        assert!((relatedness - 0.75).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_homozygous_loci() {
+        // Test with homozygous genotypes
+        let genotype_matrix = vec![
+            // Both homozygous for same allele
+            vec![(10.0, 10.0), (10.0, 10.0)], // IBS2
+            // One homozygous, one heterozygous with matching allele
+            vec![(15.0, 15.0), (15.0, 17.0)], // IBS1
+            // Both homozygous for different alleles
+            vec![(20.0, 20.0), (22.0, 22.0)], // IBS0
+        ];
+
+        let (relatedness, n_loci, ibs0, ibs1, ibs2) =
+            compute_pairwise_relatedness(&genotype_matrix, 0, 1);
+
+        assert_eq!(n_loci, 3);
+        assert_eq!(ibs2, 1);
+        assert_eq!(ibs1, 1);
+        assert_eq!(ibs0, 1);
+        // Relatedness = (1 + 0.5*1) / 3 = 1.5/3 = 0.5
+        assert!((relatedness - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_phased_vs_unphased() {
+        // Test that phase doesn't matter for IBS calculation
+        // (10, 12) should match (12, 10)
+        let genotype_matrix = vec![
+            vec![(10.0, 12.0), (12.0, 10.0)], // Same genotype, different phase
+            vec![(15.0, 17.0), (17.0, 15.0)], // Same genotype, different phase
+        ];
+
+        let (relatedness, n_loci, _ibs0, _ibs1, ibs2) =
+            compute_pairwise_relatedness(&genotype_matrix, 0, 1);
+
+        assert_eq!(n_loci, 2);
+        assert_eq!(ibs2, 2); // Both should be IBS2
+        assert!((relatedness - 1.0).abs() < 1e-6);
     }
 }
