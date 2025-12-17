@@ -23,6 +23,7 @@ parse_arguments <- function() {
     p <- argparser::add_argument(p, "--binaryOrder", help = "Binary phenotype order, comma separated (e.g., Control,Patient)", type = "character", nargs = "*")
     p <- argparser::add_argument(p, "--quiet", help = "Do not print progress messages", flag = TRUE)
     p <- argparser::add_argument(p, "--plot", help = "Prefix for QQ plot and Manhattan plot filenames", type = "character", nargs = "?")
+    p <- argparser::add_argument(p, "--sort", help = "Sort results by Bonferroni corrected p-value (requires loading full results into memory)", flag = TRUE)
     
     arg <- argparser::parse_args(p)
     
@@ -340,7 +341,8 @@ process_single_variant <- function(variant_data, pheno_info, missing_cutoff, min
                 for(i in 1:length(pheno_info$binary_levels)) {
                     level <- pheno_info$binary_levels[i]
                     group_data <- analysis_data[analysis_data[[pheno_info$phenotype_col]] == level, ]
-                    group_name <- paste0("Group", LETTERS[i])  # GroupA, GroupB, etc.
+                    # Use actual phenotype level name instead of generic GroupA/GroupB
+                    group_name <- level
                     group_stats[[paste0(group_name, "_N")]] <- nrow(group_data)
                     group_stats[[paste0(group_name, "_AvgSize")]] <- round(mean(group_data$variant_value, na.rm = TRUE), 3)
                 }
@@ -510,7 +512,11 @@ run_streaming_analysis <- function(arg) {
     # Write output header
     if(arg$outcometype == "binary") {
         if(!is.null(pheno_info$binary_levels)) {
-            output_header <- "VariantID\tOR\tOR_L95\tOR_U95\tOR_stdErr\tPvalue\tN\tAvgSize\tGroupA_N\tGroupB_N\tGroupA_AvgSize\tGroupB_AvgSize"
+            # Use actual phenotype labels from binary_levels instead of GroupA/GroupB
+            label1 <- pheno_info$binary_levels[1]
+            label2 <- pheno_info$binary_levels[2]
+            output_header <- paste0("VariantID\tOR\tOR_L95\tOR_U95\tOR_stdErr\tPvalue\tN\tAvgSize\t",
+                                   label1, "_N\t", label2, "_N\t", label1, "_AvgSize\t", label2, "_AvgSize")
         } else {
             output_header <- "VariantID\tOR\tOR_L95\tOR_U95\tOR_stdErr\tPvalue\tN\tAvgSize"
         }
@@ -669,6 +675,128 @@ run_streaming_analysis <- function(arg) {
             cat("- Minimal length filter:", arg$minimal_length, "\n")
         }
     }
+    
+    # Add multiple testing correction
+    if(variants_written > 0) {
+        if(!arg$quiet) {
+            cat("\nAdding multiple testing correction...\n")
+        }
+        add_corrected_pvalues(arg$out, variants_written, arg$quiet, arg$sort)
+    }
+}
+
+# Add Bonferroni corrected p-values to output file using streaming
+# If sort=TRUE, loads full results into memory to sort by corrected p-value
+add_corrected_pvalues <- function(output_file, n_tests, quiet = FALSE, sort = FALSE) {
+    
+    # If sorting is requested, load into memory and sort
+    if(sort) {
+        if(!quiet) {
+            cat("Loading results into memory for sorting...\n")
+        }
+        
+        results <- tryCatch({
+            fread(output_file, header = TRUE)
+        }, error = function(e) {
+            if(!quiet) {
+                cat("Warning: Could not read output file: ", e$message, "\n", sep = "", file = stderr())
+            }
+            return(NULL)
+        })
+        
+        if(is.null(results) || nrow(results) == 0 || !"Pvalue" %in% colnames(results)) {
+            if(!quiet) {
+                cat("Warning: Cannot sort results\n", file = stderr())
+            }
+            return(invisible(NULL))
+        }
+        
+        # Add Bonferroni correction
+        results$Pvalue_bonf <- pmin(results$Pvalue * n_tests, 1.0)
+        
+        # Sort by corrected p-value
+        results <- results[order(results$Pvalue_bonf), ]
+        
+        # Count significant results
+        bonf_sig <- sum(results$Pvalue_bonf < 0.05, na.rm = TRUE)
+        
+        # Write sorted results
+        tryCatch({
+            fwrite(results, output_file, sep = "\t", quote = FALSE)
+            if(!quiet) {
+                cat("Added Bonferroni corrected p-values and sorted by significance\n")
+                cat("- Total tests:", n_tests, "\n")
+                cat("- Bonferroni significant (p < 0.05):", bonf_sig, "\n")
+            }
+        }, error = function(e) {
+            if(!quiet) {
+                cat("Warning: Could not write sorted results: ", e$message, "\n", sep = "", file = stderr())
+            }
+        })
+        
+        return(invisible(NULL))
+    }
+    
+    # Otherwise use streaming approach
+    tryCatch({
+        con_in <- file(output_file, "r")
+        temp_file <- tempfile(fileext = ".tsv")
+        con_out <- file(temp_file, "w")
+        
+        # Read and modify header
+        header <- readLines(con_in, n = 1)
+        header_cols <- strsplit(header, "\t")[[1]]
+        pvalue_col <- which(header_cols == "Pvalue")
+        
+        if(length(pvalue_col) == 0) {
+            close(con_in)
+            close(con_out)
+            if(!quiet) {
+                cat("Warning: Pvalue column not found, skipping correction\n", file = stderr())
+            }
+            return(invisible(NULL))
+        }
+        
+        writeLines(paste0(header, "\tPvalue_bonf"), con_out)
+        
+        # Stream through file and add Bonferroni correction
+        bonf_sig <- 0
+        
+        while(length(line <- readLines(con_in, n = 1)) > 0) {
+            fields <- strsplit(line, "\t")[[1]]
+            pval <- as.numeric(fields[pvalue_col])
+            
+            if(!is.na(pval)) {
+                # Bonferroni: multiply by number of tests (cap at 1.0)
+                pval_bonf <- min(pval * n_tests, 1.0)
+                
+                # Count significant results
+                if(pval_bonf < 0.05) bonf_sig <- bonf_sig + 1
+                
+                # Write line with corrected p-value
+                writeLines(paste0(line, "\t", pval_bonf), con_out)
+            } else {
+                # Missing p-value, write NA
+                writeLines(paste0(line, "\tNA"), con_out)
+            }
+        }
+        
+        close(con_in)
+        close(con_out)
+        
+        # Replace original file with corrected version
+        file.rename(temp_file, output_file)
+        
+        if(!quiet) {
+            cat("Added Bonferroni corrected p-values\n")
+            cat("- Total tests:", n_tests, "\n")
+            cat("- Bonferroni significant (p < 0.05):", bonf_sig, "\n")
+        }
+    }, error = function(e) {
+        if(!quiet) {
+            cat("Warning: Could not write corrected p-values: ", e$message, "\n", sep = "", file = stderr())
+        }
+    })
 }
 
 # Generate QQ and Manhattan plots

@@ -38,6 +38,7 @@ pub fn run_association(
     binary_order: Option<String>,
     quiet: bool,
     plot: Option<String>,
+    sort: bool,
 ) {
     if !quiet {
         info!("Starting STR association testing");
@@ -83,6 +84,7 @@ pub fn run_association(
         binary_order,
         quiet,
         plot.as_deref(),
+        sort,
     );
 
     // Clean up temporary file
@@ -361,6 +363,7 @@ fn execute_r_script(
     binary_order: Option<String>,
     quiet: bool,
     plot: Option<&str>,
+    sort: bool,
 ) -> Result<(), String> {
     let script_path_str = script_path.to_string_lossy();
     let input_str = input.to_string_lossy();
@@ -414,6 +417,10 @@ fn execute_r_script(
         script_args.push("--plot");
         plot_prefix_str = plot_prefix.to_string();
         script_args.push(&plot_prefix_str);
+    }
+
+    if sort {
+        script_args.push("--sort");
     }
 
     // Determine which R to use based on detection cascade

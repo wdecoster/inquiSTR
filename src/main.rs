@@ -401,6 +401,10 @@ enum Commands {
         /// Generate QQ plot and Manhattan plot with custom prefix (e.g., --plot myresults). If no prefix given, uses output filename stem.
         #[clap(long, value_parser)]
         plot: Option<String>,
+
+        /// Sort results by Bonferroni corrected p-value (requires loading full results into memory)
+        #[clap(long)]
+        sort: bool,
     },
     /// Show a histogram with multiple groups for a specific repeat
     Plot {
@@ -674,6 +678,7 @@ fn main() {
             binary_order,
             quiet,
             plot,
+            sort,
         } => {
             assoc::run_association(
                 input,
@@ -690,6 +695,7 @@ fn main() {
                 binary_order,
                 quiet,
                 plot,
+                sort,
             );
         }
         Commands::Plot { combined, sample_metadata, condition, region, output } => {
