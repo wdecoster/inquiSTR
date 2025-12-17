@@ -129,14 +129,8 @@ fn parse_inquistr_file(
         // Skip info field at index 3
 
         // Parse H1 and H2, handling NaN values
-        let h1 = match fields[4].parse::<f64>() {
-            Ok(val) => val,
-            Err(_) => f64::NAN,
-        };
-        let h2 = match fields[5].parse::<f64>() {
-            Ok(val) => val,
-            Err(_) => f64::NAN,
-        };
+        let h1 = fields[4].parse::<f64>().unwrap_or(f64::NAN);
+        let h2 = fields[5].parse::<f64>().unwrap_or(f64::NAN);
 
         let record = InquiSTRRecord { chromosome: chromosome.clone(), begin, end, h1, h2 };
 
