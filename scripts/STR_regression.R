@@ -512,11 +512,12 @@ run_streaming_analysis <- function(arg) {
     # Write output header
     if(arg$outcometype == "binary") {
         if(!is.null(pheno_info$binary_levels)) {
-            # Use actual phenotype labels from binary_levels instead of GroupA/GroupB
+            # Use actual phenotype labels from binary_levels
+            # Match the order in which group_stats are added: label1_N, label1_AvgSize, label2_N, label2_AvgSize
             label1 <- pheno_info$binary_levels[1]
             label2 <- pheno_info$binary_levels[2]
             output_header <- paste0("VariantID\tOR\tOR_L95\tOR_U95\tOR_stdErr\tPvalue\tN\tAvgSize\t",
-                                   label1, "_N\t", label2, "_N\t", label1, "_AvgSize\t", label2, "_AvgSize")
+                                   label1, "_N\t", label1, "_AvgSize\t", label2, "_N\t", label2, "_AvgSize")
         } else {
             output_header <- "VariantID\tOR\tOR_L95\tOR_U95\tOR_stdErr\tPvalue\tN\tAvgSize"
         }
@@ -686,7 +687,7 @@ run_streaming_analysis <- function(arg) {
 }
 
 # Add Bonferroni corrected p-values to output file using streaming
-# If sort=TRUE, loads full results into memory to sort by corrected p-value
+# If sort=TRUE, loads full results into memory to sort by p-value
 add_corrected_pvalues <- function(output_file, n_tests, quiet = FALSE, sort = FALSE) {
     
     # If sorting is requested, load into memory and sort
@@ -714,8 +715,8 @@ add_corrected_pvalues <- function(output_file, n_tests, quiet = FALSE, sort = FA
         # Add Bonferroni correction
         results$Pvalue_bonf <- pmin(results$Pvalue * n_tests, 1.0)
         
-        # Sort by corrected p-value
-        results <- results[order(results$Pvalue_bonf), ]
+        # Sort by raw p-value
+        results <- results[order(results$Pvalue), ]
         
         # Count significant results
         bonf_sig <- sum(results$Pvalue_bonf < 0.05, na.rm = TRUE)
