@@ -233,7 +233,7 @@ fn outlier_str_analysis(
     // Parse sample names once and store them
     let sample_names: Vec<String> = header_line
         .split('\t')
-        .skip(3)
+        .skip(4) // Skip chromosome, begin, end, info
         .map(|s| s.to_string())
         .collect();
 
@@ -519,10 +519,10 @@ fn get_repeat_lengths(line: &[&str], minsize: u32) -> Option<Vec<f32>> {
     }
 
     let mut max_value = 0.0f32;
-    let mut values = Vec::with_capacity(line.len() - 3);
+    let mut values = Vec::with_capacity(line.len() - 4);
 
     // Single pass to parse and find max
-    for field in line.iter().skip(3) {
+    for field in line.iter().skip(4) { // Skip chromosome, begin, end, info
         let value = if field.eq_ignore_ascii_case("nan") || field.is_empty() {
             0.0
         } else {

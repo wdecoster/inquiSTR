@@ -122,12 +122,12 @@ fn parse_combined_file(combined: &std::path::Path) -> (GenotypeMatrix, Vec<Strin
         std::process::exit(1);
     }
 
-    // Extract sample names from header (skip chromosome, begin, end columns)
+    // Extract sample names from header (skip chromosome, begin, end, info columns)
     // Sample names appear as sample_H1, sample_H2 pairs
     let mut sample_names = Vec::new();
     let mut seen_samples = std::collections::HashSet::new();
 
-    for field in header_fields.iter().skip(3) {
+    for field in header_fields.iter().skip(4) {
         if let Some(sample) = field.strip_suffix("_H1")
             && !seen_samples.contains(sample)
         {

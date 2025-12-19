@@ -201,14 +201,6 @@ prepare_phenotype_data <- function(phenocovar_file, phenotype_col, covariates_st
     # Remove samples with missing phenotype
     pheno_data <- pheno_data[!is.na(get(phenotype_col))]
     
-    # Final validation: ensure we have enough samples for analysis
-    min_total_samples <- 10  # Minimum for meaningful statistical analysis
-    if(nrow(pheno_data) < min_total_samples) {
-        stop("Error: Insufficient samples for analysis. Found ", nrow(pheno_data), 
-             " samples with valid phenotype data, but need at least ", min_total_samples, 
-             " for meaningful statistical analysis.")
-    }
-    
     return(list(
         data = pheno_data,
         sample_id_col = sample_id_col,
@@ -242,19 +234,20 @@ parse_kmer_line <- function(line_data, sample_names) {
 
 # Parse a single variant line and extract H1/H2 data
 parse_variant_line <- function(line_data, sample_names, str_mode) {
-    # Extract variant info (first 3 columns: chr, start, end)
+    # Extract variant info (first 4 columns: chr, start, end, info)
     variant_info <- list(
         chrom = line_data[1],
         start = as.numeric(line_data[2]),
-        end = as.numeric(line_data[3])
+        end = as.numeric(line_data[3]),
+        info = line_data[4]
     )
     
     # Calculate number of samples
     n_samples <- length(sample_names)
     
-    # Extract H1 and H2 data (columns 4 onwards, alternating H1/H2)
-    h1_indices <- seq(4, 3 + 2*n_samples, by = 2)
-    h2_indices <- seq(5, 4 + 2*n_samples, by = 2)
+    # Extract H1 and H2 data (columns 5 onwards, alternating H1/H2)
+    h1_indices <- seq(5, 4 + 2*n_samples, by = 2)
+    h2_indices <- seq(6, 5 + 2*n_samples, by = 2)
     
     h1_data <- as.numeric(line_data[h1_indices])
     h2_data <- as.numeric(line_data[h2_indices])
@@ -264,11 +257,11 @@ parse_variant_line <- function(line_data, sample_names, str_mode) {
     
     # Apply STR mode
     if(str_mode == "MEAN") {
-        str_values <- (h1_data + h2_data) / 2
+        str_values <- (pmax(h1_data, h2_data, na.rm = TRUE) + pmin(h1_data, h2_data, na.rm = TRUE)) / 2
     } else if(str_mode == "MAX") {
-        str_values <- pmax(h1_data, h2_data, na.rm = FALSE)
+        str_values <- pmax(h1_data, h2_data, na.rm = TRUE)
     } else if(str_mode == "MIN") {
-        str_values <- pmin(h1_data, h2_data, na.rm = FALSE)
+        str_values <- pmin(h1_data, h2_data, na.rm = TRUE)
     }
     
     return(list(
@@ -306,8 +299,9 @@ process_single_variant <- function(variant_data, pheno_info, missing_cutoff, min
     # Remove samples with missing variant data
     analysis_data <- analysis_data[!is.na(analysis_data$variant_value), ]
     
-    if(nrow(analysis_data) < 10) {
-        return(NULL)  # Skip if too few samples
+    # Check for variance - skip variants with no variation across samples
+    if(length(unique(analysis_data$variant_value)) <= 1) {
+        return(NULL)  # Skip this variant due to no variance
     }
     
     # Check minimal length filter if specified (after filtering to phenotyped samples)

@@ -191,7 +191,7 @@ pub fn find_multiple_loci(
 pub fn extract_sample_names(header_line: &str) -> Vec<String> {
     header_line
         .split('\t')
-        .skip(3)
+        .skip(4) // Skip chromosome, begin, end, info
         .map(|s| s.to_string())
         .collect()
 }
@@ -200,7 +200,7 @@ pub fn extract_sample_names(header_line: &str) -> Vec<String> {
 pub fn extract_clean_sample_names(header_line: &str) -> Vec<String> {
     header_line
         .split('\t')
-        .skip(3)
+        .skip(4) // Skip chromosome, begin, end, info
         .map(|s| s.replace("_H1", "").replace("_H2", ""))
         .collect()
 }
@@ -218,14 +218,14 @@ mod tests {
 
     #[test]
     fn test_extract_sample_names() {
-        let header = "chromosome\tbegin\tend\tsample1_H1\tsample1_H2\tsample2_H1\tsample2_H2";
+        let header = "chromosome\tbegin\tend\tinfo\tsample1_H1\tsample1_H2\tsample2_H1\tsample2_H2";
         let samples = extract_sample_names(header);
         assert_eq!(samples, vec!["sample1_H1", "sample1_H2", "sample2_H1", "sample2_H2"]);
     }
 
     #[test]
     fn test_extract_clean_sample_names() {
-        let header = "chromosome\tbegin\tend\tsample1_H1\tsample1_H2\tsample2_H1\tsample2_H2";
+        let header = "chromosome\tbegin\tend\tinfo\tsample1_H1\tsample1_H2\tsample2_H1\tsample2_H2";
         let samples = extract_clean_sample_names(header);
         assert_eq!(samples, vec!["sample1", "sample1", "sample2", "sample2"]);
     }
