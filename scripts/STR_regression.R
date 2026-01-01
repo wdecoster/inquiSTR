@@ -346,7 +346,7 @@ process_single_variant <- function(variant_data, pheno_info, missing_cutoff, min
             variant_id <- if(!is.null(variant_info$kmer)) {
                 variant_info$kmer
             } else {
-                paste(variant_info$chrom, variant_info$start, variant_info$end, sep = "_")
+                paste0(variant_info$chrom, ":", variant_info$start, "-", variant_info$end)
             }
             
             result <- data.frame(
@@ -380,7 +380,7 @@ process_single_variant <- function(variant_data, pheno_info, missing_cutoff, min
             variant_id <- if(!is.null(variant_info$kmer)) {
                 variant_info$kmer
             } else {
-                paste(variant_info$chrom, variant_info$start, variant_info$end, sep = "_")
+                paste0(variant_info$chrom, ":", variant_info$start, "-", variant_info$end)
             }
             
             result <- data.frame(
@@ -899,10 +899,11 @@ generate_plots <- function(results_file, out_prefix, quiet) {
     }
     
     # Parse VariantID to get CHR and BP
-    # VariantID format is: chr_start_end (underscore-separated)
-    results[, c("CHR", "BP") := tstrsplit(VariantID, "_", keep = 1:2)]
+    # VariantID format is: chr:start-end (standard genomic coordinates)
+    # Split on colon to get chromosome and position range
+    results[, CHR := sub(":.*", "", VariantID)]  # Extract everything before ":"
     results[, CHR := gsub("^chr", "", CHR)]  # Remove 'chr' prefix if present
-    results[, BP := as.numeric(BP)]
+    results[, BP := as.numeric(sub(".*:(\\d+)-.*", "\\1", VariantID))]  # Extract start position
     
     # Filter out rows with missing CHR or BP
     results <- results[!is.na(CHR) & !is.na(BP) & !is.na(Pvalue) & Pvalue > 0]
