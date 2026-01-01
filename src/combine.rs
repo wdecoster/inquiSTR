@@ -302,7 +302,7 @@ fn merge_combined_and_individual_str_files(combined_file: PathBuf, individual_fi
     // Output merged header
     if has_combined_header {
         let combined_header_fields: Vec<&str> = combined_header.split('\t').collect();
-        
+
         // Validate combined file header
         if combined_header_fields.len() < 5 {
             eprintln!(
@@ -311,7 +311,7 @@ fn merge_combined_and_individual_str_files(combined_file: PathBuf, individual_fi
             );
             std::process::exit(1);
         }
-        
+
         let mut merged_header = vec![
             combined_header_fields[0], // chromosome
             combined_header_fields[1], // begin
@@ -1006,15 +1006,18 @@ fn combine_data_lines(data_lines: &[String], line_number: usize) -> String {
     // Validate that all files have the same variant coordinates and field count
     for (file_idx, line) in data_lines.iter().enumerate().skip(1) {
         let fields: Vec<&str> = line.split('\t').collect();
-        
+
         // Validate field count matches
         if fields.len() != expected_field_count {
             panic!(
                 "Field count mismatch at line {}: file 0 has {} fields, file {} has {} fields",
-                line_number, expected_field_count, file_idx + 1, fields.len()
+                line_number,
+                expected_field_count,
+                file_idx + 1,
+                fields.len()
             );
         }
-        
+
         // Validate coordinates match
         if fields.len() < 3 {
             panic!(

@@ -315,17 +315,20 @@ pub fn filter(
             let header_fields: Vec<&str> = line.split('\t').collect();
             if header_fields.len() < 6 {
                 eprintln!("ERROR: Invalid header format");
-                eprintln!("Expected at least 6 columns (chromosome, begin, end, info, sample_H1, sample_H2)");
+                eprintln!(
+                    "Expected at least 6 columns (chromosome, begin, end, info, sample_H1, sample_H2)"
+                );
                 eprintln!("Got {} columns", header_fields.len());
                 std::process::exit(1);
             }
-            
+
             // Use validation function if this is a STR file with proper header
             if header_fields[0] == "chromosome"
-                && let Err(e) = crate::filetype::validate_str_header(&header_fields) {
-                    eprintln!("ERROR: Invalid STR file header: {}", e);
-                    std::process::exit(1);
-                }
+                && let Err(e) = crate::filetype::validate_str_header(&header_fields)
+            {
+                eprintln!("ERROR: Invalid STR file header: {}", e);
+                std::process::exit(1);
+            }
             writeln!(writer, "{}", line).expect("Failed to write header");
             header_written = true;
             continue;

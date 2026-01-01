@@ -333,7 +333,9 @@ fn parse_combined_str_file_with_selection(
         Err(e) => {
             eprintln!("Error: Invalid STR file header format.");
             eprintln!("{}", e);
-            eprintln!("\nExpected: chromosome\\tbegin\\tend\\tinfo\\tsample1_H1\\tsample1_H2\\t...");
+            eprintln!(
+                "\nExpected: chromosome\\tbegin\\tend\\tinfo\\tsample1_H1\\tsample1_H2\\t..."
+            );
             eprintln!("Got: {}", header_line);
             eprintln!("\nThis file does not appear to be a valid combined STR file.");
             eprintln!("If this is a kmer file, it should have been auto-detected.");
