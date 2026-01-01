@@ -489,9 +489,57 @@ run_streaming_analysis <- function(arg) {
         # Kmer format: first column is 'kmer', rest are sample names
         sample_names <- header_cols[-1]  # Remove first column (kmer)
     } else {
-        # STR format: extract sample names from header (every other column starting from 5th, removing _H1 suffix)
-        h1_cols <- header_cols[seq(5, length(header_cols), by = 2)]
-        sample_names <- gsub("_H1$", "", h1_cols)
+        # STR format: validate header structure and extract sample names
+        # Validate minimum columns
+        if(length(header_cols) < 5) {
+            stop("Error: STR file must have at least 5 columns (chromosome, begin, end, info, sample_H1). Got ", length(header_cols), " columns.")
+        }
+        
+        # Validate first three columns
+        if(header_cols[1] != "chromosome") {
+            stop("Error: First column must be 'chromosome', got: ", header_cols[1])
+        }
+        if(header_cols[2] != "begin") {
+            stop("Error: Second column must be 'begin', got: ", header_cols[2])
+        }
+        if(header_cols[3] != "end") {
+            stop("Error: Third column must be 'end', got: ", header_cols[3])
+        }
+        
+        # Fourth column is 'info' (name may vary, just check it exists)
+        # Sample columns start at column 5
+        sample_cols <- header_cols[5:length(header_cols)]
+        
+        # Validate even number of sample columns (H1/H2 pairs)
+        if(length(sample_cols) %% 2 != 0) {
+            stop("Error: Must have even number of sample columns (H1/H2 pairs). Got ", length(sample_cols), " columns after chromosome/begin/end/info.")
+        }
+        
+        # Validate H1/H2 suffix pattern and extract sample names
+        n_samples <- length(sample_cols) / 2
+        sample_names <- character(n_samples)
+        
+        for(i in 1:n_samples) {
+            h1_col <- sample_cols[i * 2 - 1]
+            h2_col <- sample_cols[i * 2]
+            
+            if(!grepl("_H1$", h1_col)) {
+                stop("Error: Column ", 4 + i * 2 - 1, " expected to end with '_H1', got: ", h1_col)
+            }
+            if(!grepl("_H2$", h2_col)) {
+                stop("Error: Column ", 4 + i * 2, " expected to end with '_H2', got: ", h2_col)
+            }
+            
+            # Extract and validate matching sample names
+            sample_h1 <- sub("_H1$", "", h1_col)
+            sample_h2 <- sub("_H2$", "", h2_col)
+            
+            if(sample_h1 != sample_h2) {
+                stop("Error: H1/H2 pair mismatch at columns ", 4 + i * 2 - 1, "-", 4 + i * 2, ": ", sample_h1, " vs ", sample_h2)
+            }
+            
+            sample_names[i] <- sample_h1
+        }
     }
     
     if(!arg$quiet) {

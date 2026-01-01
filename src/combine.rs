@@ -302,14 +302,25 @@ fn merge_combined_and_individual_str_files(combined_file: PathBuf, individual_fi
     // Output merged header
     if has_combined_header {
         let combined_header_fields: Vec<&str> = combined_header.split('\t').collect();
+        
+        // Validate combined file header
+        if combined_header_fields.len() < 5 {
+            eprintln!(
+                "ERROR: Combined file header must have at least 5 columns (chr, begin, end, info, sample_H1). Got {} columns.",
+                combined_header_fields.len()
+            );
+            std::process::exit(1);
+        }
+        
         let mut merged_header = vec![
             combined_header_fields[0], // chromosome
             combined_header_fields[1], // begin
             combined_header_fields[2], // end
+            combined_header_fields[3], // info - IMPORTANT!
         ];
 
-        // Add all sample columns from combined file
-        merged_header.extend(&combined_header_fields[3..]);
+        // Add all sample columns from combined file (skip chr, begin, end, info)
+        merged_header.extend(&combined_header_fields[4..]);
 
         // Add sample columns from individual files
         for header in &individual_headers {
@@ -982,15 +993,29 @@ fn combine_data_lines(data_lines: &[String], line_number: usize) -> String {
 
     // Parse first line to get coordinates
     let first_line_fields: Vec<&str> = data_lines[0].split('\t').collect();
-    if first_line_fields.len() < 3 {
-        panic!("Invalid data line format at line {}: {}", line_number, data_lines[0]);
+    if first_line_fields.len() < 6 {
+        panic!(
+            "Invalid data line format at line {} (expected at least 6 columns): {}",
+            line_number, data_lines[0]
+        );
     }
 
     let (chr, start, end) = (first_line_fields[0], first_line_fields[1], first_line_fields[2]);
+    let expected_field_count = first_line_fields.len();
 
-    // Validate that all files have the same variant coordinates
+    // Validate that all files have the same variant coordinates and field count
     for (file_idx, line) in data_lines.iter().enumerate().skip(1) {
         let fields: Vec<&str> = line.split('\t').collect();
+        
+        // Validate field count matches
+        if fields.len() != expected_field_count {
+            panic!(
+                "Field count mismatch at line {}: file 0 has {} fields, file {} has {} fields",
+                line_number, expected_field_count, file_idx + 1, fields.len()
+            );
+        }
+        
+        // Validate coordinates match
         if fields.len() < 3 {
             panic!(
                 "Invalid data line format in file {} at line {}: {}",

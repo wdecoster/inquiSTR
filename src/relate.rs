@@ -117,30 +117,28 @@ fn parse_combined_file(combined: &std::path::Path) -> (GenotypeMatrix, Vec<Strin
     let header_line = crate::utils::skip_metadata_lines(&mut lines);
     let header_fields: Vec<&str> = header_line.trim().split('\t').collect();
 
-    if header_fields.len() < 5 {
-        eprintln!("ERROR: Invalid combined file format - insufficient columns");
-        std::process::exit(1);
-    }
-
-    // Extract sample names from header (skip chromosome, begin, end, info columns)
-    // Sample names appear as sample_H1, sample_H2 pairs
-    let mut sample_names = Vec::new();
-    let mut seen_samples = std::collections::HashSet::new();
-
-    for field in header_fields.iter().skip(4) {
-        if let Some(sample) = field.strip_suffix("_H1")
-            && !seen_samples.contains(sample)
-        {
-            sample_names.push(sample.to_string());
-            seen_samples.insert(sample.to_string());
+    // Use centralized validation function
+    let n_samples = match crate::filetype::validate_str_header(&header_fields) {
+        Ok(n) => n,
+        Err(e) => {
+            eprintln!("ERROR: Invalid combined file header format");
+            eprintln!("{}", e);
+            std::process::exit(1);
         }
-    }
+    };
 
-    let n_samples = sample_names.len();
     if n_samples < 2 {
         eprintln!("ERROR: Need at least 2 samples for relatedness computation");
         std::process::exit(1);
     }
+
+    // Extract sample names from validated header
+    let sample_names: Vec<String> = (0..n_samples)
+        .map(|i| {
+            let h1_col = header_fields[4 + i * 2];
+            h1_col.trim_end_matches("_H1").to_string()
+        })
+        .collect();
 
     eprintln!("Found {} samples", n_samples);
 
@@ -148,12 +146,25 @@ fn parse_combined_file(combined: &std::path::Path) -> (GenotypeMatrix, Vec<Strin
     let mut locus_names = Vec::new();
     let mut genotype_matrix = Vec::new();
 
-    for line_result in lines {
+    for (line_num, line_result) in lines.enumerate() {
         let line = line_result.expect("Error reading line");
         let fields: Vec<&str> = line.trim().split('\t').collect();
 
-        if fields.len() < 3 + n_samples * 2 {
-            continue; // Skip malformed lines
+        let expected_fields = 4 + n_samples * 2; // chr, start, end, info + H1/H2 pairs
+        if fields.len() != expected_fields {
+            eprintln!(
+                "ERROR: Malformed line {} in combined file: expected {} fields, got {}",
+                line_num + 2, // +2 because we skipped header line and lines are 0-indexed
+                expected_fields,
+                fields.len()
+            );
+            eprintln!(
+                "Line content: {}:{}-{}",
+                fields.first().unwrap_or(&"?"),
+                fields.get(1).unwrap_or(&"?"),
+                fields.get(2).unwrap_or(&"?")
+            );
+            std::process::exit(1);
         }
 
         // Store locus identifier

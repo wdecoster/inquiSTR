@@ -327,60 +327,27 @@ fn parse_combined_str_file_with_selection(
 
     let header_fields: Vec<&str> = header_line.trim().split('\t').collect();
 
-    if header_fields.len() < 5
-        || header_fields[0] != "chromosome"
-        || header_fields[1] != "begin"
-        || header_fields[2] != "end"
-    {
-        eprintln!("Error: Invalid STR file header format.");
-        eprintln!("Expected: chromosome\\tbegin\\tend\\tsample1_H1\\tsample1_H2\\t...");
-        eprintln!("Got: {}", header_line);
-        eprintln!("\nThis file does not appear to be a valid combined STR file.");
-        eprintln!("If this is a kmer file, it should have been auto-detected.");
-        std::process::exit(1);
-    }
-
-    // Extract sample names from header (columns 3+ should be sample_H1, sample_H2 pattern)
-    let data_cols = &header_fields[3..];
-    if !data_cols.len().is_multiple_of(2) {
-        panic!("Invalid header: number of sample columns must be even (H1/H2 pairs)");
-    }
-
-    let num_samples = data_cols.len() / 2;
-    let mut sample_names = Vec::new();
-
-    for i in 0..num_samples {
-        let h1_col = &data_cols[i * 2];
-        let h2_col = &data_cols[i * 2 + 1];
-
-        // Extract sample name from H1 column (should end with _H1)
-        if !h1_col.ends_with("_H1") {
-            panic!(
-                "Invalid header: expected column {} to end with '_H1', got '{}'",
-                3 + i * 2,
-                h1_col
-            );
+    // Use centralized validation function
+    let num_samples = match crate::filetype::validate_str_header(&header_fields) {
+        Ok(n) => n,
+        Err(e) => {
+            eprintln!("Error: Invalid STR file header format.");
+            eprintln!("{}", e);
+            eprintln!("\nExpected: chromosome\\tbegin\\tend\\tinfo\\tsample1_H1\\tsample1_H2\\t...");
+            eprintln!("Got: {}", header_line);
+            eprintln!("\nThis file does not appear to be a valid combined STR file.");
+            eprintln!("If this is a kmer file, it should have been auto-detected.");
+            std::process::exit(1);
         }
-        if !h2_col.ends_with("_H2") {
-            panic!(
-                "Invalid header: expected column {} to end with '_H2', got '{}'",
-                3 + i * 2 + 1,
-                h2_col
-            );
-        }
+    };
 
-        let sample_name_h1 = h1_col.trim_end_matches("_H1");
-        let sample_name_h2 = h2_col.trim_end_matches("_H2");
-
-        if sample_name_h1 != sample_name_h2 {
-            panic!(
-                "Header error: H1 and H2 columns have different sample names: '{}' vs '{}'",
-                sample_name_h1, sample_name_h2
-            );
-        }
-
-        sample_names.push(sample_name_h1.to_string());
-    }
+    // Extract sample names from validated header
+    let sample_names: Vec<String> = (0..num_samples)
+        .map(|i| {
+            let h1_col = header_fields[4 + i * 2];
+            h1_col.trim_end_matches("_H1").to_string()
+        })
+        .collect();
 
     // Two-pass approach for large datasets with feature selection
     if let Some(max_features) = max_features {
