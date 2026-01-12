@@ -656,6 +656,9 @@ mod tests {
     fn test_preset_urls_accessible() {
         use super::TRPreset;
 
+        // Request only the first 1KB to minimize data transfer while still validating URL accessibility
+        const TEST_RANGE_BYTES: usize = 1023;
+
         let presets = vec![TRPreset::Pathogenic, TRPreset::Adotto, TRPreset::Trexplorer];
 
         for preset in presets {
@@ -665,10 +668,10 @@ mod tests {
             eprintln!("Testing URL for {}: {}", preset_name, url);
 
             // Try to make a HEAD request first (faster and more polite)
-            // Add user agent to help identify requests and reduce blocking
+            // Add user agent following RFC 7231 format to help identify requests and reduce blocking
             let client = reqwest::blocking::Client::builder()
                 .timeout(std::time::Duration::from_secs(30))
-                .user_agent("inquiSTR/test (+https://github.com/wdecoster/inquiSTR)")
+                .user_agent("inquiSTR-test/1.0 (+https://github.com/wdecoster/inquiSTR)")
                 .build()
                 .expect("Failed to build HTTP client");
 
@@ -693,13 +696,14 @@ mod tests {
                 // Try a GET request with a range header to minimize data transfer
                 match client
                     .get(url)
-                    .header("Range", "bytes=0-1023")
+                    .header("Range", format!("bytes=0-{}", TEST_RANGE_BYTES))
                     .send()
                 {
                     Ok(get_response) => {
                         let get_status = get_response.status();
-                        // Accept 200, 206 (Partial Content), or 416 (Range Not Satisfiable)
-                        // 416 means the file is smaller than requested range, which is still valid
+                        // Accept 200 (full response), 206 (Partial Content), or 416 (Range Not Satisfiable)
+                        // Status 416 occurs when the file is smaller than our requested range, which still
+                        // indicates the URL is accessible and the file exists
                         if get_status.is_success()
                             || get_status == reqwest::StatusCode::RANGE_NOT_SATISFIABLE
                         {
