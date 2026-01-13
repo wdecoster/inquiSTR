@@ -656,6 +656,9 @@ mod tests {
     fn test_preset_urls_accessible() {
         use super::TRPreset;
 
+        // Request only the first 1KB to minimize data transfer while still validating URL accessibility
+        const TEST_RANGE_BYTES: usize = 1023;
+
         let presets = vec![TRPreset::Pathogenic, TRPreset::Adotto, TRPreset::Trexplorer];
 
         for preset in presets {
@@ -665,8 +668,10 @@ mod tests {
             eprintln!("Testing URL for {}: {}", preset_name, url);
 
             // Try to make a HEAD request first (faster and more polite)
+            // Add user agent following RFC 7231 format to help identify requests and reduce blocking
             let client = reqwest::blocking::Client::builder()
                 .timeout(std::time::Duration::from_secs(30))
+                .user_agent("inquiSTR-test/1.0 (+https://github.com/wdecoster/inquiSTR)")
                 .build()
                 .expect("Failed to build HTTP client");
 
@@ -674,15 +679,63 @@ mod tests {
                 panic!("Failed to connect to {} ({}): {}", preset_name, url, e)
             });
 
-            assert!(
-                response.status().is_success(),
-                "{} URL ({}) returned status: {}",
-                preset_name,
-                url,
-                response.status()
-            );
+            let status = response.status();
 
-            eprintln!("✓ {} URL is accessible (status: {})", preset_name, response.status());
+            // Some servers (like Zenodo) may block HEAD requests with 403/405
+            // but still allow GET requests. Try GET if HEAD fails with these codes.
+            let is_accessible = if status.is_success() {
+                eprintln!("✓ {} URL is accessible via HEAD (status: {})", preset_name, status);
+                true
+            } else if status == reqwest::StatusCode::FORBIDDEN
+                || status == reqwest::StatusCode::METHOD_NOT_ALLOWED
+            {
+                eprintln!(
+                    "  HEAD request returned {}, trying GET request...",
+                    status
+                );
+                // Try a GET request with a range header to minimize data transfer
+                match client
+                    .get(url)
+                    .header("Range", format!("bytes=0-{}", TEST_RANGE_BYTES))
+                    .send()
+                {
+                    Ok(get_response) => {
+                        let get_status = get_response.status();
+                        // Accept 200 (full response), 206 (Partial Content), or 416 (Range Not Satisfiable)
+                        // Status 416 occurs when the file is smaller than our requested range, which still
+                        // indicates the URL is accessible and the file exists
+                        if get_status.is_success()
+                            || get_status == reqwest::StatusCode::RANGE_NOT_SATISFIABLE
+                        {
+                            eprintln!(
+                                "✓ {} URL is accessible via GET (status: {})",
+                                preset_name, get_status
+                            );
+                            true
+                        } else {
+                            eprintln!(
+                                "✗ {} URL GET request returned status: {}",
+                                preset_name, get_status
+                            );
+                            false
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("✗ {} URL GET request failed: {}", preset_name, e);
+                        false
+                    }
+                }
+            } else {
+                eprintln!("✗ {} URL returned status: {}", preset_name, status);
+                false
+            };
+
+            assert!(
+                is_accessible,
+                "{} URL ({}) is not accessible",
+                preset_name,
+                url
+            );
         }
     }
 
