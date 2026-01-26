@@ -1,9 +1,48 @@
 use bio::io::bed;
 use clap::ValueEnum;
-use std::{collections::HashMap, fmt, path::PathBuf};
+use std::{collections::HashMap, path::PathBuf};
 
 use crate::bam_utils::get_chrom_lengths_from_bam_header;
 use crate::errors::{InquiSTRError, InquiSTRResult};
+
+/// Maps chromosome names to numeric IDs to reduce memory usage
+/// Instead of storing chromosome names as Strings in every RepeatInterval,
+/// we store a small u32 ID and use this mapper for lookups during I/O
+#[derive(Debug, Clone, Default)]
+pub struct ChromosomeMapper {
+    // Name to ID lookup
+    name_to_id: HashMap<String, u32>,
+    // ID to name lookup (stored as Vec for fast indexed access)
+    id_to_name: Vec<String>,
+}
+
+impl ChromosomeMapper {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Get or create an ID for a chromosome name
+    pub fn get_or_insert(&mut self, chrom: &str) -> u32 {
+        if let Some(&id) = self.name_to_id.get(chrom) {
+            id
+        } else {
+            let id = self.id_to_name.len() as u32;
+            self.id_to_name.push(chrom.to_string());
+            self.name_to_id.insert(chrom.to_string(), id);
+            id
+        }
+    }
+
+    /// Get chromosome name from ID
+    pub fn get_name(&self, id: u32) -> &str {
+        &self.id_to_name[id as usize]
+    }
+
+    /// Get chromosome ID from name (returns None if not found)
+    pub fn get_id(&self, chrom: &str) -> Option<u32> {
+        self.name_to_id.get(chrom).copied()
+    }
+}
 
 /// Predefined tandem repeat (TR) catalogs for genotyping
 ///
@@ -73,11 +112,12 @@ pub struct TargetConfig {
 
 impl TargetConfig {
     /// Get target intervals based on the configuration
+    /// Returns both the repeat intervals and the chromosome mapper for ID->name lookups
     pub fn get_targets(
         &self,
         bam: &str,
         reference: &Option<String>,
-    ) -> InquiSTRResult<Vec<RepeatInterval>> {
+    ) -> InquiSTRResult<(Vec<RepeatInterval>, ChromosomeMapper)> {
         get_targets(self.clone(), bam, reference)
     }
 }
@@ -87,6 +127,7 @@ pub struct RepeatIntervalIterator {
     current_index: usize,
     data: Vec<RepeatInterval>,
     pub num_intervals: usize,
+    pub chrom_mapper: ChromosomeMapper,
 }
 
 impl RepeatIntervalIterator {
@@ -100,7 +141,7 @@ impl RepeatIntervalIterator {
             panic!("Invalid region format '{}'. Expected format: chr:start-end", reg);
         }
 
-        let chrom = parts[0].to_string();
+        let chrom = parts[0];
         let interval = parts[1];
 
         let interval_parts: Vec<&str> = interval.split('-').collect();
@@ -115,10 +156,23 @@ impl RepeatIntervalIterator {
             .parse()
             .unwrap_or_else(|_| panic!("Invalid end position in region '{}'", reg));
 
-        let repeat =
-            RepeatInterval::new_interval(chrom, start, end, ".".to_string(), &chrom_lengths)
-                .expect("Failed to create repeat interval");
-        RepeatIntervalIterator { current_index: 0, data: vec![repeat], num_intervals: 1 }
+        let mut chrom_mapper = ChromosomeMapper::new();
+        let chrom_id = chrom_mapper.get_or_insert(chrom);
+        let repeat = RepeatInterval::new_interval(
+            chrom_id,
+            chrom,
+            start,
+            end,
+            ".".to_string(),
+            &chrom_lengths,
+        )
+        .expect("Failed to create repeat interval");
+        RepeatIntervalIterator {
+            current_index: 0,
+            data: vec![repeat],
+            num_intervals: 1,
+            chrom_mapper,
+        }
     }
     pub fn from_bed(
         region_file: &str,
@@ -179,12 +233,13 @@ impl RepeatIntervalIterator {
 
         let mut data = Vec::new();
         let mut filtered_count = 0;
+        let mut chrom_mapper = ChromosomeMapper::new();
 
         for record in reader.records() {
             let rec =
                 record.expect("Error reading bed record. Is the file valid and tab-delimited?");
 
-            let repeat = RepeatInterval::from_bed(&rec, &chrom_lengths);
+            let repeat = RepeatInterval::from_bed(&rec, &chrom_lengths, &mut chrom_mapper);
             if let Some(repeat) = repeat {
                 // Filter by max_locus size if specified
                 let locus_size = repeat.end - repeat.start;
@@ -207,7 +262,12 @@ impl RepeatIntervalIterator {
                 max_locus.unwrap()
             );
         }
-        RepeatIntervalIterator { current_index: 0, data: data.clone(), num_intervals: data.len() }
+        RepeatIntervalIterator {
+            current_index: 0,
+            data: data.clone(),
+            num_intervals: data.len(),
+            chrom_mapper,
+        }
     }
 
     /// Download and cache a predefined TR catalog preset
@@ -445,11 +505,12 @@ impl RepeatIntervalIterator {
 
         let mut data_vec = Vec::new();
         let mut filtered_count = 0;
+        let mut chrom_mapper = ChromosomeMapper::new();
 
         for record in bed_reader.records() {
             let rec = record.expect("Error reading bed record from downloaded data");
 
-            let repeat = RepeatInterval::from_bed(&rec, &chrom_lengths);
+            let repeat = RepeatInterval::from_bed(&rec, &chrom_lengths, &mut chrom_mapper);
             if let Some(repeat) = repeat {
                 // Filter by max_locus size if specified
                 let locus_size = repeat.end - repeat.start;
@@ -478,6 +539,7 @@ impl RepeatIntervalIterator {
             current_index: 0,
             data: data_vec.clone(),
             num_intervals: data_vec.len(),
+            chrom_mapper,
         }
     }
 }
@@ -485,7 +547,7 @@ impl RepeatIntervalIterator {
 impl Clone for RepeatInterval {
     fn clone(&self) -> Self {
         RepeatInterval {
-            chrom: self.chrom.clone(),
+            chrom_id: self.chrom_id,
             start: self.start,
             end: self.end,
             info: self.info.clone(),
@@ -511,22 +573,28 @@ impl Iterator for RepeatIntervalIterator {
 
 #[derive(Debug)]
 pub struct RepeatInterval {
-    pub chrom: String,
+    pub chrom_id: u32,
     pub start: u32,
     pub end: u32,
     pub info: String,
 }
 
-impl fmt::Display for RepeatInterval {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}:{}-{}", self.chrom, self.start, self.end)
+impl RepeatInterval {
+    /// Get chromosome name using the mapper
+    pub fn chrom_name<'a>(&self, mapper: &'a ChromosomeMapper) -> &'a str {
+        mapper.get_name(self.chrom_id)
     }
 }
 
 impl RepeatInterval {
     // parse a bed record
-    pub fn from_bed(rec: &bed::Record, chrom_lengths: &HashMap<String, u64>) -> Option<Self> {
-        let chrom = rec.chrom().to_string();
+    pub fn from_bed(
+        rec: &bed::Record,
+        chrom_lengths: &HashMap<String, u64>,
+        chrom_mapper: &mut ChromosomeMapper,
+    ) -> Option<Self> {
+        let chrom = rec.chrom();
+        let chrom_id = chrom_mapper.get_or_insert(chrom);
         let start = rec.start().try_into().unwrap();
         let end = rec.end().try_into().unwrap();
         // Extract 4th column (name field) or use "." if not present
@@ -534,11 +602,12 @@ impl RepeatInterval {
             .name()
             .map(|s| s.to_string())
             .unwrap_or_else(|| ".".to_string());
-        RepeatInterval::new_interval(chrom, start, end, info, chrom_lengths)
+        RepeatInterval::new_interval(chrom_id, chrom, start, end, info, chrom_lengths)
     }
 
     fn new_interval(
-        chrom: String,
+        chrom_id: u32,
+        chrom: &str,
         start: u32,
         end: u32,
         info: String,
@@ -554,8 +623,8 @@ impl RepeatInterval {
 
         // check if the chromosome exists in the chrom lengths hashmap
         // and if the end coordinate is within the chromosome length
-        if chrom_lengths.contains_key(&chrom) && (end as u64) < chrom_lengths[&chrom] {
-            return Some(Self { chrom, start, end, info });
+        if chrom_lengths.contains_key(chrom) && (end as u64) < chrom_lengths[chrom] {
+            return Some(Self { chrom_id, start, end, info });
         }
         // if the chromosome is not in the fai file or the end does not fit the interval, return None
         eprintln!(
@@ -572,17 +641,18 @@ impl RepeatInterval {
         );
         std::process::exit(1);
     }
-    pub fn new(chrom: &str, start: u32, end: u32) -> Self {
-        Self { chrom: chrom.to_string(), start, end, info: ".".to_string() }
+    pub fn new(chrom_id: u32, start: u32, end: u32) -> Self {
+        Self { chrom_id, start, end, info: ".".to_string() }
     }
 }
 
 /// Get targets from region string, region file, or preset catalog
+/// Returns both the repeat intervals and the chromosome mapper for ID->name lookups
 pub fn get_targets(
     targets: TargetConfig,
     bam: &str,
     reference: &Option<String>,
-) -> InquiSTRResult<Vec<RepeatInterval>> {
+) -> InquiSTRResult<(Vec<RepeatInterval>, ChromosomeMapper)> {
     let chrom_lengths = get_chrom_lengths_from_bam_header(bam.to_string(), reference)?;
     let iterator = match (&targets.region, &targets.region_file, &targets.preset) {
         // a region string
@@ -604,7 +674,8 @@ pub fn get_targets(
             ))
         }
     };
-    Ok(iterator.collect())
+    let chrom_mapper = iterator.chrom_mapper.clone();
+    Ok((iterator.collect(), chrom_mapper))
 }
 
 #[cfg(test)]

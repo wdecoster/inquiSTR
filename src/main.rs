@@ -236,9 +236,9 @@ enum Commands {
         #[clap(long, value_parser, default_value_t = 50)]
         batch_size: u32,
 
-        /// Output VCF file path (optional, TSV still written to stdout)
+        /// Output VCF format to stdout instead of TSV
         #[clap(long, value_parser)]
-        vcf: Option<PathBuf>,
+        vcf: bool,
     },
     /// Process multiple samples in batch and combine results
     #[clap(arg_required_else_help = true)]
@@ -617,7 +617,7 @@ fn main() {
                     processing_config: call::ProcessingConfig {
                         threads: common.threads,
                         batch_size_kb: str_args.batch_size,
-                        output_vcf: None,
+                        output_vcf: false,
                     },
                 }
             } else {
@@ -636,7 +636,7 @@ fn main() {
                     processing_config: call::ProcessingConfig {
                         threads: common.threads,
                         batch_size_kb: str_args.batch_size,
-                        output_vcf: None,
+                        output_vcf: false,
                     },
                 }
             };

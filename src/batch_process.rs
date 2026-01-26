@@ -196,9 +196,12 @@ fn process_sample(
     // Catch panics and convert to errors using helper
     catch_sample_panic(|| {
         // Get all genotypes
-        let all_repeats = target_config.get_targets(&sample.bam_path, reference)?;
-        let batches =
-            crate::batching::create_batches(all_repeats, processing_config.batch_size_kb * 1000);
+        let (all_repeats, chrom_mapper) = target_config.get_targets(&sample.bam_path, reference)?;
+        let batches = crate::batching::create_batches(
+            all_repeats,
+            processing_config.batch_size_kb * 1000,
+            &chrom_mapper,
+        );
 
         // CRITICAL FIX: Create a SINGLE BAM reader and reuse it for all batches
         // This prevents file descriptor exhaustion with CRAM files
@@ -282,7 +285,7 @@ fn process_sample(
 
         // Write genotypes
         for genotype in &all_genotypes {
-            writeln!(writer, "{}", genotype).unwrap();
+            writeln!(writer, "{}", genotype.format_output(&chrom_mapper)).unwrap();
         }
 
         // Ensure all data is flushed to disk

@@ -1,7 +1,7 @@
 use human_sort::compare as human_compare;
 use std::collections::HashMap;
 
-use crate::repeats::RepeatInterval;
+use crate::repeats::{ChromosomeMapper, RepeatInterval};
 
 /// Represents a batch of nearby repeats to be processed together
 /// Batches are created within chromosome boundaries and within distance threshold
@@ -44,12 +44,16 @@ impl Batch {
 ///
 /// # Returns
 /// Vector of batches, each containing nearby repeats from the same chromosome
-pub fn create_batches(repeats: Vec<RepeatInterval>, batch_distance_threshold: u32) -> Vec<Batch> {
+pub fn create_batches(
+    repeats: Vec<RepeatInterval>,
+    batch_distance_threshold: u32,
+    chrom_mapper: &ChromosomeMapper,
+) -> Vec<Batch> {
     // Group repeats by chromosome first
-    let mut by_chromosome: HashMap<String, Vec<RepeatInterval>> = HashMap::new();
+    let mut by_chromosome: HashMap<u32, Vec<RepeatInterval>> = HashMap::new();
     for repeat in repeats {
         by_chromosome
-            .entry(repeat.chrom.clone())
+            .entry(repeat.chrom_id)
             .or_default()
             .push(repeat);
     }
@@ -63,7 +67,8 @@ pub fn create_batches(repeats: Vec<RepeatInterval>, batch_distance_threshold: u3
     // Estimate number of batches (assume ~50 repeats per batch on average)
     let mut all_batches = Vec::new();
 
-    for (chromosome, chrom_repeats) in by_chromosome {
+    for (chrom_id, chrom_repeats) in by_chromosome {
+        let chromosome = chrom_mapper.get_name(chrom_id).to_string();
         let mut current_batch = Vec::new();
         let mut current_end = 0u32;
 
