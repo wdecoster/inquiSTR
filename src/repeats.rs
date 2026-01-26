@@ -689,10 +689,7 @@ mod tests {
             } else if status == reqwest::StatusCode::FORBIDDEN
                 || status == reqwest::StatusCode::METHOD_NOT_ALLOWED
             {
-                eprintln!(
-                    "  HEAD request returned {}, trying GET request...",
-                    status
-                );
+                eprintln!("  HEAD request returned {}, trying GET request...", status);
                 // Try a GET request with a range header to minimize data transfer
                 match client
                     .get(url)
@@ -730,12 +727,7 @@ mod tests {
                 false
             };
 
-            assert!(
-                is_accessible,
-                "{} URL ({}) is not accessible",
-                preset_name,
-                url
-            );
+            assert!(is_accessible, "{} URL ({}) is not accessible", preset_name, url);
         }
     }
 
