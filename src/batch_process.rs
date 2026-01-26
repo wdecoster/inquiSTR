@@ -1123,18 +1123,15 @@ pub fn batch_process(config: BatchConfig, mode: BatchMode) {
     } // redirect is dropped here, restoring stdout
 
     // Clean up temporary files if not saving individual files
-    if config.save_individual.is_none() {
+    if let Some(save_dir) = &config.save_individual {
+        eprintln!("Individual sample files saved to: {}", save_dir.display());
+    } else {
         eprintln!("Cleaning up temporary files...");
         for file in &individual_files {
             if let Err(e) = fs::remove_file(file) {
                 eprintln!("Warning: Failed to remove temporary file {}: {}", file.display(), e);
             }
         }
-    } else {
-        eprintln!(
-            "Individual sample files saved to: {}",
-            config.save_individual.as_ref().unwrap().display()
-        );
     }
 
     let total_duration = start_time.elapsed();
