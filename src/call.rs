@@ -1,13 +1,14 @@
-use log::error;
+use log::{debug, error};
 use rayon::prelude::*;
 use std::cmp::Ordering;
 use std::io::{self, Write};
 use std::path::PathBuf;
+use std::sync::Mutex;
 
 // Phasing validation now happens lazily on first batch via get_bam_reader_with_validation
-use crate::batching::create_batches;
+use crate::batching::{Batch, create_batches};
 use crate::errors::{InquiSTRError, InquiSTRResult};
-use crate::genotype_batch::{process_batch_with_reader, process_batch_worker};
+use crate::genotype_batch::{process_batch_with_dedicated_reader, process_batch_with_reader};
 use crate::repeats::{ChromosomeMapper, RepeatInterval, TargetConfig};
 
 /// Configuration for genotyping parameters (how to call STRs)
@@ -100,6 +101,7 @@ pub fn genotype_repeats(
     let (repeats, chrom_mapper) = targets.get_targets(&bam, &reference)?;
     let total_loci = repeats.len();
     let batches = create_batches(repeats, processing.batch_size_kb * 1000, &chrom_mapper); // Convert kb to basepair
+    // Note: `repeats` is moved into `batches`, so it's freed when batches are consumed
 
     // Setup progress bar with smoothed ETA
     let pb = if show_progress {
@@ -117,63 +119,8 @@ pub fn genotype_repeats(
         None
     };
 
-    // Process batches using producer-consumer pattern with configurable worker count
-    let results: Vec<Vec<Genotype>> = if processing.threads > 1 {
-        // Multi-threaded: Process batches in parallel
-        // NOTE: Cannot share BAM reader across threads, so each worker creates its own
-        // This means parallel processing with CRAM may still hit FD limits
-        let thread_pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(processing.threads)
-            .build()
-            .expect("Failed to build thread pool");
-
-        thread_pool.install(|| {
-            batches
-                .into_par_iter()
-                .map(|batch| {
-                    let batch_size = batch.repeats.len();
-                    let results = process_batch_worker(batch, &bam, &reference, genotype)?;
-                    if let Some(ref pb) = pb {
-                        pb.inc(batch_size as u64);
-                    }
-                    Ok(results)
-                })
-                .collect::<InquiSTRResult<Vec<Vec<Genotype>>>>()
-        })?
-    } else {
-        // Single-threaded: Create a SINGLE BAM reader and reuse it for all batches
-        // This dramatically reduces file descriptor usage with CRAM files
-        let mut bam_reader = if !genotype.unphased {
-            crate::bam_utils::get_bam_reader_with_validation(&bam, &reference)?
-        } else {
-            crate::bam_utils::get_bam_reader(&bam, &reference)?
-        };
-
-        // BAM reader will be dropped here automatically
-        batches
-            .iter()
-            .map(|batch| {
-                let batch_size = batch.repeats.len();
-                let results = process_batch_with_reader(batch, &mut bam_reader, &genotype)?;
-                if let Some(ref pb) = pb {
-                    pb.inc(batch_size as u64);
-                }
-                Ok(results)
-            })
-            .collect::<InquiSTRResult<Vec<Vec<Genotype>>>>()?
-    };
-
-    if let Some(ref pb) = pb {
-        pb.finish_with_message("Processing completed, writing results...");
-    }
-
-    // Output results in consistent format
     // Use either the sample_name provided as command line argument or extract one from the path
     let sample = sample_name.unwrap_or_else(|| crate::utils::extract_sample_name_from_path(&bam));
-
-    // Memory optimization: Process and write results chromosome-by-chromosome
-    // Since batches are sorted by chromosome, we can detect chromosome boundaries,
-    // sort within chromosome, write output, then drop those results before the next chromosome
 
     // If VCF output is requested, we only write to a temp TSV file for conversion
     // Otherwise, write TSV directly to stdout
@@ -208,59 +155,175 @@ pub fn genotype_repeats(
         writeln!(handle, "# unphased={}", genotype.unphased).expect("Failed writing metadata.");
     }
 
-    // Write data header to both stdout (if TSV) and temp file (if VCF)
+    // Write data header to either stdout (if TSV) or temp file (if VCF)
     let file_header = format!("chromosome\tbegin\tend\tinfo\t{sample}_H1\t{sample}_H2");
-    if let Some(ref mut handle) = stdout_writer {
-        writeln!(handle, "{file_header}").expect("Failed writing the header.");
-    }
-    if let Some(ref mut temp) = temp_writer {
-        writeln!(temp, "{file_header}").expect("Failed writing temp header.");
-    }
+    let writer = stdout_writer
+        .as_mut()
+        .map(|w| w as &mut dyn std::io::Write)
+        .or_else(|| temp_writer.as_mut().map(|w| w as &mut dyn std::io::Write))
+        .expect("Either stdout or temp writer must exist");
+    writeln!(writer, "{file_header}").expect("Failed writing the header.");
 
-    // Process chromosome-by-chromosome
+    // Process batches and write results per-chromosome as we go
+    // This dramatically reduces memory usage from storing all results
     let mut current_chrom_results: Vec<Genotype> = Vec::new();
     let mut current_chrom_id: Option<u32> = None;
 
-    for batch_results in results {
-        for genotype in batch_results {
-            // Check if we're starting a new chromosome (by ID instead of string comparison)
-            if current_chrom_id != Some(genotype.repeat.chrom_id) {
-                // Write out previous chromosome's results (sorted)
-                if !current_chrom_results.is_empty() {
-                    current_chrom_results.sort_unstable();
-                    for g in &current_chrom_results {
-                        let output_line = g.format_output(&chrom_mapper);
-                        if let Some(ref mut handle) = stdout_writer {
-                            writeln!(handle, "{}", output_line)
-                                .expect("Failed writing the result.");
-                        }
-                        if let Some(ref mut temp) = temp_writer {
-                            writeln!(temp, "{}", output_line)
-                                .expect("Failed writing to temp file.");
-                        }
-                    }
-                    current_chrom_results.clear();
+    // Helper function to write out accumulated chromosome results
+    let write_chromosome = |chrom_results: &mut Vec<Genotype>,
+                            stdout_w: &mut Option<io::BufWriter<io::Stdout>>,
+                            temp_w: &mut Option<io::BufWriter<std::fs::File>>,
+                            mapper: &ChromosomeMapper| {
+        if !chrom_results.is_empty() {
+            chrom_results.sort_unstable();
+            // Either stdout or temp is Some, never both
+            let writer = stdout_w
+                .as_mut()
+                .map(|w| w as &mut dyn std::io::Write)
+                .or_else(|| temp_w.as_mut().map(|w| w as &mut dyn std::io::Write))
+                .expect("Either stdout or temp writer must exist");
+            for g in chrom_results.iter() {
+                let output_line = g.format_output(mapper);
+                writeln!(writer, "{}", output_line).expect("Failed writing the result.");
+            }
+            chrom_results.clear();
+        }
+    };
+
+    if processing.threads > 1 {
+        // Multi-threaded: Process chromosome-by-chromosome with parallel batches within each
+        // This gives us both parallelism AND streaming memory benefits!
+
+        // Pre-create a pool of BAM readers (one per thread) to enable true parallelism
+        // without lock contention. Each thread will borrow a reader from the pool.
+        debug!("Creating pool of {} BAM readers for parallel processing", processing.threads);
+        let readers = crate::bam_pool::create_readers_for_threads(
+            &bam,
+            &reference,
+            processing.threads,
+            !genotype.unphased, // validate phasing on first reader
+        )?;
+        let reader_pool: Mutex<Vec<_>> = Mutex::new(readers);
+
+        let thread_pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(processing.threads)
+            .build()
+            .expect("Failed to build thread pool");
+
+        // Group batches by chromosome (already sorted by chromosome from create_batches)
+        let mut chrom_batches: Vec<Vec<&Batch>> = Vec::new();
+        let mut current_chrom_batch: Vec<&Batch> = Vec::new();
+        let mut last_chrom: Option<&str> = None;
+
+        for batch in batches.iter() {
+            if last_chrom != Some(&batch.chromosome) {
+                if !current_chrom_batch.is_empty() {
+                    chrom_batches.push(std::mem::take(&mut current_chrom_batch));
                 }
-                current_chrom_id = Some(genotype.repeat.chrom_id);
+                last_chrom = Some(&batch.chromosome);
+            }
+            current_chrom_batch.push(batch);
+        }
+        if !current_chrom_batch.is_empty() {
+            chrom_batches.push(current_chrom_batch);
+        }
+
+        // Process each chromosome's batches in parallel, write results, then move to next chromosome
+        for chrom_batch_group in chrom_batches {
+            let results: Vec<Vec<Genotype>> = thread_pool.install(|| {
+                chrom_batch_group
+                    .into_par_iter()
+                    .map(|batch| {
+                        let batch_size = batch.repeats.len();
+
+                        // Borrow a reader from the pool (blocks briefly if all in use)
+                        let mut reader = reader_pool
+                            .lock()
+                            .unwrap()
+                            .pop()
+                            .expect("Reader pool exhausted - this should not happen");
+
+                        // Process with the dedicated reader (no global lock needed)
+                        let results =
+                            process_batch_with_dedicated_reader(batch, &mut reader, &genotype);
+
+                        // Return reader to pool
+                        reader_pool.lock().unwrap().push(reader);
+
+                        if let Some(ref pb) = pb {
+                            pb.inc(batch_size as u64);
+                        }
+                        results
+                    })
+                    .collect::<InquiSTRResult<Vec<Vec<Genotype>>>>()
+            })?;
+
+            // Write this chromosome's results immediately
+            for batch_results in results {
+                for genotype in batch_results {
+                    if current_chrom_id != Some(genotype.repeat.chrom_id) {
+                        write_chromosome(
+                            &mut current_chrom_results,
+                            &mut stdout_writer,
+                            &mut temp_writer,
+                            &chrom_mapper,
+                        );
+                        current_chrom_id = Some(genotype.repeat.chrom_id);
+                    }
+                    current_chrom_results.push(genotype);
+                }
+            }
+            // Results for this chromosome are dropped here, freeing memory before next chromosome!
+        }
+
+        if let Some(ref pb) = pb {
+            pb.finish_with_message("Processing completed, writing final results...");
+        }
+    } else {
+        // Single-threaded: TRUE STREAMING - process and write as we go!
+        // Since batches are sorted by chromosome, we can write each chromosome immediately
+        let mut bam_reader = if !genotype.unphased {
+            crate::bam_utils::get_bam_reader_with_validation(&bam, &reference)?
+        } else {
+            crate::bam_utils::get_bam_reader(&bam, &reference)?
+        };
+
+        for batch in batches.iter() {
+            let batch_size = batch.repeats.len();
+            let batch_results = process_batch_with_reader(batch, &mut bam_reader, &genotype)?;
+
+            if let Some(ref pb) = pb {
+                pb.inc(batch_size as u64);
             }
 
-            current_chrom_results.push(genotype);
+            // Stream results: write chromosome as soon as we move to the next one
+            for genotype in batch_results {
+                if current_chrom_id != Some(genotype.repeat.chrom_id) {
+                    write_chromosome(
+                        &mut current_chrom_results,
+                        &mut stdout_writer,
+                        &mut temp_writer,
+                        &chrom_mapper,
+                    );
+                    current_chrom_id = Some(genotype.repeat.chrom_id);
+                }
+                current_chrom_results.push(genotype);
+            }
+            // batch_results is dropped here, freeing memory immediately!
+        }
+
+        if let Some(ref pb) = pb {
+            pb.finish_with_message("Processing completed, writing final results...");
         }
     }
 
     // Write final chromosome's results
-    if !current_chrom_results.is_empty() {
-        current_chrom_results.sort_unstable();
-        for g in &current_chrom_results {
-            let output_line = g.format_output(&chrom_mapper);
-            if let Some(ref mut handle) = stdout_writer {
-                writeln!(handle, "{}", output_line).expect("Failed writing the result.");
-            }
-            if let Some(ref mut temp) = temp_writer {
-                writeln!(temp, "{}", output_line).expect("Failed writing to temp file.");
-            }
-        }
-    }
+    write_chromosome(
+        &mut current_chrom_results,
+        &mut stdout_writer,
+        &mut temp_writer,
+        &chrom_mapper,
+    );
 
     // Flush temp file to ensure all data is written
     if let Some(mut temp) = temp_writer {

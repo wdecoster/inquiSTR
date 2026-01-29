@@ -1,6 +1,6 @@
 [package]
 name = "inquiSTR"
-version = "0.26.0"
+version = "0.26.3"
 edition = "2024"
 rust-version = "1.88.0"
 authors = ["Wouter De Coster <wouter.decoster@gmail.com>"]
@@ -57,7 +57,7 @@ ctor = "0.6.1"
 lto = true              # Link-time optimization
 codegen-units = 1       # Better optimization
 panic = "abort"         # Smaller binaries, faster panic handling
-strip = true            # Remove symbols for smaller binaries
+#strip = true            # Remove symbols for smaller binaries
 
 [profile.dev]
 # Faster builds in development

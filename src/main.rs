@@ -152,6 +152,7 @@ struct BatchUnmappedArgs {
 }
 
 pub mod assoc;
+pub mod bam_pool;
 pub mod bam_utils;
 pub mod batch_process;
 pub mod batching;
@@ -405,6 +406,10 @@ enum Commands {
         /// Sort results by Bonferroni corrected p-value (requires loading full results into memory)
         #[clap(long)]
         sort: bool,
+
+        /// Automatically confirm all prompts (non-interactive mode for workflows)
+        #[clap(short, long)]
+        yes: bool,
     },
     /// Show a histogram with multiple groups for a specific repeat
     Plot {
@@ -503,9 +508,9 @@ enum Commands {
         #[clap(short, long, value_parser, default_value_t = String::from("MAX"))]
         mode: String,
 
-        /// Output file for correlation plot
-        #[clap(short, long, value_parser, required = true)]
-        plot: PathBuf,
+        /// Output file for correlation plot (optional)
+        #[clap(short, long, value_parser)]
+        plot: Option<PathBuf>,
 
         /// Maximum length to display on plot (points beyond this are counted but not shown)
         #[clap(long, value_parser, default_value_t = 5000.0)]
@@ -679,6 +684,7 @@ fn main() {
             quiet,
             plot,
             sort,
+            yes,
         } => {
             assoc::run_association(
                 input,
@@ -696,6 +702,7 @@ fn main() {
                 quiet,
                 plot,
                 sort,
+                yes,
             );
         }
         Commands::Plot { combined, sample_metadata, condition, region, output } => {

@@ -214,10 +214,20 @@ fn process_sample(
 
         let results: Result<Vec<Vec<crate::call::Genotype>>, crate::errors::InquiSTRError> =
             if processing_config.threads > 1 {
-                // For parallel processing, we CANNOT share the BAM reader across threads
-                // So we must fall back to the old approach (each batch opens its own reader)
-                // This is a known limitation with CRAM files + parallel processing
-                use rayon::prelude::*;
+                // Pre-create a pool of BAM readers (one per thread) for true parallelism
+                // without lock contention. Each thread borrows a reader from the pool.
+                debug!(
+                    "Creating pool of {} BAM readers for parallel batch processing",
+                    processing_config.threads
+                );
+                let readers = crate::bam_pool::create_readers_for_threads(
+                    &sample.bam_path,
+                    reference,
+                    processing_config.threads,
+                    !genotype_config.unphased, // validate phasing on first reader
+                )?;
+                let reader_pool: Mutex<Vec<_>> = Mutex::new(readers);
+
                 let thread_pool = rayon::ThreadPoolBuilder::new()
                     .num_threads(processing_config.threads)
                     .build()
@@ -225,14 +235,27 @@ fn process_sample(
 
                 thread_pool.install(|| {
                     batches
-                        .into_par_iter()
+                        .par_iter()
                         .map(|batch| {
-                            crate::genotype_batch::process_batch_worker(
-                                batch,
-                                &sample.bam_path,
-                                reference,
-                                *genotype_config,
-                            )
+                            // Borrow a reader from the pool
+                            let mut reader = reader_pool
+                                .lock()
+                                .unwrap()
+                                .pop()
+                                .expect("Reader pool exhausted");
+
+                            // Process with dedicated reader (no global lock)
+                            let results =
+                                crate::genotype_batch::process_batch_with_dedicated_reader(
+                                    batch,
+                                    &mut reader,
+                                    genotype_config,
+                                );
+
+                            // Return reader to pool
+                            reader_pool.lock().unwrap().push(reader);
+
+                            results
                         })
                         .collect()
                 })

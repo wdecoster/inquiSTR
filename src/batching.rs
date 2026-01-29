@@ -84,7 +84,8 @@ pub fn create_batches(
             } else {
                 // Finish the current batch if it exists, pushing to all_batches
                 if !current_batch.is_empty() {
-                    all_batches.push(Batch::new(chromosome.clone(), current_batch));
+                    all_batches
+                        .push(Batch::new(chromosome.clone(), std::mem::take(&mut current_batch)));
                 }
 
                 // Start new batch

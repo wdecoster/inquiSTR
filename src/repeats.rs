@@ -1,5 +1,6 @@
 use bio::io::bed;
 use clap::ValueEnum;
+use std::sync::Arc;
 use std::{collections::HashMap, path::PathBuf};
 
 use crate::bam_utils::get_chrom_lengths_from_bam_header;
@@ -27,8 +28,9 @@ impl ChromosomeMapper {
             id
         } else {
             let id = self.id_to_name.len() as u32;
-            self.id_to_name.push(chrom.to_string());
-            self.name_to_id.insert(chrom.to_string(), id);
+            let chrom_owned = chrom.to_string();
+            self.id_to_name.push(chrom_owned.clone());
+            self.name_to_id.insert(chrom_owned, id);
             id
         }
     }
@@ -123,14 +125,13 @@ impl TargetConfig {
 }
 
 #[derive(Debug)]
-pub struct RepeatIntervalIterator {
-    current_index: usize,
+pub struct TargetLoader {
     data: Vec<RepeatInterval>,
     pub num_intervals: usize,
     pub chrom_mapper: ChromosomeMapper,
 }
 
-impl RepeatIntervalIterator {
+impl TargetLoader {
     // parse a region string in format "chr:start-end"
     pub fn from_string(reg: &str, chrom_lengths: HashMap<String, u64>) -> Self {
         let reg = reg.trim();
@@ -163,16 +164,11 @@ impl RepeatIntervalIterator {
             chrom,
             start,
             end,
-            ".".to_string(),
+            Arc::from("."),
             &chrom_lengths,
         )
         .expect("Failed to create repeat interval");
-        RepeatIntervalIterator {
-            current_index: 0,
-            data: vec![repeat],
-            num_intervals: 1,
-            chrom_mapper,
-        }
+        TargetLoader { data: vec![repeat], num_intervals: 1, chrom_mapper }
     }
     pub fn from_bed(
         region_file: &str,
@@ -262,12 +258,7 @@ impl RepeatIntervalIterator {
                 max_locus.unwrap()
             );
         }
-        RepeatIntervalIterator {
-            current_index: 0,
-            data: data.clone(),
-            num_intervals: data.len(),
-            chrom_mapper,
-        }
+        TargetLoader { num_intervals: data.len(), data, chrom_mapper }
     }
 
     /// Download and cache a predefined TR catalog preset
@@ -535,12 +526,7 @@ impl RepeatIntervalIterator {
             );
         }
 
-        RepeatIntervalIterator {
-            current_index: 0,
-            data: data_vec.clone(),
-            num_intervals: data_vec.len(),
-            chrom_mapper,
-        }
+        TargetLoader { num_intervals: data_vec.len(), data: data_vec, chrom_mapper }
     }
 }
 
@@ -550,23 +536,7 @@ impl Clone for RepeatInterval {
             chrom_id: self.chrom_id,
             start: self.start,
             end: self.end,
-            info: self.info.clone(),
-        }
-    }
-}
-
-impl Iterator for RepeatIntervalIterator {
-    type Item = RepeatInterval;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        // Implement the logic to get the next RepeatInterval here.
-        // This is a simple example that gets the next item from a vector.
-        if self.current_index < self.data.len() {
-            let result = self.data[self.current_index].clone();
-            self.current_index += 1;
-            Some(result)
-        } else {
-            None
+            info: Arc::clone(&self.info),
         }
     }
 }
@@ -576,7 +546,7 @@ pub struct RepeatInterval {
     pub chrom_id: u32,
     pub start: u32,
     pub end: u32,
-    pub info: String,
+    pub info: Arc<str>,
 }
 
 impl RepeatInterval {
@@ -598,10 +568,7 @@ impl RepeatInterval {
         let start = rec.start().try_into().unwrap();
         let end = rec.end().try_into().unwrap();
         // Extract 4th column (name field) or use "." if not present
-        let info = rec
-            .name()
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| ".".to_string());
+        let info: Arc<str> = rec.name().map(Arc::from).unwrap_or_else(|| Arc::from("."));
         RepeatInterval::new_interval(chrom_id, chrom, start, end, info, chrom_lengths)
     }
 
@@ -610,7 +577,7 @@ impl RepeatInterval {
         chrom: &str,
         start: u32,
         end: u32,
-        info: String,
+        info: Arc<str>,
         chrom_lengths: &HashMap<String, u64>,
     ) -> Option<Self> {
         if end < start {
@@ -642,7 +609,7 @@ impl RepeatInterval {
         std::process::exit(1);
     }
     pub fn new(chrom_id: u32, start: u32, end: u32) -> Self {
-        Self { chrom_id, start, end, info: ".".to_string() }
+        Self { chrom_id, start, end, info: Arc::from(".") }
     }
 }
 
@@ -654,18 +621,18 @@ pub fn get_targets(
     reference: &Option<String>,
 ) -> InquiSTRResult<(Vec<RepeatInterval>, ChromosomeMapper)> {
     let chrom_lengths = get_chrom_lengths_from_bam_header(bam.to_string(), reference)?;
-    let iterator = match (&targets.region, &targets.region_file, &targets.preset) {
+    let loader = match (&targets.region, &targets.region_file, &targets.preset) {
         // a region string
-        (Some(region), None, None) => RepeatIntervalIterator::from_string(region, chrom_lengths),
+        (Some(region), None, None) => TargetLoader::from_string(region, chrom_lengths),
         // a region file
-        (None, Some(region_file), None) => RepeatIntervalIterator::from_bed(
+        (None, Some(region_file), None) => TargetLoader::from_bed(
             &region_file.to_string_lossy(),
             chrom_lengths,
             targets.max_locus,
         ),
         // preset catalog
         (None, None, Some(preset)) => {
-            RepeatIntervalIterator::from_preset(*preset, chrom_lengths, targets.max_locus)
+            TargetLoader::from_preset(*preset, chrom_lengths, targets.max_locus)
         }
         // invalid input
         _ => {
@@ -674,8 +641,10 @@ pub fn get_targets(
             ))
         }
     };
-    let chrom_mapper = iterator.chrom_mapper.clone();
-    Ok((iterator.collect(), chrom_mapper))
+    // Extract data directly without iterating (since we already have it in a Vec)
+    let repeats = loader.data;
+    let chrom_mapper = loader.chrom_mapper;
+    Ok((repeats, chrom_mapper))
 }
 
 #[cfg(test)]
@@ -700,7 +669,7 @@ mod tests {
                 .expect("Failed to get chromosome lengths");
 
         // Test without max_locus - should include both intervals
-        let repeats_no_filter = RepeatIntervalIterator::from_bed(
+        let repeats_no_filter = TargetLoader::from_bed(
             &String::from("test_temp_max_locus.bed"),
             chrom_lengths.clone(),
             None,
@@ -708,7 +677,7 @@ mod tests {
         assert_eq!(repeats_no_filter.num_intervals, 2);
 
         // Test with max_locus 1000 - should filter out the huge interval (120000 bp)
-        let repeats_with_filter = RepeatIntervalIterator::from_bed(
+        let repeats_with_filter = TargetLoader::from_bed(
             &String::from("test_temp_max_locus.bed"),
             chrom_lengths,
             Some(1000),
