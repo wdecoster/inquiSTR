@@ -2,8 +2,7 @@ use plotly::common::{Mode, Title};
 use plotly::layout::{Axis, Layout};
 use plotly::{Plot, Scatter};
 use std::collections::HashMap;
-use std::fs::File;
-use std::io::{BufRead, BufReader};
+use std::io::BufRead;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
@@ -45,18 +44,22 @@ fn parse_bed_file(
 
         let fields: Vec<&str> = line.split('\t').collect();
         if fields.len() != 9 {
-            eprintln!(
-                "Warning: Skipping malformed BED line {} (expected 9 fields, got {}): {}",
+            return Err(format!(
+                "Error: Malformed BED line {} (expected 9 fields, got {}): {}",
                 line_count,
                 fields.len(),
                 line
-            );
-            continue;
+            )
+            .into());
         }
 
         let chromosome = fields[0].to_string();
-        let begin: u32 = fields[1].parse()?;
-        let end: u32 = fields[2].parse()?;
+        let begin: u32 = fields[1].parse().map_err(|e| {
+            format!("Error parsing begin position on BED line {}: {} - {}", line_count, line, e)
+        })?;
+        let end: u32 = fields[2].parse().map_err(|e| {
+            format!("Error parsing end position on BED line {}: {} - {}", line_count, line, e)
+        })?;
         let tier = fields[3].to_string();
 
         // Filter by max_locus size if specified
@@ -105,27 +108,66 @@ fn parse_bed_file(
 fn parse_inquistr_file(
     file_path: &Path,
 ) -> Result<HashMap<String, InquiSTRRecord>, Box<dyn std::error::Error>> {
-    let file = File::open(file_path)?;
-    let reader = BufReader::new(file);
+    // Validate file type (should be individual call, not combined)
+    if let Some(file_type) = crate::filetype::read_file_type_metadata(file_path)
+        && file_type != crate::filetype::FileType::IndividualCall
+    {
+        return Err(format!(
+            "Error: Expected individual call file, but got {:?}. Benchmark requires individual call files with 6 columns (chromosome, begin, end, info, H1, H2).",
+            file_type
+        )
+        .into());
+    }
+
+    let file_reader = crate::utils::reader(&file_path.to_string_lossy());
+    let mut lines = file_reader.lines();
     let mut records = HashMap::new();
+    let mut line_num = 0;
 
-    for (line_num, line) in reader.lines().enumerate() {
-        let line = line?;
+    // Skip metadata lines and read header
+    let header_line = crate::utils::skip_metadata_lines(&mut lines);
+    line_num += 1;
 
-        // Skip header line
-        if line_num == 0 && line.starts_with("chromosome") {
-            continue;
+    // Validate header format
+    let header_fields: Vec<&str> = header_line.split('\t').collect();
+    match crate::filetype::validate_str_header(&header_fields) {
+        Ok(n_samples) => {
+            if n_samples != 1 {
+                return Err(format!(
+                    "Error: Expected individual call file with 1 sample, but found {} samples. Benchmark requires individual call files.",
+                    n_samples
+                )
+                .into());
+            }
         }
+        Err(e) => {
+            return Err(format!("Error: Invalid inquiSTR file header: {}", e).into());
+        }
+    }
+
+    // Process data lines
+    for line_result in lines {
+        let line = line_result?;
+        line_num += 1;
 
         let fields: Vec<&str> = line.split('\t').collect();
         if fields.len() != 6 {
-            eprintln!("Warning: Skipping malformed line {}: {}", line_num + 1, line);
-            continue;
+            return Err(format!(
+                "Error: Malformed line {} in inquiSTR file (expected 6 fields, got {}): {}",
+                line_num,
+                fields.len(),
+                line
+            )
+            .into());
         }
 
         let chromosome = fields[0].to_string();
-        let begin: u32 = fields[1].parse()?;
-        let end: u32 = fields[2].parse()?;
+        let begin: u32 = fields[1].parse().map_err(|e| {
+            format!("Error parsing begin position on line {}: {} - {}", line_num, line, e)
+        })?;
+        let end: u32 = fields[2].parse().map_err(|e| {
+            format!("Error parsing end position on line {}: {} - {}", line_num, line, e)
+        })?;
         // Skip info field at index 3
 
         // Parse H1 and H2, handling NaN values
@@ -138,6 +180,8 @@ fn parse_inquistr_file(
         let key = format!("{}:{}", chromosome, begin);
         records.insert(key, record);
     }
+
+    println!("inquiSTR file processed: {} records loaded", records.len());
 
     Ok(records)
 }
@@ -289,7 +333,7 @@ pub fn benchmark(
     vcf_file: Option<PathBuf>,
     bed_file: Option<PathBuf>,
     mode: String,
-    plot_file: PathBuf,
+    plot_file: Option<PathBuf>,
     max_plot_length: f64,
     tier1_only: bool,
     diff_out: Option<PathBuf>,
@@ -653,18 +697,22 @@ pub fn benchmark(
         .width(800)
         .height(800);
 
-    let mut plot = Plot::new();
-    plot.add_trace(trace);
-    plot.set_layout(layout);
+    // Save plot if output file is specified
+    if let Some(plot_path) = plot_file {
+        let mut plot = Plot::new();
+        plot.add_trace(trace);
+        plot.set_layout(layout);
 
-    // Save plot
-    let html_content = plot.to_html();
-    match std::fs::write(&plot_file, html_content) {
-        Ok(_) => println!("Plot saved to: {}", plot_file.display()),
-        Err(e) => {
-            eprintln!("Error saving plot: {}", e);
-            std::process::exit(1);
+        let html_content = plot.to_html();
+        match std::fs::write(&plot_path, html_content) {
+            Ok(_) => println!("Plot saved to: {}", plot_path.display()),
+            Err(e) => {
+                eprintln!("Error saving plot: {}", e);
+                std::process::exit(1);
+            }
         }
+    } else {
+        println!("Skipping plot generation (no --plot file specified)");
     }
 
     // Output summary in parseable format for scripting
