@@ -39,6 +39,7 @@ pub fn run_association(
     quiet: bool,
     plot: Option<String>,
     sort: bool,
+    yes: bool,
 ) {
     if !quiet {
         info!("Starting STR association testing");
@@ -51,7 +52,7 @@ pub fn run_association(
     }
 
     // Check R environment
-    if let Err(e) = check_r_environment(quiet) {
+    if let Err(e) = check_r_environment(quiet, yes) {
         error!("R environment check failed: {}", e);
         print_r_setup_instructions();
         print_error_help_message();
@@ -160,7 +161,7 @@ fn validate_arguments(
 
 /// Check if R is installed and required packages are available
 /// Uses a fallback cascade: system R -> conda R -> cached portable R -> offer installation
-fn check_r_environment(quiet: bool) -> Result<(), String> {
+fn check_r_environment(quiet: bool, yes: bool) -> Result<(), String> {
     if !quiet {
         info!("Checking R environment...");
     }
@@ -171,7 +172,7 @@ fn check_r_environment(quiet: bool) -> Result<(), String> {
             info!("System R found: {}", version);
         }
         // Check for required packages and offer to install if missing
-        ensure_r_packages(quiet)?;
+        ensure_r_packages(quiet, yes)?;
         return Ok(());
     }
 
@@ -187,7 +188,7 @@ fn check_r_environment(quiet: bool) -> Result<(), String> {
         Err(e) if e.contains("found but no 'inquiSTR' environment") => {
             // Conda exists but no inquiSTR env - offer to create it
             let conda_cmd = e.split_whitespace().next().unwrap_or("conda");
-            return offer_conda_env_creation(conda_cmd, quiet);
+            return offer_conda_env_creation(conda_cmd, quiet, yes);
         }
         Err(_) => {
             // No conda found, continue to next fallback
@@ -207,11 +208,11 @@ fn check_r_environment(quiet: bool) -> Result<(), String> {
     }
 
     // Step 4: No R found - offer to install portable R
-    offer_portable_r_installation(&conda_prefix, quiet)
+    offer_portable_r_installation(&conda_prefix, quiet, yes)
 }
 
 /// Ensure R packages are installed, offering to install missing ones
-fn ensure_r_packages(quiet: bool) -> Result<(), String> {
+fn ensure_r_packages(quiet: bool, yes: bool) -> Result<(), String> {
     let missing_packages = check_r_packages(quiet)?;
 
     if missing_packages.is_empty() {
@@ -226,17 +227,29 @@ fn ensure_r_packages(quiet: bool) -> Result<(), String> {
     for pkg in &missing_packages {
         eprintln!("  - {}", pkg);
     }
-    eprintln!("\nWould you like to install them now? This may take 1-2 minutes.");
-    eprintln!("Type 'y' to install, or any other key to cancel: ");
 
-    let mut response = String::new();
-    io::stdin()
-        .read_line(&mut response)
-        .map_err(|e| format!("Failed to read user input: {}", e))?;
+    let proceed = if yes {
+        eprintln!("\n--yes flag provided, automatically installing packages...");
+        true
+    } else {
+        eprintln!("\nWould you like to install them now? This may take 1-2 minutes.");
+        eprintln!("Type 'y' to install, or any other key to cancel (timeout: 60s): ");
+        match get_user_confirmation_with_timeout(60) {
+            Ok(confirmed) => confirmed,
+            Err(e) => {
+                eprintln!("\nError or timeout: {}", e);
+                eprintln!("Installation cancelled. You can install the packages manually:");
+                eprintln!(
+                    "  Rscript -e \"install.packages(c('{}'), repos='https://cran.rstudio.com/')\"",
+                    missing_packages.join("', '")
+                );
+                eprintln!("Or use --yes flag to auto-confirm in non-interactive environments.");
+                return Err(format!("R package installation cancelled: {}", e));
+            }
+        }
+    };
 
-    let response = response.trim().to_lowercase();
-
-    if response != "y" {
+    if !proceed {
         eprintln!("\nInstallation cancelled. You can install the packages manually:");
         eprintln!(
             "  Rscript -e \"install.packages(c('{}'), repos='https://cran.rstudio.com/')\"",
@@ -613,7 +626,7 @@ fn get_cache_dir() -> PathBuf {
 }
 
 /// Offer to create inquiSTR conda environment in existing conda installation
-fn offer_conda_env_creation(conda_cmd: &str, quiet: bool) -> Result<(), String> {
+fn offer_conda_env_creation(conda_cmd: &str, quiet: bool, yes: bool) -> Result<(), String> {
     eprintln!("\n{}", "=".repeat(60));
     eprintln!("  CONDA ENVIRONMENT SETUP");
     eprintln!("{}", "=".repeat(60));
@@ -623,14 +636,28 @@ fn offer_conda_env_creation(conda_cmd: &str, quiet: bool) -> Result<(), String> 
         "This will install R {} with data.table, argparser, and qqman (for plotting) (~250 MB)",
         R_VERSION
     );
-    eprintln!("\nType 'y' to create environment, or any other key to cancel: ");
 
-    let mut response = String::new();
-    io::stdin()
-        .read_line(&mut response)
-        .map_err(|e| format!("Failed to read user input: {}", e))?;
+    let proceed = if yes {
+        eprintln!("\n--yes flag provided, automatically creating environment...");
+        true
+    } else {
+        eprintln!("\nType 'y' to create environment, or any other key to cancel (timeout: 60s): ");
+        match get_user_confirmation_with_timeout(60) {
+            Ok(confirmed) => confirmed,
+            Err(e) => {
+                eprintln!("\nError or timeout: {}", e);
+                eprintln!("Cancelled. You can create the environment later with:");
+                eprintln!(
+                    "  {} create -n inquiSTR -c conda-forge r-base={} r-data.table r-argparser r-qqman",
+                    conda_cmd, R_VERSION
+                );
+                eprintln!("Or use --yes flag to auto-confirm in non-interactive environments.");
+                return Err(format!("Conda environment creation cancelled: {}", e));
+            }
+        }
+    };
 
-    if response.trim().to_lowercase() != "y" {
+    if !proceed {
         eprintln!("\nCancelled. You can create the environment later with:");
         eprintln!(
             "  {} create -n inquiSTR -c conda-forge r-base={} r-data.table r-argparser r-qqman",
@@ -676,7 +703,11 @@ fn offer_conda_env_creation(conda_cmd: &str, quiet: bool) -> Result<(), String> 
 }
 
 /// Offer to install portable R via miniforge
-fn offer_portable_r_installation(conda_prefix: &Path, quiet: bool) -> Result<(), String> {
+fn offer_portable_r_installation(
+    conda_prefix: &Path,
+    quiet: bool,
+    yes: bool,
+) -> Result<(), String> {
     eprintln!("\n{}", "=".repeat(60));
     eprintln!("  PORTABLE R INSTALLATION");
     eprintln!("{}", "=".repeat(60));
@@ -693,15 +724,26 @@ fn offer_portable_r_installation(conda_prefix: &Path, quiet: bool) -> Result<(),
         R_VERSION
     );
     eprintln!("  - One-time download, ~2-3 minutes");
-    eprintln!("\nWould you like to download and install portable R now?");
-    eprintln!("Type 'y' to proceed, or any other key to cancel: ");
 
-    let mut response = String::new();
-    io::stdin()
-        .read_line(&mut response)
-        .map_err(|e| format!("Failed to read user input: {}", e))?;
+    let proceed = if yes {
+        eprintln!("\n--yes flag provided, automatically installing portable R...");
+        true
+    } else {
+        eprintln!("\nWould you like to download and install portable R now?");
+        eprintln!("Type 'y' to proceed, or any other key to cancel (timeout: 60s): ");
+        match get_user_confirmation_with_timeout(60) {
+            Ok(confirmed) => confirmed,
+            Err(e) => {
+                eprintln!("\nError or timeout: {}", e);
+                eprintln!("Installation cancelled.");
+                print_r_setup_instructions();
+                eprintln!("Or use --yes flag to auto-confirm in non-interactive environments.");
+                return Err(format!("Portable R installation cancelled: {}", e));
+            }
+        }
+    };
 
-    if response.trim().to_lowercase() != "y" {
+    if !proceed {
         eprintln!("\nInstallation cancelled.");
         print_r_setup_instructions();
         return Err("User cancelled portable R installation".to_string());
@@ -867,6 +909,30 @@ fn print_r_setup_instructions() {
     eprintln!("   inquiSTR association --help");
     eprintln!("\nFor more details, see: https://github.com/wdecoster/inquiSTR#association-testing");
     eprintln!("{}", "=".repeat(60));
+}
+
+/// Get user confirmation with timeout for non-interactive environments
+/// Returns Ok(true) if user confirms, Ok(false) if user declines, Err if timeout or error
+fn get_user_confirmation_with_timeout(timeout_secs: u64) -> Result<bool, String> {
+    use std::sync::mpsc::channel;
+    use std::thread;
+    use std::time::Duration;
+
+    let (tx, rx) = channel();
+
+    // Spawn a thread to read user input
+    thread::spawn(move || {
+        let mut response = String::new();
+        if io::stdin().read_line(&mut response).is_ok() {
+            let _ = tx.send(response.trim().to_lowercase());
+        }
+    });
+
+    // Wait for input with timeout
+    match rx.recv_timeout(Duration::from_secs(timeout_secs)) {
+        Ok(response) => Ok(response == "y"),
+        Err(_) => Err("Timeout waiting for user input after 60 seconds".to_string()),
+    }
 }
 
 #[cfg(test)]
