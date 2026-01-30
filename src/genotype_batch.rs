@@ -1,6 +1,7 @@
 use log::{error, warn};
 use rust_htslib::bam::Read;
 use rust_htslib::bam::ext::BamRecordExtensions;
+use std::collections::HashMap;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -19,9 +20,29 @@ static PHASING_VALIDATED: AtomicBool = AtomicBool::new(false);
 
 /// Represents a STR call from a single read
 #[derive(Clone, Copy)] // Make it Copy for better performance
-pub enum Call {
+pub enum CallType {
     Span(i64),
     Clip(i64),
+}
+
+pub enum Phase {
+    Phase1,
+    Phase2,
+}
+
+impl Phase {
+    pub fn from_u8(value: u8) -> Option<Phase> {
+        match value {
+            1 => Some(Phase::Phase1),
+            2 => Some(Phase::Phase2),
+            _ => None,
+        }
+    }
+}
+
+pub struct Call {
+    value: CallType,
+    hp_tag: Option<Phase>,
 }
 
 impl Call {
@@ -31,8 +52,8 @@ impl Call {
     /// spanning reads (Call::Span) and soft-clipped reads (Call::Clip).
     #[inline]
     pub fn value(&self) -> i64 {
-        match self {
-            Call::Span(v) | Call::Clip(v) => *v,
+        match self.value {
+            CallType::Span(v) | CallType::Clip(v) => v,
         }
     }
 }
@@ -54,7 +75,7 @@ impl Call {
 ///
 /// # Returns
 /// Median STR length difference from reference, or NaN if insufficient support
-pub fn median_str_length(array: &[Call], support: usize) -> f64 {
+pub fn median_str_length(array: &[&Call], support: usize) -> f64 {
     if array.len() < support {
         return f64::NAN;
     }
@@ -65,9 +86,9 @@ pub fn median_str_length(array: &[Call], support: usize) -> f64 {
     let mut clipped = Vec::with_capacity(array.len());
 
     for call in array {
-        match call {
-            Call::Span(v) => spanning.push(*v),
-            Call::Clip(v) => clipped.push(*v),
+        match call.value {  
+            CallType::Span(v) => spanning.push(v),
+            CallType::Clip(v) => clipped.push(v),
         }
     }
 
@@ -93,172 +114,120 @@ pub fn median_str_length(array: &[Call], support: usize) -> f64 {
     }
 }
 
-/// Memory-efficient read information - stores pre-computed STR calls instead of full BAM record
-#[derive(Clone)]
-struct ReadInfo {
-    hp_tag: Option<u8>,
-    // Instead of storing the full record, store pre-computed STR calls for overlapping targets
-    str_calls: Vec<(u32, u32, Call)>, // (target_start, target_end, str_call)
+
+fn from_record_with_target(
+    record: &rust_htslib::bam::Record,
+    minlen: u32,
+    target_interval: &(u32, u32), // (start, end)
+) -> Call {
+
+    // Pre-compute STR calls for all overlapping targets
+    let &(target_start, target_end) = target_interval; 
+
+    // Calculate STR call using the original coordinates + analysis padding
+    let analysis_start = target_start.saturating_sub(10);
+    let analysis_end = target_end + 10;
+    calculate_str_call_for_region(
+        record,
+        minlen,
+        analysis_start,
+        analysis_end,
+    )
+    }
+
+
+/// Retrieve pre-computed STR call for a specific target region
+///
+/// Looks up the STR call that was computed during `from_record_with_targets()`
+/// for the given target coordinates. Returns `None` if this read doesn't overlap
+/// the specified target (overlap was checked during ReadInfo creation).
+///
+/// # Arguments
+/// * `target_start` - Start coordinate of the target region (with 10bp padding)
+/// * `target_end` - End coordinate of the target region (with 10bp padding)
+///
+/// # Returns
+/// The pre-computed STR call if this read overlaps the target, None otherwise
+/// Calculate STR call from BAM record by analyzing CIGAR string
+///
+/// Walks through the CIGAR string to identify insertions, deletions, and soft-clips
+/// within the specified target region that exceed the minimum length threshold.
+///
+/// The algorithm:
+/// - Insertions (I) and soft-clips (S) add to the call value (expansions)
+/// - Deletions (D) subtract from the call value (contractions)
+/// - Only events occurring within the target region and exceeding minlen are counted
+/// - Returns `Call::Clip` if soft-clips contributed, `Call::Span` otherwise
+///
+/// # Arguments
+/// * `record` - BAM record containing CIGAR string
+/// * `minlen` - Minimum length for indels/clips to be counted
+/// * `start` - Start of target region
+/// * `end` - End of target region
+///
+/// # Returns
+/// Call::Span or Call::Clip with the computed STR length difference
+fn calculate_str_call_for_region(
+    record: &rust_htslib::bam::Record,
+    minlen: u32,
+    start: u32,
+    end: u32,
+) -> Call {
+    let mut call: i64 = 0;
+    let mut reference_position = record.reference_start() as u32;
+    let mut clipped = false;
+
+    for entry in record.cigar().iter() {
+        match entry {
+            rust_htslib::bam::record::Cigar::Match(len)
+            | rust_htslib::bam::record::Cigar::Equal(len)
+            | rust_htslib::bam::record::Cigar::Diff(len) => {
+                reference_position += *len;
+            }
+            rust_htslib::bam::record::Cigar::Del(len) => {
+                if *len > minlen && start < reference_position && reference_position < end {
+                    call -= i64::from(*len);
+                }
+                reference_position += *len;
+            }
+            rust_htslib::bam::record::Cigar::SoftClip(len) => {
+                if !is_accidental_2d(record)
+                    && *len > minlen
+                    && start < reference_position
+                    && reference_position < end
+                {
+                    call += i64::from(*len);
+                    clipped = true;
+                }
+            }
+            rust_htslib::bam::record::Cigar::Ins(len) => {
+                if *len > minlen && start < reference_position && reference_position < end {
+                    call += i64::from(*len);
+                }
+            }
+            rust_htslib::bam::record::Cigar::RefSkip(len) => reference_position += *len,
+            _ => (),
+        }
+    }
+
+    let hp_tag = record.aux(b"HP").ok().and_then(|aux| match aux {
+                rust_htslib::bam::record::Aux::U8(val) => Some(Phase::from_u8(val)?),
+                rust_htslib::bam::record::Aux::I32(val) if (0..=255).contains(&val) => Some(Phase::from_u8(val as u8)?),
+                _ => None,
+                });
+
+    if clipped {
+        Call {value: CallType::Clip(call), hp_tag }
+    } else {
+        Call {value: CallType::Span(call), hp_tag }
+    }
 }
 
-impl ReadInfo {
-    /// Create ReadInfo by pre-computing STR calls for all overlapping targets in the batch
-    ///
-    /// **Key optimization**: This function computes the STR call (insertions/deletions from CIGAR)
-    /// for EVERY target in the batch that overlaps with this read. These pre-computed calls are
-    /// stored and later retrieved by `get_str_call_for_region()`, eliminating redundant CIGAR
-    /// parsing when the same read is processed for multiple nearby STR targets.
-    ///
-    /// The function:
-    /// 1. Extracts the HP (haplotype) tag if present for phased genotyping
-    /// 2. For each target interval that overlaps the read's aligned region:
-    ///    - Computes the STR call from the CIGAR string
-    ///    - Stores the call with the target coordinates for later retrieval
-    ///
-    /// Overlap detection uses aligned coordinates, so soft-clipped reads are included
-    /// as long as their aligned portion overlaps the target region.
-    ///
-    /// # Arguments
-    /// * `record` - BAM record to process
-    /// * `minlen` - Minimum indel/clip length to count as STR variation
-    /// * `target_intervals` - Padded target intervals (start, end, batch_index) that may overlap
-    /// * `batch` - Original repeat coordinates for calculating analysis regions
-    ///
-    /// # Returns
-    /// ReadInfo with HP tag and pre-computed STR calls for all overlapping targets
-    fn from_record_with_targets(
-        record: &rust_htslib::bam::Record,
-        minlen: u32,
-        target_intervals: &[(u32, u32, usize)], // (start, end, batch_index)
-        batch: &[RepeatInterval],               // Access to original repeat coordinates
-    ) -> Self {
-        // Extract HP tag if present
-        let hp_tag = record.aux(b"HP").ok().and_then(|aux| match aux {
-            rust_htslib::bam::record::Aux::U8(val) => Some(val),
-            rust_htslib::bam::record::Aux::I32(val) if (0..=255).contains(&val) => Some(val as u8),
-            _ => None,
-        });
 
-        let read_start = record.reference_start() as u32;
-        let read_end = record.reference_end() as u32;
-
-        // Pre-compute STR calls for all overlapping targets
-        let mut str_calls = Vec::new();
-        for &(target_start, target_end, batch_idx) in target_intervals {
-            // Get any overlap with target
-            if read_start < target_end && read_end > target_start {
-                // Get the original repeat coordinates (without padding)
-                let original_repeat = &batch[batch_idx];
-                let original_start = original_repeat.start;
-                let original_end = original_repeat.end;
-
-                // Calculate STR call using the original coordinates + analysis padding
-                let analysis_start = original_start.saturating_sub(10);
-                let analysis_end = original_end + 10;
-                let str_call = Self::calculate_str_call_for_region_static(
-                    record,
-                    minlen,
-                    analysis_start,
-                    analysis_end,
-                );
-
-                // Store with original coordinates for later matching
-                str_calls.push((analysis_start, analysis_end, str_call));
-            }
-        }
-
-        ReadInfo { hp_tag, str_calls }
-    }
-
-    /// Retrieve pre-computed STR call for a specific target region
-    ///
-    /// Looks up the STR call that was computed during `from_record_with_targets()`
-    /// for the given target coordinates. Returns `None` if this read doesn't overlap
-    /// the specified target (overlap was checked during ReadInfo creation).
-    ///
-    /// # Arguments
-    /// * `target_start` - Start coordinate of the target region (with 10bp padding)
-    /// * `target_end` - End coordinate of the target region (with 10bp padding)
-    ///
-    /// # Returns
-    /// The pre-computed STR call if this read overlaps the target, None otherwise
-    #[inline]
-    fn get_str_call_for_region(&self, target_start: u32, target_end: u32) -> Option<Call> {
-        self.str_calls
-            .iter()
-            .find(|(start, end, _)| *start == target_start && *end == target_end)
-            .map(|(_, _, call)| *call)
-    }
-
-    /// Calculate STR call from BAM record by analyzing CIGAR string
-    ///
-    /// Walks through the CIGAR string to identify insertions, deletions, and soft-clips
-    /// within the specified target region that exceed the minimum length threshold.
-    ///
-    /// The algorithm:
-    /// - Insertions (I) and soft-clips (S) add to the call value (expansions)
-    /// - Deletions (D) subtract from the call value (contractions)
-    /// - Only events occurring within the target region and exceeding minlen are counted
-    /// - Returns `Call::Clip` if soft-clips contributed, `Call::Span` otherwise
-    ///
-    /// # Arguments
-    /// * `record` - BAM record containing CIGAR string
-    /// * `minlen` - Minimum length for indels/clips to be counted
-    /// * `start` - Start of target region
-    /// * `end` - End of target region
-    ///
-    /// # Returns
-    /// Call::Span or Call::Clip with the computed STR length difference
-    fn calculate_str_call_for_region_static(
-        record: &rust_htslib::bam::Record,
-        minlen: u32,
-        start: u32,
-        end: u32,
-    ) -> Call {
-        let mut call: i64 = 0;
-        let mut reference_position = record.reference_start() as u32;
-        let mut clipped = false;
-
-        for entry in record.cigar().iter() {
-            match entry {
-                rust_htslib::bam::record::Cigar::Match(len)
-                | rust_htslib::bam::record::Cigar::Equal(len)
-                | rust_htslib::bam::record::Cigar::Diff(len) => {
-                    reference_position += *len;
-                }
-                rust_htslib::bam::record::Cigar::Del(len) => {
-                    if *len > minlen && start < reference_position && reference_position < end {
-                        call -= i64::from(*len);
-                    }
-                    reference_position += *len;
-                }
-                rust_htslib::bam::record::Cigar::SoftClip(len) => {
-                    if !is_accidental_2d(record)
-                        && *len > minlen
-                        && start < reference_position
-                        && reference_position < end
-                    {
-                        call += i64::from(*len);
-                        clipped = true;
-                    }
-                }
-                rust_htslib::bam::record::Cigar::Ins(len) => {
-                    if *len > minlen && start < reference_position && reference_position < end {
-                        call += i64::from(*len);
-                    }
-                }
-                rust_htslib::bam::record::Cigar::RefSkip(len) => reference_position += *len,
-                _ => (),
-            }
-        }
-
-        if clipped {
-            Call::Clip(call)
-        } else {
-            Call::Span(call)
-        }
-    }
+fn get_str_call_for_region(calls: &HashMap<(u32, u32), Vec<Call>>, target_start: u32, target_end: u32) -> Option<&Vec<Call>> {
+    calls.get(&(target_start, target_end))
 }
+
 
 /// Process a single STR target using pre-computed read information
 ///
@@ -279,35 +248,31 @@ impl ReadInfo {
 /// # Returns
 /// Tuple of (Genotype, found_hp_tags) or error if insufficient read support
 fn process_target_from_read_info(
-    read_infos: &[ReadInfo],
+    batch_calls: &mut HashMap<(u32, u32), Vec<Call>>,
     repeat: &RepeatInterval,
     genotype: &crate::call::GenotypeConfig,
 ) -> Result<(Genotype, bool), String> {
-    let start_ext = repeat.start.saturating_sub(10);
-    let end_ext = repeat.end + 10;
+
 
     if genotype.unphased {
-        let mut calls = Vec::with_capacity(50);
+        let repeat_calls: &mut Vec<Call> = match batch_calls.get_mut(&(repeat.start, repeat.end)) {
+            Some(calls) => calls,
+            None => return Err(format!("Insufficient support: {} < {}", 0, genotype.support)),
+        };
 
-        for read_info in read_infos {
-            // Get pre-computed STR call for this target region
-            if let Some(str_call) = read_info.get_str_call_for_region(start_ext, end_ext) {
-                calls.push(str_call);
-            }
+        if repeat_calls.len() < genotype.support {
+            return Err(format!("Insufficient support: {} < {}", repeat_calls.len(), genotype.support));
         }
 
-        if calls.len() < genotype.support {
-            return Err(format!("Insufficient support: {} < {}", calls.len(), genotype.support));
-        }
-
-        calls.sort_unstable_by_key(|call| call.value());
-        let (hap1, hap2) = calls.split_at(calls.len() / 2);
+        repeat_calls.sort_unstable_by_key(|call| call.value());
+        let (hap1, hap2) = repeat_calls.split_at(repeat_calls.len() / 2);
 
         Ok((
             Genotype {
                 repeat: repeat.clone(),
-                phase1: median_str_length(hap1, genotype.support),
-                phase2: median_str_length(hap2, genotype.support),
+                // TODO: code below looks awful
+                phase1: median_str_length(&hap1.iter().collect::<Vec<_>>(), genotype.support),
+                phase2: median_str_length(&hap2.iter().collect::<Vec<_>>(), genotype.support),
             },
             false,
         )) // unphased mode never has HP tags
@@ -318,24 +283,20 @@ fn process_target_from_read_info(
         let mut unphased_calls = Vec::with_capacity(10);
         let mut found_hp_tags = false;
 
-        for read_info in read_infos {
-            // Check for phasing information
-            if let Some(hp_tag) = read_info.hp_tag {
-                found_hp_tags = true;
+        let repeat_calls = match get_str_call_for_region(batch_calls, repeat.start, repeat.end) {
+            Some(calls) => calls,
+            None => return Err(format!("Insufficient support: {} < {}", 0, genotype.support)),
+        };
 
-                // Get pre-computed STR call for this target region
-                if let Some(str_call) = read_info.get_str_call_for_region(start_ext, end_ext) {
-                    match hp_tag {
-                        1 => phase1_calls.push(str_call),
-                        2 => phase2_calls.push(str_call),
-                        _ => unphased_calls.push(str_call),
-                    }
-                }
-            } else {
-                // Get pre-computed STR call for this target region
-                if let Some(str_call) = read_info.get_str_call_for_region(start_ext, end_ext) {
-                    unphased_calls.push(str_call);
-                }
+        for c in repeat_calls.iter() {
+            // Check for phasing information
+            match c.hp_tag {
+                Some(Phase::Phase1) => phase1_calls.push(c),
+                Some(Phase::Phase2) => phase2_calls.push(c),
+                None => unphased_calls.push(c),
+            }
+            if c.hp_tag.is_some() {
+                found_hp_tags = true;
             }
         }
 
@@ -435,17 +396,8 @@ pub fn process_batch_with_reader(
         return Ok(results);
     }
 
-    // Smart overlap filtering: only store reads that intersect with STR targets
-    let target_intervals_with_idx: Vec<(u32, u32, usize)> = batch
-        .repeats
-        .iter()
-        .enumerate()
-        .map(|(idx, repeat)| (repeat.start.saturating_sub(100), repeat.end + 100, idx))
-        .collect();
-
-    // Pre-allocate with estimated capacity (assume ~20-30 reads per target on average)
-    let estimated_reads = batch.repeats.len() * 25;
-    let mut batch_reads = Vec::with_capacity(estimated_reads);
+    // Create a hashmap with keys as (start, end) for quick lookup, and value is a vector of Calls
+    let mut calls_map = std::collections::HashMap::new();
 
     for record_result in bam.rc_records() {
         match record_result {
@@ -457,25 +409,23 @@ pub fn process_batch_with_reader(
                 let read_start = record.reference_start() as u32;
                 let read_end = record.reference_end() as u32;
 
-                // Check if read overlaps with any target interval
-                let mut overlapping_targets_buf: smallvec::SmallVec<[(u32, u32, usize); 8]> =
-                    smallvec::SmallVec::new();
-                for &interval in &target_intervals_with_idx {
-                    let (target_start, target_end, _) = interval;
-                    if read_start < target_end && read_end > target_start {
-                        overlapping_targets_buf.push(interval);
+                // Check if read overlaps with a target interval
+                for repeat in &batch.repeats {
+                    if read_start < repeat.end && read_end > repeat.start {
+                        let call = from_record_with_target(
+                            &record,
+                            genotype.minlen,
+                            &(repeat.start, repeat.end),
+                        );
+                        
+                        calls_map
+                            .entry((repeat.start, repeat.end))
+                            .or_insert_with(Vec::new)
+                            .push(call);
                     }
                 }
 
-                if !overlapping_targets_buf.is_empty() {
-                    let read_info = ReadInfo::from_record_with_targets(
-                        &record,
-                        genotype.minlen,
-                        &overlapping_targets_buf,
-                        &batch.repeats,
-                    );
-                    batch_reads.push(read_info);
-                }
+
             }
             Err(e) => {
                 let error_str = e.to_string();
@@ -501,7 +451,7 @@ pub fn process_batch_with_reader(
 
     // Process each target in the batch using the lightweight read info
     for repeat in &batch.repeats {
-        let result = process_target_from_read_info(&batch_reads, repeat, genotype);
+        let result = process_target_from_read_info(&mut calls_map, repeat, genotype);
 
         match result {
             Ok((genotype, _had_hp_tags)) => {
@@ -559,17 +509,8 @@ pub fn process_batch_with_dedicated_reader(
         return Ok(results);
     }
 
-    // Smart overlap filtering: only store reads that intersect with STR targets
-    let target_intervals_with_idx: Vec<(u32, u32, usize)> = batch
-        .repeats
-        .iter()
-        .enumerate()
-        .map(|(idx, repeat)| (repeat.start.saturating_sub(100), repeat.end + 100, idx))
-        .collect();
-
-    // Pre-allocate with estimated capacity (assume ~20-30 reads per target on average)
-    let estimated_reads = batch.repeats.len() * 25;
-    let mut batch_reads = Vec::with_capacity(estimated_reads);
+    // Create a hashmap with keys as (start, end) for quick lookup, and value is a vector of Calls
+    let mut calls_map = std::collections::HashMap::new();
 
     for record_result in bam.rc_records() {
         match record_result {
@@ -581,25 +522,23 @@ pub fn process_batch_with_dedicated_reader(
                 let read_start = record.reference_start() as u32;
                 let read_end = record.reference_end() as u32;
 
-                // Check if read overlaps with any target interval
-                let mut overlapping_targets_buf: smallvec::SmallVec<[(u32, u32, usize); 8]> =
-                    smallvec::SmallVec::new();
-                for &interval in &target_intervals_with_idx {
-                    let (target_start, target_end, _) = interval;
-                    if read_start < target_end && read_end > target_start {
-                        overlapping_targets_buf.push(interval);
+                // Check if read overlaps with a target interval
+                for repeat in &batch.repeats {
+                    if read_start < repeat.end && read_end > repeat.start {
+                        let call = from_record_with_target(
+                            &record,
+                            genotype.minlen,
+                            &(repeat.start, repeat.end),
+                        );
+                        
+                        calls_map
+                            .entry((repeat.start, repeat.end))
+                            .or_insert_with(Vec::new)
+                            .push(call);
                     }
                 }
 
-                if !overlapping_targets_buf.is_empty() {
-                    let read_info = ReadInfo::from_record_with_targets(
-                        &record,
-                        genotype.minlen,
-                        &overlapping_targets_buf,
-                        &batch.repeats,
-                    );
-                    batch_reads.push(read_info);
-                }
+
             }
             Err(e) => {
                 let error_str = e.to_string();
@@ -625,7 +564,7 @@ pub fn process_batch_with_dedicated_reader(
 
     // Process each target in the batch using the lightweight read info
     for repeat in &batch.repeats {
-        let result = process_target_from_read_info(&batch_reads, repeat, genotype);
+        let result = process_target_from_read_info(&mut calls_map, repeat, genotype);
 
         match result {
             Ok((genotype, _had_hp_tags)) => {

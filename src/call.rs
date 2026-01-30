@@ -93,7 +93,7 @@ pub fn genotype_repeats(
         && !bam.starts_with("ftp://")
     {
         error!("ERROR: path to bam file {} is not valid!\n\n", &bam);
-        return Err(InquiSTRError::new(format!("path to bam file {} is not valid", &bam)));
+        return Err(InquiSTRError::new(format!("Path to bam file {} is not valid", &bam)));
     };
 
     // Unified batch-level producer-consumer approach for both single and multi-threaded
@@ -277,7 +277,7 @@ pub fn genotype_repeats(
         }
 
         if let Some(ref pb) = pb {
-            pb.finish_with_message("Processing completed, writing final results...");
+            pb.finish_with_message("Processing completed!");
         }
     } else {
         // Single-threaded: TRUE STREAMING - process and write as we go!
