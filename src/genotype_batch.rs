@@ -86,7 +86,7 @@ pub fn median_str_length(array: &[&Call], support: usize) -> f64 {
     let mut clipped = Vec::with_capacity(array.len());
 
     for call in array {
-        match call.value {  
+        match call.value {
             CallType::Span(v) => spanning.push(v),
             CallType::Clip(v) => clipped.push(v),
         }
@@ -114,27 +114,19 @@ pub fn median_str_length(array: &[&Call], support: usize) -> f64 {
     }
 }
 
-
 fn from_record_with_target(
     record: &rust_htslib::bam::Record,
     minlen: u32,
     target_interval: &(u32, u32), // (start, end)
 ) -> Call {
-
     // Pre-compute STR calls for all overlapping targets
-    let &(target_start, target_end) = target_interval; 
+    let &(target_start, target_end) = target_interval;
 
     // Calculate STR call using the original coordinates + analysis padding
     let analysis_start = target_start.saturating_sub(10);
     let analysis_end = target_end + 10;
-    calculate_str_call_for_region(
-        record,
-        minlen,
-        analysis_start,
-        analysis_end,
-    )
-    }
-
+    calculate_str_call_for_region(record, minlen, analysis_start, analysis_end)
+}
 
 /// Retrieve pre-computed STR call for a specific target region
 ///
@@ -211,23 +203,27 @@ fn calculate_str_call_for_region(
     }
 
     let hp_tag = record.aux(b"HP").ok().and_then(|aux| match aux {
-                rust_htslib::bam::record::Aux::U8(val) => Some(Phase::from_u8(val)?),
-                rust_htslib::bam::record::Aux::I32(val) if (0..=255).contains(&val) => Some(Phase::from_u8(val as u8)?),
-                _ => None,
-                });
+        rust_htslib::bam::record::Aux::U8(val) => Some(Phase::from_u8(val)?),
+        rust_htslib::bam::record::Aux::I32(val) if (0..=255).contains(&val) => {
+            Some(Phase::from_u8(val as u8)?)
+        }
+        _ => None,
+    });
 
     if clipped {
-        Call {value: CallType::Clip(call), hp_tag }
+        Call { value: CallType::Clip(call), hp_tag }
     } else {
-        Call {value: CallType::Span(call), hp_tag }
+        Call { value: CallType::Span(call), hp_tag }
     }
 }
 
-
-fn get_str_call_for_region(calls: &HashMap<(u32, u32), Vec<Call>>, target_start: u32, target_end: u32) -> Option<&Vec<Call>> {
+fn get_str_call_for_region(
+    calls: &HashMap<(u32, u32), Vec<Call>>,
+    target_start: u32,
+    target_end: u32,
+) -> Option<&Vec<Call>> {
     calls.get(&(target_start, target_end))
 }
-
 
 /// Process a single STR target using pre-computed read information
 ///
@@ -252,8 +248,6 @@ fn process_target_from_read_info(
     repeat: &RepeatInterval,
     genotype: &crate::call::GenotypeConfig,
 ) -> Result<(Genotype, bool), String> {
-
-
     if genotype.unphased {
         let repeat_calls: &mut Vec<Call> = match batch_calls.get_mut(&(repeat.start, repeat.end)) {
             Some(calls) => calls,
@@ -261,7 +255,11 @@ fn process_target_from_read_info(
         };
 
         if repeat_calls.len() < genotype.support {
-            return Err(format!("Insufficient support: {} < {}", repeat_calls.len(), genotype.support));
+            return Err(format!(
+                "Insufficient support: {} < {}",
+                repeat_calls.len(),
+                genotype.support
+            ));
         }
 
         repeat_calls.sort_unstable_by_key(|call| call.value());
@@ -417,15 +415,13 @@ pub fn process_batch_with_reader(
                             genotype.minlen,
                             &(repeat.start, repeat.end),
                         );
-                        
+
                         calls_map
                             .entry((repeat.start, repeat.end))
                             .or_insert_with(Vec::new)
                             .push(call);
                     }
                 }
-
-
             }
             Err(e) => {
                 let error_str = e.to_string();
@@ -530,15 +526,13 @@ pub fn process_batch_with_dedicated_reader(
                             genotype.minlen,
                             &(repeat.start, repeat.end),
                         );
-                        
+
                         calls_map
                             .entry((repeat.start, repeat.end))
                             .or_insert_with(Vec::new)
                             .push(call);
                     }
                 }
-
-
             }
             Err(e) => {
                 let error_str = e.to_string();
