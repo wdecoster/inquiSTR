@@ -465,11 +465,14 @@ pub fn process_batch_with_reader(
     Ok(results)
 }
 
-/// Process a batch using a thread-local BAM reader (no global lock needed)
+/// Process a batch using a thread-local BAM reader (no global lock)
 ///
 /// This version is designed for use with per-thread BAM readers where no
 /// synchronization is needed because each thread has exclusive access to its reader.
 /// This enables true parallel processing without lock contention.
+///
+/// Each reader is independent with its own file handle, so concurrent fetch()
+/// operations are safe. Reader creation is still serialized in bam_pool.rs.
 ///
 /// **IMPORTANT**: Only use this when you can guarantee the reader is not shared
 /// between threads (e.g., thread-local storage or indexed reader pool).
@@ -488,7 +491,8 @@ pub fn process_batch_with_dedicated_reader(
 ) -> InquiSTRResult<Vec<Genotype>> {
     let mut results = Vec::new();
 
-    // No lock needed - this reader is dedicated to this thread
+    // No lock - each thread has its own independent reader
+    // Concurrent fetch() calls on different readers are safe
     let tid = match bam.header().tid(batch.chromosome.as_bytes()) {
         Some(t) => t,
         None => {
