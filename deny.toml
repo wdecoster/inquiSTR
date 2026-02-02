@@ -13,6 +13,8 @@ allow = [
     "Unicode-3.0",  # Unicode License v3 - used by ICU/Unicode crates
     "Zlib",         # zlib License - used by foldhash crate
     "MPL-2.0",      # Mozilla Public License 2.0 - used by option-ext crate
+    "OpenSSL",      # OpenSSL License - used by aws-lc-sys (via rustls/reqwest)
+    "CDLA-Permissive-2.0",  # Community Data License Agreement - used by webpki-root-certs
 ]
 
 # Confidence threshold for detecting licenses
@@ -42,7 +44,6 @@ skip = [
     { name = "hashbrown", reason = "HashMap implementation versions" },
     { name = "itertools", reason = "Iterator utilities, ecosystem compatibility" },
     { name = "ndarray", reason = "Linear algebra, version compatibility" },
-    { name = "noisy_float", reason = "Floating point handling versions" },
     # Windows platform support
     { name = "windows-sys", reason = "Windows API versions for different features" },
     { name = "windows-targets", reason = "Windows target specifications" },
