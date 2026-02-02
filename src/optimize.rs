@@ -101,8 +101,15 @@ pub fn optimize_parameters(
     eprintln!("Total tests: {}\n", total_tests);
 
     // Run benchmarks
-    let results =
-        run_benchmarks(&bam, &target_regions, &chrom_mapper, &reference, &thread_counts, &batch_sizes, repeats)?;
+    let results = run_benchmarks(
+        &bam,
+        &target_regions,
+        &chrom_mapper,
+        &reference,
+        &thread_counts,
+        &batch_sizes,
+        repeats,
+    )?;
 
     // Aggregate results
     let stats = aggregate_results(&results);
@@ -212,7 +219,14 @@ fn run_benchmarks(
                     current, total, threads, batch_size, repeat, repeats
                 );
 
-                let result = run_single_benchmark(bam, regions, chrom_mapper, reference, threads, batch_size)?;
+                let result = run_single_benchmark(
+                    bam,
+                    regions,
+                    chrom_mapper,
+                    reference,
+                    threads,
+                    batch_size,
+                )?;
 
                 eprintln!("{:.1}s", result.wall_time.as_secs_f64());
                 results.push(result);
@@ -234,29 +248,27 @@ fn run_single_benchmark(
 ) -> Result<BenchmarkResult, String> {
     use std::io::Write;
     use tempfile::NamedTempFile;
-    
+
     // Write regions to a temporary BED file
     // Need to write in BED format: chrom, start, end, name (optional), score, strand, motif (optional)
-    let mut temp_bed = NamedTempFile::new()
-        .map_err(|e| format!("Failed to create temp BED file: {}", e))?;
-    
+    let mut temp_bed =
+        NamedTempFile::new().map_err(|e| format!("Failed to create temp BED file: {}", e))?;
+
     for region in regions {
         let chrom_name = chrom_mapper.get_name(region.chrom_id);
-        writeln!(
-            temp_bed,
-            "{}\t{}\t{}\t{}",
-            chrom_name, region.start, region.end, region.info
-        )
-        .map_err(|e| format!("Failed to write to temp BED: {}", e))?;
+        writeln!(temp_bed, "{}\t{}\t{}\t{}", chrom_name, region.start, region.end, region.info)
+            .map_err(|e| format!("Failed to write to temp BED: {}", e))?;
     }
-    temp_bed.flush().map_err(|e| format!("Failed to flush temp BED: {}", e))?;
-    
+    temp_bed
+        .flush()
+        .map_err(|e| format!("Failed to flush temp BED: {}", e))?;
+
     let start = Instant::now();
-    
+
     // Suppress stdout during benchmarking (TSV output goes to stdout by default)
-    let _stdout_redirect = gag::BufferRedirect::stdout()
-        .map_err(|e| format!("Failed to redirect stdout: {}", e))?;
-    
+    let _stdout_redirect =
+        gag::BufferRedirect::stdout().map_err(|e| format!("Failed to redirect stdout: {}", e))?;
+
     // Run genotyping with current configuration
     let result = crate::call::genotype_repeats(
         bam.to_str().unwrap().to_string(),
@@ -266,26 +278,18 @@ fn run_single_benchmark(
             preset: None,
             max_locus: None,
         },
-        crate::call::GenotypeConfig {
-            minlen: 1,
-            support: 3,
-            unphased: false,
-        },
-        crate::call::ProcessingConfig {
-            threads,
-            batch_size_kb: batch_size,
-            output_vcf: false,
-        },
+        crate::call::GenotypeConfig { minlen: 1, support: 3, unphased: false },
+        crate::call::ProcessingConfig { threads, batch_size_kb: batch_size, output_vcf: false },
         None, // sample_name
         reference.clone(),
         false, // show_progress
     );
-    
+
     // Drop stdout redirect to restore normal output
     drop(_stdout_redirect);
 
     let wall_time = start.elapsed();
-    
+
     // If benchmark failed, return the error
     if let Err(e) = result {
         return Err(format!(
