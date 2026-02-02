@@ -206,32 +206,47 @@ fn run_benchmarks(
     batch_sizes: &[u32],
     repeats: usize,
 ) -> Result<Vec<BenchmarkResult>, String> {
-    let mut results = Vec::new();
-    let total = thread_counts.len() * batch_sizes.len() * repeats;
-    let mut current = 0;
+    use rand::seq::SliceRandom;
+    use rand::thread_rng;
 
+    // Generate all test configurations
+    let mut test_configs: Vec<(usize, u32, usize)> = Vec::new();
     for &threads in thread_counts {
         for &batch_size in batch_sizes {
             for repeat in 1..=repeats {
-                current += 1;
-                eprint!(
-                    "[{}/{}] Testing: {} threads, {}KB batch, repeat {}/{}... ",
-                    current, total, threads, batch_size, repeat, repeats
-                );
-
-                let result = run_single_benchmark(
-                    bam,
-                    regions,
-                    chrom_mapper,
-                    reference,
-                    threads,
-                    batch_size,
-                )?;
-
-                eprintln!("{:.1}s", result.wall_time.as_secs_f64());
-                results.push(result);
+                test_configs.push((threads, batch_size, repeat));
             }
         }
+    }
+
+    // Randomize the order to avoid temporal bias
+    let mut rng = thread_rng();
+    test_configs.shuffle(&mut rng);
+
+    eprintln!(
+        "Running {} tests in randomized order to avoid temporal bias\n",
+        test_configs.len()
+    );
+
+    let total = test_configs.len();
+    let mut results = Vec::new();
+
+    for (idx, (threads, batch_size, repeat)) in test_configs.iter().enumerate() {
+        eprint!(
+            "[{}/{}] Testing: {} threads, {}KB batch, repeat {}/{}... ",
+            idx + 1,
+            total,
+            threads,
+            batch_size,
+            repeat,
+            repeats
+        );
+
+        let result =
+            run_single_benchmark(bam, regions, chrom_mapper, reference, *threads, *batch_size)?;
+
+        eprintln!("{:.1}s", result.wall_time.as_secs_f64());
+        results.push(result);
     }
 
     Ok(results)
