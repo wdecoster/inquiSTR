@@ -51,6 +51,7 @@ For detailed options, presets and additional commands, see the full documentatio
   - [inquiSTR pca - Principal Component Analysis](#inquistr-pca---principal-component-analysis)
   - [inquiSTR relate - Compute Sample Relatedness](#inquistr-relate---compute-sample-relatedness)
   - [inquiSTR association - Statistical Association Testing](#inquistr-association---statistical-association-testing)
+  - [inquiSTR optimize-call - Parameter Optimization](#inquistr-optimize-call---parameter-optimization)
 - [Legacy R Script Usage](#legacy-r-script-usage)
 - [Development](#️-development)
   - [Development Setup](#development-setup)
@@ -151,6 +152,7 @@ Commands:
   call         Call lengths
   batch        Process multiple samples in batch and combine results
   combine      Combine STR calls or kmer frequencies from multiple samples to a TSV
+  convert      Convert VCF files to inquiSTR format
   filter       Filter inquiSTR output by various criteria
   outlier      Find outliers from combined STR or kmer data
   query        Lookup genotypes and display
@@ -159,6 +161,7 @@ Commands:
   pca          Perform Principal Component Analysis on combined STR data
   relate       Compute relatedness between samples
   association  Perform statistical association testing for STRs
+  optimize-call Optimize batch_size and thread count for your system and dataset
   unmapped     Count kmer frequencies in unmapped reads
   benchmark    Benchmark inquiSTR calls against truth VCF or BED files
   help         Print this message or the help of the given subcommand(s)
@@ -197,6 +200,8 @@ Options:
 **Performance Note:**
 
 inquiSTR scales well up to **4-6 threads** for single-sample processing. Beyond this, performance plateaus due to I/O bottlenecks (BAM reading and decompression). Using more than 6 threads per sample will not significantly improve speed. For systems with many cores, process multiple samples in parallel using `inquiSTR batch` with `--parallel-samples` rather than allocating excessive threads to a single sample.
+
+💡 **Tip:** Not sure what `--threads` and `--batch-size` values are optimal for your system? Use [`inquiSTR optimize-call`](#inquistr-optimize-call---parameter-optimization) to empirically determine the best configuration through automated benchmarking.
 
 **Examples:**
 
@@ -504,6 +509,106 @@ inquiSTR convert sample1.vcf sample2.vcf sample3.vcf > combined.tsv
 ```
 
 Please let me know if the tool does not work for a specific type of VCF, and I will look into it!
+
+### `inquiSTR optimize-call` - Parameter Optimization
+
+Empirically determine the optimal `--batch-size` and `--threads` configuration for running `inquiSTR call` on your specific system, input file, and repeat catalog. This subcommand provides data-driven recommendations with visualizations.
+
+```text
+Usage: inquiSTR optimize-call [OPTIONS] <BAM>
+
+Arguments:
+  <BAM>  BAM/CRAM file to optimize parameters for
+
+Options:
+  -R, --region-file <REGION_FILE>          Bed file with region(s) to test
+      --preset <PRESET>                     Use a predefined TR catalog (pathogenic, adotto, trexplorer, or codis)
+      --reference <REFERENCE>               Reference fasta for CRAM decoding
+      --min-threads <MIN_THREADS>           Minimum number of threads to test [default: 1]
+      --max-threads <MAX_THREADS>           Maximum number of threads to test [default: 16]
+      --batch-sizes <BATCH_SIZES>           Batch sizes to test (comma-separated, in KB) [default: 5,10,20,30,50]
+      --repeats <REPEATS>                   Number of repetitions per configuration [default: 3]
+  -o, --output <OUTPUT>                     Output directory for results and plots [default: optimize_results]
+  -h, --help                                Print help
+```
+
+**Output Files:**
+
+- `benchmark_results.tsv` - Raw timing data for all test runs
+- `aggregated_stats.tsv` - Statistical summaries (mean, std dev, min times)
+- `recommendation.txt` - Human-readable recommendation with rationale
+- `wall_time_heatmap.html` - Interactive heatmap showing performance across configurations
+- `optimization_analysis.html` - 4-panel analysis (speedup, efficiency, batch size trends)
+
+**Examples:**
+
+```bash
+# Basic optimization - auto-detect optimal settings
+inquiSTR optimize-call sample.cram \
+    -R regions.bed \
+    --reference genome.fa
+
+# Test specific thread range with custom batch sizes
+inquiSTR optimize-call sample.bam \
+    --preset pathogenic \
+    --min-threads 1 \
+    --max-threads 12 \
+    --batch-sizes 5,10,15,20,30,50
+
+# Fast mode: test only one chromosome
+inquiSTR optimize-call sample.cram \
+    -R chr1_regions.bed \
+    --reference genome.fa \
+    --repeats 2
+
+# Comprehensive test with custom output directory
+inquiSTR optimize-call sample.bam \
+    --preset adotto \
+    --min-threads 1 \
+    --max-threads 16 \
+    --batch-sizes 5,10,20,30,50,75,100 \
+    --repeats 3 \
+    --output my_optimization_results
+```
+
+**Example Output:**
+
+```text
+===========================================
+OPTIMIZATION RESULTS
+===========================================
+
+🎯 RECOMMENDED CONFIGURATION:
+   --threads 4  --batch-size 10
+   Expected runtime: 88.3s
+   Confidence: High
+
+   Fastest configuration: 88.3s wall time. Uses 4/12 CPUs.
+   More threads showed diminishing returns. Small batch size
+   provides fine-grained parallelism.
+
+📊 TOP 5 CONFIGURATIONS:
+   Rank  Threads  Batch   Time(s)
+   ----  -------  -----   -------
+      1        4   10KB      88.3
+      2        8   10KB     115.6
+      3        4   20KB     161.9
+      4        8   20KB     163.0
+      5        2   10KB     168.2
+
+✓ Optimization complete!
+
+Recommended command:
+  inquiSTR call <input> -R <regions> --threads 4 --batch-size 10
+
+Visualization files saved in: optimize_results
+```
+
+**Performance Notes:**
+
+- Each test configuration typically completes in 2-5 minutes
+- Total optimization time: ~1-2 hours for comprehensive testing (worth it for production workloads!)
+- For faster testing, provide a BED file with only one chromosome
 
 ### `inquiSTR query` - Genotype Lookup
 

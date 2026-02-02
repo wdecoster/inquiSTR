@@ -37,6 +37,8 @@ histo_fp = "0.2.1"
 indicatif = { version = "0.18.3", features = ["rayon"] }
 itertools = "0.14.0"
 plotly = "0.14.0"
+num_cpus = "1.16"
+tempfile = "3.1.0"
 ndarray = "0.17.2"
 dbscan = "0.3.1"
 url = "2.5.8"

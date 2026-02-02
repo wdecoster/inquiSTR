@@ -129,7 +129,7 @@ struct BatchStrArgs {
     max_locus: Option<u32>,
 
     /// Batch size in KB for grouping nearby STR targets
-    #[clap(long, value_parser, default_value_t = 50)]
+    #[clap(long, value_parser, default_value_t = 10)]
     batch_size: u32,
 }
 
@@ -166,6 +166,7 @@ pub mod filter;
 pub mod genotype_batch;
 pub mod histogram;
 pub mod locus_search;
+pub mod optimize;
 pub mod outlier;
 pub mod pca;
 pub mod plot;
@@ -233,8 +234,8 @@ enum Commands {
         #[clap(long, value_parser)]
         max_locus: Option<u32>,
 
-        /// Batch size in KB for grouping nearby STR targets (default: 50). Larger values use more memory but reduce I/O operations. Use 20-35 for memory-constrained systems, 80-100 for high-performance setups.
-        #[clap(long, value_parser, default_value_t = 50)]
+        /// Batch size in KB for grouping nearby STR targets
+        #[clap(long, value_parser, default_value_t = 10)]
         batch_size: u32,
 
         /// Output VCF format to stdout instead of TSV
@@ -551,6 +552,45 @@ enum Commands {
         #[clap(short, long, value_parser, default_value_t = 1)]
         threads: usize,
     },
+    /// Optimize batch_size and thread count for your system and dataset
+    #[clap(arg_required_else_help = true)]
+    OptimizeCall {
+        /// BAM/CRAM file to optimize parameters for
+        #[clap(value_parser, required = true)]
+        bam: PathBuf,
+
+        /// Bed file with region(s) to test
+        #[clap(short = 'R', long, value_parser)]
+        region_file: Option<PathBuf>,
+
+        /// Use a predefined TR catalog (pathogenic, adotto, trexplorer, or codis)
+        #[clap(long, value_parser)]
+        preset: Option<repeats::TRPreset>,
+
+        /// Reference fasta for CRAM decoding
+        #[clap(long, value_parser)]
+        reference: Option<String>,
+
+        /// Minimum number of threads to test
+        #[clap(long, value_parser, default_value_t = 1)]
+        min_threads: usize,
+
+        /// Maximum number of threads to test (default: number of CPUs, capped at 16)
+        #[clap(long, value_parser)]
+        max_threads: Option<usize>,
+
+        /// Batch sizes to test (comma-separated, in KB)
+        #[clap(long, value_parser, value_delimiter = ',', default_values_t = vec![5, 10, 20, 30, 50])]
+        batch_sizes: Vec<u32>,
+
+        /// Number of repetitions per configuration (for statistical stability)
+        #[clap(long, value_parser, default_value_t = 3)]
+        repeats: usize,
+
+        /// Output directory for results and plots
+        #[clap(short, long, value_parser, default_value = "optimize_results")]
+        output: PathBuf,
+    },
     /// Convert VCF files to inquiSTR format
     #[clap(arg_required_else_help = true)]
     Convert {
@@ -767,6 +807,58 @@ fn main() {
         }
         Commands::Relate { combined, output, threads } => {
             relate::compute_relatedness(combined, output, threads);
+        }
+        Commands::OptimizeCall {
+            bam,
+            region_file,
+            preset,
+            reference,
+            min_threads,
+            max_threads,
+            batch_sizes,
+            repeats,
+            output,
+        } => {
+            // Determine max_threads if not specified, capped at 16
+            let max_threads = max_threads.unwrap_or_else(|| num_cpus::get().min(16));
+
+            // Validate inputs
+            if !bam.exists() {
+                eprintln!("ERROR: BAM/CRAM file does not exist: {}", bam.display());
+                std::process::exit(1);
+            }
+
+            if region_file.is_none() && preset.is_none() {
+                eprintln!("ERROR: Must specify either --region-file or --preset");
+                std::process::exit(1);
+            }
+
+            eprintln!("Starting optimization benchmark...\n");
+
+            match optimize::optimize_parameters(
+                bam,
+                repeats::TargetConfig { region: None, region_file, preset, max_locus: None },
+                reference,
+                min_threads,
+                max_threads,
+                batch_sizes,
+                repeats,
+                &output,
+            ) {
+                Ok(recommendation) => {
+                    eprintln!("\n✓ Optimization complete!");
+                    eprintln!("\nRecommended command:");
+                    eprintln!(
+                        "  inquiSTR call <input> -R <regions> --threads {} --batch-size {}",
+                        recommendation.threads, recommendation.batch_size
+                    );
+                    eprintln!("\nVisualization files saved in: {}", output.display());
+                }
+                Err(e) => {
+                    eprintln!("ERROR: Optimization failed: {}", e);
+                    std::process::exit(1);
+                }
+            }
         }
         Commands::Convert { vcf } => {
             if let Err(e) = convert::convert_vcf(vcf) {
