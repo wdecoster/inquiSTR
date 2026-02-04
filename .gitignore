@@ -189,3 +189,4 @@ benchmark_output.txt
 *_short_*.tsv
 HG002_GRCh38_TandemRepeats_*
 benchmark_results/*
+test.bed
