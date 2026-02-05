@@ -1,12 +1,9 @@
 # inquiSTR
 
 [![CI](https://github.com/wdecoster/inquiSTR/actions/workflows/test.yml/badge.svg)](https://github.com/wdecoster/inquiSTR/actions/workflows/test.yml)
-[![Security Audit](https://github.com/wdecoster/inquiSTR/actions/workflows/security.yml/badge.svg)](https://github.com/wdecoster/inquiSTR/actions/workflows/security.yml)
-[![Crates.io](https://img.shields.io/crates/v/inquiSTR.svg)](https://crates.io/crates/inquiSTR)
-[![Documentation](https://docs.rs/inquiSTR/badge.svg)](https://docs.rs/inquiSTR)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-A toolkit for lightning-fast Short Tandem Repeat (STR) length genotyping and downstream analysis from long-read sequencing data. inquiSTR (/ɪnˈkwɪzɪtər/, pronounced like "inquisitor") works with Oxford Nanopore Technologies and PacBio BAM/CRAM files and supports both phased and unphased data. With subcommands for combining results across samples for cohort studies with statistical association testing, outlier detection, relatedness assssment and visualization. inquiSTR provides seamless access to remote files via HTTP/HTTPS/FTP/S3 URLs and efficiently leverages multi-core systems through parallelized code.
+A toolkit for lightning-fast Tandem Repeat (TR) length genotyping and downstream analysis from long-read sequencing data. inquiSTR (/ɪnˈkwɪzɪtər/, pronounced like "inquisitor") works with Oxford Nanopore Technologies and PacBio BAM/CRAM files and supports both phased and unphased data. Additional subcommands are provided for combining results across samples for cohort studies with statistical association testing, outlier detection, relatedness assssment and visualization. inquiSTR provides seamless access to remote files via HTTP/HTTPS/FTP/S3 URLs and efficiently leverages multi-core systems through parallelized code.
 
 ## Quick Start
 
@@ -16,15 +13,6 @@ inquiSTR call sample.bam --preset pathogenic --output sample.inq
 
 # 2. Combine results for cohort analysis
 inquiSTR combine *.inq --output combined.tsv
-
-# 3. Or process multiple samples in batch (also has --resume)
-inquiSTR batch samples.txt --preset pathogenic --threads 16 --parallel_samples 4
-
-# 4. Identify statistical outliers
-inquiSTR outlier combined.tsv --output outliers.txt
-
-# 5. Run association test (case vs control)
-inquiSTR association combined.tsv --phenotype phenotypes.txt --output results.tsv
 ```
 
 For detailed options, presets and additional commands, see the full documentation below.
@@ -33,13 +21,10 @@ For detailed options, presets and additional commands, see the full documentatio
 
 - [Quick Start](#quick-start)
 - [Installation](#-installation)
-  - [Pre-built Binaries](#pre-built-binaries-recommended)
-  - [From Source](#from-source)
-  - [Using Cargo](#using-cargo)
 - [Usage](#usage)
   - [inquiSTR call - STR Genotyping](#inquistr-call---str-genotyping)
-  - [inquiSTR batch - Batch Sample Processing](#inquistr-batch---batch-sample-processing)
   - [inquiSTR combine - Multi-sample Analysis](#inquistr-combine---multi-sample-analysis)
+  - [inquiSTR batch - Batch Sample Processing](#inquistr-batch---batch-sample-processing)
   - [inquiSTR convert - VCF to inquiSTR Format](#inquistr-convert---vcf-to-inquistr-format)
   - [inquiSTR filter - Filter STR Data](#inquistr-filter---filter-str-data)
   - [inquiSTR query - Genotype Lookup](#inquistr-query---genotype-lookup)
@@ -52,11 +37,8 @@ For detailed options, presets and additional commands, see the full documentatio
   - [inquiSTR relate - Compute Sample Relatedness](#inquistr-relate---compute-sample-relatedness)
   - [inquiSTR association - Statistical Association Testing](#inquistr-association---statistical-association-testing)
   - [inquiSTR optimize-call - Parameter Optimization](#inquistr-optimize-call---parameter-optimization)
-- [Legacy R Script Usage](#legacy-r-script-usage)
 - [Development](#️-development)
-  - [Development Setup](#development-setup)
-  - [Code Quality](#code-quality)
-  - [Contributing](#contributing)
+
 
 ## 📦 Installation
 
@@ -65,12 +47,12 @@ For detailed options, presets and additional commands, see the full documentatio
 Pre-built binaries for Linux and macOS can be downloaded from the [releases page](https://github.com/wdecoster/inquiSTR/releases). Make sure the binary is in your $PATH or use the full path to execute.
 
 ```bash
-# Linux (glibc)
-curl -L https://github.com/wdecoster/inquiSTR/releases/latest/download/inquiSTR-linux -o inquiSTR
-chmod +x inquiSTR
-
 # Linux (musl - static binary)  
 curl -L https://github.com/wdecoster/inquiSTR/releases/latest/download/inquiSTR-linux-musl -o inquiSTR
+chmod +x inquiSTR
+
+# Linux (glibc)
+curl -L https://github.com/wdecoster/inquiSTR/releases/latest/download/inquiSTR-linux -o inquiSTR
 chmod +x inquiSTR
 
 # macOS
@@ -80,65 +62,25 @@ chmod +x inquiSTR
 
 ### From Source
 
-```bash
-git clone https://github.com/wdecoster/inquiSTR.git
-cd inquiSTR  
-cargo build --release
-# Binary will be in target/release/inquiSTR
-```
-
-#### System dependencies (Linux)
-
-Building from source requires a C/C++ toolchain and common compression/network libraries used by HTSlib. On Ubuntu/Debian, install:
+Building from source requires a C/C++ toolchain and common compression/network libraries used by HTSlib. Installation instructions are provided for Ubuntu/Debian, these provide standard headers for clang/bindgen (fixes errors like "stddef.h not found") and libraries used by BAM/CRAM support. The binary will be in target/release/inquiSTR after building.
 
 ```bash
 sudo apt-get update
 sudo apt-get install -y build-essential pkg-config clang libclang-dev \
   zlib1g-dev libbz2-dev liblzma-dev libcurl4-openssl-dev \
   libdeflate-dev libzstd-dev libssl-dev
+git clone https://github.com/wdecoster/inquiSTR.git
+cd inquiSTR  
+cargo build --release
 ```
 
-These provide standard headers for clang/bindgen (fixes errors like "stddef.h not found") and libraries used by BAM/CRAM support.
-
-#### Static MUSL build (fully portable Linux binary)
-
-To build a binary that does not depend on your system glibc (useful for older servers or containers):
+To build a binary that does not depend on your system glibc (useful for older servers or containers), you can build with MUSL. The binary will be in target/x86_64-unknown-linux-musl/release/inquiSTR after building.
 
 ```bash
-# 1) Install musl toolchain support
 rustup target add x86_64-unknown-linux-musl
-
-# Option A (recommended): use cross for a reproducible build
-cargo install cross   # once
-OPENSSL_STATIC=1 LIBZ_SYS_STATIC=1 BZIP2_STATIC=1 ZSTD_STATIC=1 LZMA_API_STATIC=1 CURL_STATIC=1 \
-  cross build --release --target x86_64-unknown-linux-musl
-
-# Option B: use cargo directly (requires musl-tools on host)
 sudo apt-get install -y musl-tools
 OPENSSL_STATIC=1 LIBZ_SYS_STATIC=1 BZIP2_STATIC=1 ZSTD_STATIC=1 LZMA_API_STATIC=1 CURL_STATIC=1 \
   cargo build --release --target x86_64-unknown-linux-musl
-
-# Result
-ls -lh target/x86_64-unknown-linux-musl/release/inquiSTR
-```
-
-Alternatively, use the helper:
-
-```bash
-scripts/build_musl.sh
-# or via Makefile
-make build-musl
-```
-
-Notes:
-
-- Building with MUSL avoids glibc version errors (e.g., GLIBC_2.38 not found).
-- The environment variables encourage static linking for transitive C libraries (OpenSSL, zlib, bzip2, lzma, zstd, curl).
-
-### Using Cargo
-
-```bash
-cargo install inquiSTR
 ```
 
 ## Usage
@@ -150,8 +92,8 @@ Usage: inquiSTR <COMMAND>
 
 Commands:
   call         Call lengths
-  batch        Process multiple samples in batch and combine results
   combine      Combine STR calls or kmer frequencies from multiple samples to a TSV
+  batch        Process multiple samples in batch and combine results
   convert      Convert VCF files to inquiSTR format
   filter       Filter inquiSTR output by various criteria
   outlier      Find outliers from combined STR or kmer data
@@ -197,11 +139,13 @@ Options:
   -h, --help                       Print help
 ```
 
+When using CRAM files, provide the matching reference with `--reference genome.fa` and preferably have a FASTA index (`genome.fa.fai`) in the same directory. inquiSTR can more efficiently read contig names and lengths from the `genome.fa.fai` rather than opening the CRAM early. A fai index can be created with `samtools faidx genome.fa`
+
 **Performance Note:**
 
-inquiSTR scales well up to **4-6 threads** for single-sample processing. Beyond this, performance plateaus due to I/O bottlenecks (BAM reading and decompression). Using more than 6 threads per sample will not significantly improve speed. For systems with many cores, process multiple samples in parallel using `inquiSTR batch` with `--parallel-samples` rather than allocating excessive threads to a single sample.
+If you are not sure what `--threads` and `--batch-size` values are optimal for your system you can use [`inquiSTR optimize-call`](#inquistr-optimize-call---parameter-optimization) to empirically determine the best configuration through automated benchmarking.
 
-💡 **Tip:** Not sure what `--threads` and `--batch-size` values are optimal for your system? Use [`inquiSTR optimize-call`](#inquistr-optimize-call---parameter-optimization) to empirically determine the best configuration through automated benchmarking.
+inquiSTR typically scales well up to **4-6 threads** for single-sample processing. Beyond this, performance plateaus due to I/O bottlenecks (BAM reading and decompression). Using more than 6 threads per sample will not significantly improve speed. For systems with many cores, you can process multiple samples in parallel using `inquiSTR batch` with `--parallel-samples` rather than allocating excessive threads to a single sample.
 
 **Examples:**
 
@@ -214,79 +158,57 @@ inquiSTR call sample.bam -R regions.bed
 
 # Use a predefined TR catalog (automatically downloads and caches)
 inquiSTR call sample.bam --preset pathogenic    # STRchive disease-associated STRs (75 loci)
-inquiSTR call sample.bam --preset adotto        # ADOTTO TR regions v1.2.1 (1.8M loci)
-inquiSTR call sample.bam --preset trexplorer    # Broad Institute TR Explorer catalog (4.9M loci)
-inquiSTR call sample.bam --preset codis         # CODIS forensic markers (20 loci)
-
-# Filter out large intervals (>10kb) that may span problematic regions
-inquiSTR call sample.bam -R regions.bed --max-locus 10000
-
-# Use 4-6 threads for optimal single-sample performance
-inquiSTR call sample.bam -R regions.bed --threads 6 --minlen 10 --support 5
-
-# CRAM file with reference
-inquiSTR call sample.cram --reference genome.fa -R regions.bed
-
-# Unphased analysis with custom sample name
-inquiSTR call sample.bam -R regions.bed --unphased --sample-name "Sample123"
-
-# Custom batch size (in kb) and threads
-inquiSTR call sample.bam -R regions.bed --batch-size 30 --threads 4
 ```
 
 #### Predefined TR Catalogs
 
-The `--preset` option provides quick access to well-known TR catalogs without manually downloading BED files:
+The `--preset` option provides quick access to well-known TR catalogs without manually downloading BED files. All preset catalogs are currently for the **GRCh38/hg38** reference genome. Catalogs are automatically downloaded on first use and cached locally for 7 days in `~/.cache/inquistr/`. If a download fails but a cached version exists (even if expired), inquiSTR will use the cached version with a warning. Adding new preset catalogs is straightforward - see the [developer documentation](src/repeats.rs) for details on extending the `TRPreset` enum, or open an issue here on GitHub if you have a catalog you would like to see added!
+
+Available presets:
 
 - **pathogenic**: STRchive pathogenic disease-associated STRs - curated database of STRs linked to human diseases (**75 loci**). See also [Hiatt et al., 2025](https://genomemedicine.biomedcentral.com/articles/10.1186/s13073-025-01454-4).
 - **adotto**: Adotto TR regions catalog v1.2.1 - comprehensive TR regions from the Adotto project and benchmark (**1,784,804 loci**). See also [English et al., 2025](https://www.nature.com/articles/s41587-024-02225-z).
 - **trexplorer**: Broad Institute TR Explorer catalog - genome-wide TR catalog covering 1-1000bp motifs (**4,863,041 loci**). See also [Weisburd et al., 2025](https://www.biorxiv.org/content/10.1101/2024.10.04.615514v2).
 - **codis**: CODIS forensic STR markers from the USAT catalog - standard forensic STR markers used for human identification (**20 loci**). See also [Wang et al., 2024](https://link.springer.com/article/10.1186/s12859-022-05021-1).
 
-**Note**: All preset catalogs are for the **GRCh38/hg38** reference genome.
+### `inquiSTR combine` - Multi-sample Analysis
 
-Catalogs are automatically downloaded on first use and cached locally for 7 days in `~/.cache/inquistr/`. If a download fails but a cached version exists (even if expired), inquiSTR will use the cached version with a warning.
+Combine data from multiple samples with `inquiSTR combine`. This command supports either STR call files (from `inquiSTR call`) or kmer frequency files (from `inquiSTR unmapped`), automatically detecting the input format. You can also add new samples to an existing combined file by providing both the combined file and new individual files. This enables efficient cohort expansion without reprocessing all samples. While the input files are validated, the intention is that this is used with files generated by `inquiSTR call` or `inquiSTR unmapped` for the same loci/motifs.
 
-Adding new preset catalogs is straightforward - see the [developer documentation](src/repeats.rs) for details on extending the `TRPreset` enum.
+```text
+Usage: inquiSTR combine [OPTIONS] <CALLS>...
 
-#### CRAM inputs: reference FASTA and FAI index
+Arguments:
+  <CALLS>...  files from inquiSTR call or inquiSTR unmapped
 
-When using CRAM files, provide the matching reference with `--reference` and ensure a FASTA index (`.fai`) exists next to the FASTA. inquiSTR prefers reading contig names and lengths from the reference `.fai` rather than opening the CRAM early; this is faster and avoids edge-case crashes observed in some CRAM/reference setups.
-
-- Required for CRAM: `--reference genome.fa`
-- Recommended: a corresponding `genome.fa.fai` in the same directory
-- Fallback: if `.fai` is missing, inquiSTR will fall back to contig lengths from the CRAM header (slower and less robust). We strongly recommend providing the `.fai`.
-
-Create the index once with samtools:
-
-```bash
-samtools faidx genome.fa
+Options:
+  -t, --threads <THREADS>  Number of threads to use for parallel processing [default: 1]
+  -h, --help               Print help
 ```
 
-Notes:
-
-- The `.fai` must match the exact FASTA used to generate your CRAM.
-- Keep the reference FASTA and its `.fai` side by side on local storage. Remote references are not supported for `.fai` loading.
-- For extra diagnostics, you can enable debug logs: `RUST_LOG=debug`.
-
-Examples with CRAM + reference:
+**Examples:**
 
 ```bash
-# Call STRs in CRAM with provided reference (FAI required for best performance/stability)
-inquiSTR call sample.cram --reference genome.fa -R regions.bed
+# Combine STR calls from multiple samples
+inquiSTR combine sample1.inq sample2.inq sample3.inq > str_combined.tsv
 
-# Single-region call on CRAM
-inquiSTR call sample.cram --reference genome.fa -r chr1:1000-1100
+# Add new samples to an existing combined file (incremental cohort building)
+inquiSTR combine str_combined.tsv sample4.inq sample5.inq > expanded_cohort.tsv
+
+# Merge multiple combined files together
+inquiSTR combine cohort1_combined.tsv cohort2_combined.tsv > merged_cohorts.tsv
 ```
 
 ### `inquiSTR batch` - Batch Sample Processing
 
-Process multiple samples in batch and automatically combine results. This is the recommended approach for cohort studies, eliminating the need to manually run `inquiSTR call` (or `inquiSTR unmapped`) followed by `inquiSTR combine`.
+Process multiple samples in batch and automatically combine the results, eliminating the need to manually run `inquiSTR call` (or `inquiSTR unmapped`) followed by `inquiSTR combine`.
 
 The batch command supports two modes:
 
 - **STR genotyping mode** (default): Genotypes STRs across all samples
 - **Unmapped kmer mode** (`--unmapped`): Analyzes kmer frequencies in unmapped reads
+
+All options for `inquiSTR call` and `inquiSTR unmapped` are available within `inquiSTR batch`. Temporary individual sample files are stored in the directory specified with `--tmpdir`, specified by the `$TMPDIR` environmental variable, or the current directory and are cleaned up unless `--save-individual` is specified.
 
 ```text
 Usage: inquiSTR batch [OPTIONS] --output <OUTPUT> <MANIFEST>
@@ -352,9 +274,6 @@ inquiSTR batch samples.tsv -R regions.bed --output combined.tsv --save-individua
 # Unphased data with CRAM files
 inquiSTR batch samples.tsv --preset pathogenic --unphased --reference genome.fa --output results.tsv
 
-# High-performance setup with multiple threads per sample
-inquiSTR batch samples.tsv -R regions.bed --threads 8 --output cohort.tsv
-
 # Use custom temporary directory
 inquiSTR batch samples.tsv --preset adotto --tmpdir /scratch/tmp --output results.tsv
 ```
@@ -368,114 +287,22 @@ inquiSTR batch samples.tsv --unmapped --output kmer_combined.tsv
 # Custom kmer length with multiple threads
 inquiSTR batch samples.tsv --unmapped -k 8 --threads 4 --output kmers_k8.tsv
 
-# Target specific kmer (e.g., CTG repeats associated with myotonic dystrophy)
-inquiSTR batch samples.tsv --unmapped --target-kmer "(CTG)10" --output ctg_repeats.tsv
-
 # Combine reverse complements and save individual results
 inquiSTR batch samples.tsv --unmapped -k 10 --combine-revcomp --save-individual kmer_results/ --output combined_kmers.tsv
 ```
-
-**Workflow Management Features:**
-
-```bash
-# Dry-run mode: validate manifest and preview processing without execution
-inquiSTR batch samples.tsv --preset pathogenic --output results.tsv --dry-run
-
-# Resume mode: skip already-processed samples (useful for interrupted runs)
-inquiSTR batch samples.tsv --preset pathogenic --save-individual results/ --output combined.tsv --resume
-
-# Combined: preview which samples would be skipped with resume
-inquiSTR batch samples.tsv --unmapped -k 8 --save-individual kmer_results/ --output kmers.tsv --resume --dry-run
-
-# Target kmer with reverse complement combining
-inquiSTR batch samples.tsv --unmapped --target-kmer "(CT)4" --combine-revcomp --output ct_combined.tsv
-
-# Full kmer catalog with reverse complement combining
-inquiSTR batch samples.tsv --unmapped -k 6 --combine-revcomp --threads 8 --output full_kmers.tsv
-
-# Save individual kmer files for later analysis
-inquiSTR batch samples.tsv --unmapped --save-individual kmer_results/ --output combined_kmers.tsv
-```
-
-**Key Features:**
-
-- **Dual mode operation**: Supports both STR genotyping and unmapped kmer analysis in a single command
-- **Automatic mode validation**: STR mode requires `--region`, `--region-file`, or `--preset`; unmapped mode uses `--unmapped` flag
-- **Sequential processing**: Processes samples one at a time to maximize per-sample parallelization
-- **Automatic cleanup**: Temporary files are cleaned up unless `--save-individual` is specified
-- **Error handling**: Failed samples are skipped with detailed error logging; successful samples are still combined
-- **Progress tracking**: Visual progress bar shows which sample is currently being processed
-- **Flexible temp storage**: Use `--tmpdir`, `$TMPDIR` environment variable, or current directory for temporary files
-- **Format detection**: Automatically combines results in the correct format (STR calls or kmer frequencies)
-- **Resume capability**: `--resume` flag skips samples with existing output files, enabling restart of interrupted runs
-- **Dry-run validation**: `--dry-run` flag validates the manifest and previews processing without executing
 
 **Workflow Features:**
 
 The `--resume` and `--dry-run` flags provide workflow management capabilities:
 
-- **`--dry-run`**: Validates the manifest file, checks for missing BAM files, and reports what would be processed without actually running analysis. This is useful for:
-  - Verifying manifest format before starting long-running jobs
-  - Checking file accessibility before processing
-  - Estimating workload and identifying problematic samples
-  - Works independently - no other flags required
-
-- **`--resume`**: Intelligently resumes interrupted batch jobs by checking the output file for already-processed samples:
-  - **How it works**: Parses the combined output file header to identify which samples have already been processed
-  - **Appends new data**: Processes only the missing samples and appends them to the existing combined file
-  - **No extra files needed**: Works directly with the output file - no need for `--save-individual`
-  - **Use cases**:
-    - Restarting interrupted batch jobs without reprocessing completed samples
-    - Adding new samples to an existing cohort incrementally
-    - Recovering from failures by simply re-running with the same manifest
-  
-  **📝 Note for STR mode**: Resume works seamlessly by parsing sample names from the combined file header (e.g., `sample_A_H1`, `sample_A_H2`).
-  
-  **⚠️ Limitation for kmer mode**: Resume currently only works reliably for STR genotyping. For unmapped kmer analysis, if different samples have different kmers, the combine operation may fail. Use `--save-individual` with kmer mode if you need incremental processing.
-
-- **Combined usage**: Use both `--dry-run` and `--resume` together to preview which samples would be skipped and which would be processed, without running anything. This combination is useful for planning before resuming an interrupted job.
-
-### `inquiSTR combine` - Multi-sample Analysis
-
-Combine data from multiple samples with `inquiSTR combine`. This command supports both STR call files (from `inquiSTR call`) and kmer frequency files (from `inquiSTR unmapped`), automatically detecting the input format.
-
-**Incremental Cohort Building:** You can add new samples to an existing combined file by providing both the combined file and new individual files. This enables efficient cohort expansion without reprocessing all samples.
-
-```text
-Usage: inquiSTR combine [OPTIONS] <CALLS>...
-
-Arguments:
-  <CALLS>...  files from inquiSTR call or inquiSTR unmapped
-
-Options:
-  -t, --threads <THREADS>  Number of threads to use for parallel processing [default: 1]
-  -h, --help               Print help
-```
-
-**Examples:**
-
-```bash
-# Combine STR calls from multiple samples
-inquiSTR combine sample1.inq sample2.inq sample3.inq > str_combined.tsv
-
-# Add new samples to an existing combined file (incremental cohort building)
-inquiSTR combine str_combined.tsv sample4.inq sample5.inq > expanded_cohort.tsv
-
-# Combine kmer frequency files from unmapped analysis
-inquiSTR combine sample1_kmers.tsv sample2_kmers.tsv sample3_kmers.tsv > kmer_combined.tsv
-
-# Combine all .inq files in current directory (STR data)
-inquiSTR combine *.inq > cohort_combined.tsv
-
-# Use multiple threads 
-inquiSTR combine *.inq --threads 8 > combined.tsv
-```
-
-**Note:** When combining files, you can mix one combined file with any number of individual files. Multiple combined files cannot be combined together.
+- `--dry-run`: Validates the manifest file, checks for missing BAM files, and reports what would be processed without actually running analysis.
+- `--resume`: Intelligently resumes interrupted batch jobs by checking the output file for already-processed samples:
+and can be used to restart a failed workflow or add new samples to an existing cohort incrementally.
+- Use both `--dry-run` and `--resume` together to preview which samples would be skipped and which would be processed, without running anything. This combination is useful for planning before resuming an interrupted job.
 
 ### `inquiSTR convert` - VCF to inquiSTR Format
 
-Convert VCF files from other STR genotyping tools (e.g., TRGT, Straglr, ExpansionHunter) to inquiSTR's TSV format. This enables use of inquiSTR's downstream analysis tools (outlier detection, association testing, PCA, etc.) with data from other callers.
+Convert VCF files from other STR genotyping tools to inquiSTR's TSV format. This enables use of inquiSTR's downstream analysis tools (outlier detection, association testing, PCA, etc.) with data from other callers. Please let me know if the tool does not work for a specific type of VCF, and I will look into it. Allele lengths calculated as ALT - REF, therefore negative values indicate contractions. Missing genotypes (./.) are converted to "NA".
 
 ```text
 Usage: inquiSTR convert <VCF>...
@@ -487,13 +314,6 @@ Arguments:
 Options:
   -h, --help  Print help
 ```
-
-**Output Format:**
-
-- Single-sample VCF → individual call file (6 columns: chr, begin, end, info, sample_H1, sample_H2)
-- Multi-sample VCF or multiple VCFs → combined file (4+ columns: chr, begin, end, info, sample1_H1, sample1_H2, ...)
-- Allele lengths calculated as ALT - REF (negative values indicate deletions)
-- Missing genotypes (./.) converted to "NA"
 
 **Examples:**
 
@@ -508,11 +328,9 @@ inquiSTR convert cohort.vcf > cohort_combined.tsv
 inquiSTR convert sample1.vcf sample2.vcf sample3.vcf > combined.tsv
 ```
 
-Please let me know if the tool does not work for a specific type of VCF, and I will look into it!
-
 ### `inquiSTR optimize-call` - Parameter Optimization
 
-Empirically determine the optimal `--batch-size` and `--threads` configuration for running `inquiSTR call` on your specific system, input file, and repeat catalog. This subcommand provides data-driven recommendations with visualizations.
+Empirically determine the optimal `--batch-size` and `--threads` configuration for running `inquiSTR call` on your specific system, input file, and repeat catalog. This subcommand provides data-driven recommendations with visualizations. Each test configuration typically completes in 2-5 minutes, and the total optimization time is about ~1-2 hours for comprehensive testing of combinations of parameters. For faster testing, provide a BED file with only one chromosome, rather than random downsampling targets to keep the batching approach comparable to a real dataset.
 
 ```text
 Usage: inquiSTR optimize-call [OPTIONS] <BAM>
@@ -543,30 +361,17 @@ Options:
 **Examples:**
 
 ```bash
-# Basic optimization - auto-detect optimal settings
+# Basic optimization
 inquiSTR optimize-call sample.cram \
     -R regions.bed \
     --reference genome.fa
-
-# Test specific thread range with custom batch sizes
-inquiSTR optimize-call sample.bam \
-    --preset pathogenic \
-    --min-threads 1 \
-    --max-threads 12 \
-    --batch-sizes 5,10,15,20,30,50
-
-# Fast mode: test only one chromosome
-inquiSTR optimize-call sample.cram \
-    -R chr1_regions.bed \
-    --reference genome.fa \
-    --repeats 2
 
 # Comprehensive test with custom output directory
 inquiSTR optimize-call sample.bam \
     --preset adotto \
     --min-threads 1 \
-    --max-threads 16 \
-    --batch-sizes 5,10,20,30,50,75,100 \
+    --max-threads 12 \
+    --batch-sizes 5,10,15,20,30,50 \
     --repeats 3 \
     --output my_optimization_results
 ```
@@ -604,15 +409,9 @@ Recommended command:
 Visualization files saved in: optimize_results
 ```
 
-**Performance Notes:**
-
-- Each test configuration typically completes in 2-5 minutes
-- Total optimization time: ~1-2 hours for comprehensive testing (worth it for production workloads!)
-- For faster testing, provide a BED file with only one chromosome
-
 ### `inquiSTR query` - Genotype Lookup
 
-Querying genotypes from a combined file can be done with `inquiSTR query`, taking a region string or a file with regions to query. When querying a single locus, output will be sorted by repeat length (descending, with highest expansions first).
+Querying genotypes from a combined file can be done with `inquiSTR query`, taking a region string or a file with regions to query. When querying a single locus, output will be sorted by repeat length (longest expansions first).
 
 ```text
 Usage: inquiSTR query <COMBINED> <REGION>
@@ -629,13 +428,10 @@ Options:
 
 ```bash
 # Query a specific region (single locus - output sorted by length)
-inquiSTR query combined.tsv chr1:1000-2000
+inquiSTR query combined.tsv chr1:1000-1200
 
 # Query multiple regions from a BED file (multi-locus table format)
 inquiSTR query combined.tsv regions.bed
-
-# Query using a text file with multiple coordinate strings
-inquiSTR query combined.tsv regions.txt
 ```
 
 ### `inquiSTR filter` - Filter STR Data
@@ -1279,14 +1075,11 @@ inquiSTR association \
 ```
 
 When `--plot` is used, inquiSTR will generate two additional files:
+
 - `<prefix>_manhattan.png` - Manhattan plot showing -log10(p-value) across chromosomes
 - `<prefix>_qq.png` - QQ plot for assessing genomic inflation and deviation from expected p-value distribution
 
 If no prefix is provided to `--plot`, it defaults to the output filename stem (e.g., `results.tsv` → `results_manhattan.png`)
-
-## Legacy R Script Usage
-
-The recommended approach is to use `inquiSTR association`, however, for advanced users who prefer direct script access, the association testing functionality is also available as a standalone R script `STR_regression.R` in the scripts folder. Detailed examples are provided in [STR_regression_examples.md](docs/STR_regression_examples.md).
 
 ## 🛠️ Development
 
@@ -1391,4 +1184,3 @@ This saves time by catching issues locally instead of discovering them in CI.
 5. **Create a pull request**
 
 The automated hooks ensure your contributions meet the project's quality standards before they reach CI.
-
