@@ -112,29 +112,13 @@ fn combine_str_files(calls: Vec<PathBuf>, _actual_threads: usize) {
     // Determine processing path based on file mix
     if !combined_files.is_empty() {
         // If we have any combined files, use the merge logic
-        if combined_files.len() > 1 {
-            eprintln!(
-                "Error: Cannot combine multiple combined files together.\nFound {} combined files: {}",
-                combined_files.len(),
-                combined_files
-                    .iter()
-                    .map(|f| f.display().to_string())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            );
-            eprintln!(
-                "\nTo merge these cohorts, you can add individual samples to one combined file:"
-            );
-            eprintln!("  inquiSTR combine {} sample1.inq sample2.inq", combined_files[0].display());
-            std::process::exit(1);
-        }
-
         eprintln!(
-            "Detected 1 combined file and {} individual file(s) - merging cohorts",
+            "Detected {} combined file(s) and {} individual file(s) - merging cohorts",
+            combined_files.len(),
             individual_files.len()
         );
 
-        merge_combined_and_individual_str_files(combined_files[0].clone(), individual_files);
+        merge_combined_files(combined_files, individual_files);
     } else {
         // All files are individual files - use original logic
         // Read and validate headers first
@@ -235,26 +219,31 @@ fn combine_target_kmer_files(calls: &[PathBuf], headers: &[String]) {
     }
 }
 
-/// Merge a combined STR file with individual STR files
-fn merge_combined_and_individual_str_files(combined_file: PathBuf, individual_files: Vec<PathBuf>) {
+/// Merge multiple combined STR files and/or individual STR files
+fn merge_combined_files(combined_files: Vec<PathBuf>, individual_files: Vec<PathBuf>) {
     use std::collections::HashMap;
 
-    // Read the combined file into memory
-    let mut combined_reader = reader(&combined_file.to_string_lossy()).lines();
+    // Read the first combined file into memory
+    let mut combined_reader = reader(&combined_files[0].to_string_lossy()).lines();
 
-    // Read combined file header
-    let combined_header = combined_reader
-        .next()
-        .unwrap_or_else(|| {
-            eprintln!("Error: Combined file is empty: {}", combined_file.display());
-            eprintln!("\nThe file contains no data.");
-            std::process::exit(1);
-        })
-        .unwrap_or_else(|e| {
-            eprintln!("Error: Failed to read combined file header: {}", combined_file.display());
+    // Skip metadata lines and read first combined file header
+    let mut combined_header = String::new();
+    for line_result in &mut combined_reader {
+        let line = line_result.unwrap_or_else(|e| {
+            eprintln!("Error: Failed to read combined file: {}", combined_files[0].display());
             eprintln!("Reason: {}", e);
             std::process::exit(1);
         });
+        if !line.starts_with('#') {
+            combined_header = line;
+            break;
+        }
+    }
+    
+    if combined_header.is_empty() {
+        eprintln!("Error: Combined file is empty or contains only metadata: {}", combined_files[0].display());
+        std::process::exit(1);
+    }
 
     let has_combined_header = combined_header.split('\t').next() == Some("chromosome");
 
@@ -284,11 +273,12 @@ fn merge_combined_and_individual_str_files(combined_file: PathBuf, individual_fi
     let has_individual_headers = if !individual_headers.is_empty() {
         individual_headers[0].split('\t').next() == Some("chromosome")
     } else {
-        false
+        // If there are no individual files, assume they match the combined file header style
+        has_combined_header
     };
 
-    // Validate header consistency
-    if has_combined_header != has_individual_headers {
+    // Validate header consistency (only if we have individual files to check)
+    if !individual_files.is_empty() && has_combined_header != has_individual_headers {
         eprintln!("Error: Header mismatch between files.");
         eprintln!("  Combined file has {} header", if has_combined_header { "a" } else { "no" });
         eprintln!(
@@ -301,7 +291,35 @@ fn merge_combined_and_individual_str_files(combined_file: PathBuf, individual_fi
 
     // Output merged header
     if has_combined_header {
-        let combined_header_fields: Vec<&str> = combined_header.split('\t').collect();
+        // Read headers from all combined files first
+        let mut all_combined_headers = vec![combined_header.clone()];
+        
+        for combined_file in combined_files.iter().skip(1) {
+            let mut file_reader = reader(&combined_file.to_string_lossy()).lines();
+            
+            // Skip metadata lines and read header
+            let mut header = String::new();
+            for line_result in &mut file_reader {
+                let line = line_result.unwrap_or_else(|e| {
+                    eprintln!("Error: Failed to read combined file: {}", combined_file.display());
+                    eprintln!("Reason: {}", e);
+                    std::process::exit(1);
+                });
+                if !line.starts_with('#') {
+                    header = line;
+                    break;
+                }
+            }
+            
+            if header.is_empty() {
+                eprintln!("Error: Combined file contains only metadata: {}", combined_file.display());
+                std::process::exit(1);
+            }
+            
+            all_combined_headers.push(header);
+        }
+        
+        let combined_header_fields: Vec<&str> = all_combined_headers[0].split('\t').collect();
 
         // Validate combined file header
         if combined_header_fields.len() < 5 {
@@ -322,6 +340,20 @@ fn merge_combined_and_individual_str_files(combined_file: PathBuf, individual_fi
         // Add all sample columns from combined file (skip chr, begin, end, info)
         merged_header.extend(&combined_header_fields[4..]);
 
+        // Add sample columns from additional combined files
+        for header in all_combined_headers.iter().skip(1) {
+            let header_fields: Vec<&str> = header.split('\t').collect();
+            if header_fields.len() < 5 {
+                eprintln!(
+                    "ERROR: Combined file header must have at least 5 columns. Got {} columns",
+                    header_fields.len()
+                );
+                std::process::exit(1);
+            }
+            // Add sample columns (skip chr, begin, end, info)
+            merged_header.extend(&header_fields[4..]);
+        }
+
         // Add sample columns from individual files
         for header in &individual_headers {
             let fields: Vec<&str> = header.split('\t').collect();
@@ -336,7 +368,7 @@ fn merge_combined_and_individual_str_files(combined_file: PathBuf, individual_fi
         eprintln!("Warning: No headers detected in files");
     }
 
-    // Read combined file data into HashMap
+    // Read first combined file data into HashMap
     let mut combined_data: HashMap<String, String> = HashMap::new();
 
     for (line_num, line_result) in combined_reader.enumerate() {
@@ -355,7 +387,61 @@ fn merge_combined_and_individual_str_files(combined_file: PathBuf, individual_fi
         panic!("Combined file contains no data lines");
     }
 
-    eprintln!("Loaded {} loci from combined file", combined_data.len());
+    eprintln!("Loaded {} loci from first combined file", combined_data.len());
+
+    // Merge additional combined files (if any)
+    for (file_idx, combined_file) in combined_files.iter().enumerate().skip(1) {
+        eprintln!("Merging combined file {} of {}: {}", file_idx + 1, combined_files.len(), combined_file.display());
+        
+        let mut file_reader = reader(&combined_file.to_string_lossy()).lines();
+        
+        // Skip metadata lines and header
+        for line_result in &mut file_reader {
+            let line = line_result.unwrap_or_else(|e| {
+                eprintln!("Error reading combined file: {}", e);
+                std::process::exit(1);
+            });
+            // Skip metadata lines
+            if line.starts_with('#') {
+                continue;
+            }
+            // First non-metadata line is the header, skip it and break
+            break;
+        }
+        
+        // Read and merge data lines
+        let mut merged_loci = 0;
+        let mut new_loci = 0;
+        
+        for line_result in file_reader {
+            let line = line_result.unwrap_or_else(|e| {
+                eprintln!("Error reading combined file: {}", e);
+                std::process::exit(1);
+            });
+            
+            let fields: Vec<&str> = line.split('\t').collect();
+            if fields.len() < 5 {
+                eprintln!("Warning: Skipping invalid line in {}", combined_file.display());
+                continue;
+            }
+            
+            let key = format!("{}:{}−{}", fields[0], fields[1], fields[2]);
+            
+            if let Some(existing) = combined_data.get_mut(&key) {
+                // Locus exists - merge sample columns (skip first 4 columns: chr, start, end, info)
+                let new_samples = &fields[4..];
+                existing.push('\t');
+                existing.push_str(&new_samples.join("\t"));
+                merged_loci += 1;
+            } else {
+                // New locus - add it
+                combined_data.insert(key, line);
+                new_loci += 1;
+            }
+        }
+        
+        eprintln!("  Merged {} loci, added {} new loci", merged_loci, new_loci);
+    }
 
     // Open individual file readers
     let mut individual_readers: Vec<_> = individual_files
@@ -452,7 +538,8 @@ fn merge_combined_and_individual_str_files(combined_file: PathBuf, individual_fi
 
     eprintln!("Processed {} loci", processed_lines);
     eprintln!(
-        "Completed merging 1 combined file with {} individual file(s)",
+        "Completed merging {} combined file(s) with {} individual file(s)",
+        combined_files.len(),
         individual_files.len()
     );
 }
