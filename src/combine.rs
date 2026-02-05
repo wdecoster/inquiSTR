@@ -239,9 +239,12 @@ fn merge_combined_files(combined_files: Vec<PathBuf>, individual_files: Vec<Path
             break;
         }
     }
-    
+
     if combined_header.is_empty() {
-        eprintln!("Error: Combined file is empty or contains only metadata: {}", combined_files[0].display());
+        eprintln!(
+            "Error: Combined file is empty or contains only metadata: {}",
+            combined_files[0].display()
+        );
         std::process::exit(1);
     }
 
@@ -293,10 +296,10 @@ fn merge_combined_files(combined_files: Vec<PathBuf>, individual_files: Vec<Path
     if has_combined_header {
         // Read headers from all combined files first
         let mut all_combined_headers = vec![combined_header.clone()];
-        
+
         for combined_file in combined_files.iter().skip(1) {
             let mut file_reader = reader(&combined_file.to_string_lossy()).lines();
-            
+
             // Skip metadata lines and read header
             let mut header = String::new();
             for line_result in &mut file_reader {
@@ -310,15 +313,18 @@ fn merge_combined_files(combined_files: Vec<PathBuf>, individual_files: Vec<Path
                     break;
                 }
             }
-            
+
             if header.is_empty() {
-                eprintln!("Error: Combined file contains only metadata: {}", combined_file.display());
+                eprintln!(
+                    "Error: Combined file contains only metadata: {}",
+                    combined_file.display()
+                );
                 std::process::exit(1);
             }
-            
+
             all_combined_headers.push(header);
         }
-        
+
         let combined_header_fields: Vec<&str> = all_combined_headers[0].split('\t').collect();
 
         // Validate combined file header
@@ -391,10 +397,15 @@ fn merge_combined_files(combined_files: Vec<PathBuf>, individual_files: Vec<Path
 
     // Merge additional combined files (if any)
     for (file_idx, combined_file) in combined_files.iter().enumerate().skip(1) {
-        eprintln!("Merging combined file {} of {}: {}", file_idx + 1, combined_files.len(), combined_file.display());
-        
+        eprintln!(
+            "Merging combined file {} of {}: {}",
+            file_idx + 1,
+            combined_files.len(),
+            combined_file.display()
+        );
+
         let mut file_reader = reader(&combined_file.to_string_lossy()).lines();
-        
+
         // Skip metadata lines and header
         for line_result in &mut file_reader {
             let line = line_result.unwrap_or_else(|e| {
@@ -408,25 +419,25 @@ fn merge_combined_files(combined_files: Vec<PathBuf>, individual_files: Vec<Path
             // First non-metadata line is the header, skip it and break
             break;
         }
-        
+
         // Read and merge data lines
         let mut merged_loci = 0;
         let mut new_loci = 0;
-        
+
         for line_result in file_reader {
             let line = line_result.unwrap_or_else(|e| {
                 eprintln!("Error reading combined file: {}", e);
                 std::process::exit(1);
             });
-            
+
             let fields: Vec<&str> = line.split('\t').collect();
             if fields.len() < 5 {
                 eprintln!("Warning: Skipping invalid line in {}", combined_file.display());
                 continue;
             }
-            
+
             let key = format!("{}:{}−{}", fields[0], fields[1], fields[2]);
-            
+
             if let Some(existing) = combined_data.get_mut(&key) {
                 // Locus exists - merge sample columns (skip first 4 columns: chr, start, end, info)
                 let new_samples = &fields[4..];
@@ -439,7 +450,7 @@ fn merge_combined_files(combined_files: Vec<PathBuf>, individual_files: Vec<Path
                 new_loci += 1;
             }
         }
-        
+
         eprintln!("  Merged {} loci, added {} new loci", merged_loci, new_loci);
     }
 
