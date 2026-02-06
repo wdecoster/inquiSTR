@@ -791,6 +791,12 @@ fn main() {
             nonzero,
             tolerance,
         } => {
+            // Validate tolerance parameter
+            if tolerance < 1 {
+                eprintln!("Error: Tolerance must be at least 1 bp (got {})", tolerance);
+                std::process::exit(1);
+            }
+            
             benchmark::benchmark(
                 inquistr,
                 vcf,

@@ -543,6 +543,7 @@ pub fn benchmark(
 
     // Calculate exact matches and matches within tolerance
     let mut exact_matches = 0;
+    let mut off_by_one = 0;
     let mut within_tolerance = 0;
 
     for (&inq_val, &truth_val) in inquistr_values.iter().zip(truth_values.iter()) {
@@ -550,16 +551,21 @@ pub fn benchmark(
         if diff == 0.0 {
             exact_matches += 1;
             within_tolerance += 1; // Exact matches are also within tolerance
+        } else if diff == 1.0 {
+            off_by_one += 1;
+            within_tolerance += 1; // Off-by-one is also within tolerance (assuming tolerance >= 1)
         } else if diff <= tolerance as f64 {
             within_tolerance += 1;
         }
     }
 
     let exact_percent = (exact_matches as f64 / matched_count as f64) * 100.0;
+    let off_by_one_percent = (off_by_one as f64 / matched_count as f64) * 100.0;
     let within_tolerance_percent = (within_tolerance as f64 / matched_count as f64) * 100.0;
 
     println!("\n=== Accuracy Analysis ===");
     println!("Exact matches: {} ({:.2}%)", exact_matches, exact_percent);
+    println!("Off by one: {} ({:.2}%)", off_by_one, off_by_one_percent);
     println!(
         "Within {} bp tolerance: {} ({:.2}%)",
         tolerance, within_tolerance, within_tolerance_percent
