@@ -409,6 +409,10 @@ pub fn process_batch_with_reader(
 
                 // Check if read overlaps with a target interval
                 for repeat in &batch.repeats {
+                    // Repeats are sorted by start position, so we can break early
+                    if repeat.start >= read_end {
+                        break;
+                    }
                     if read_start < repeat.end && read_end > repeat.start {
                         let call = from_record_with_target(
                             &record,
@@ -524,6 +528,10 @@ pub fn process_batch_with_dedicated_reader(
 
                 // Check if read overlaps with a target interval
                 for repeat in &batch.repeats {
+                    // Repeats are sorted by start position, so we can break early
+                    if repeat.start >= read_end {
+                        break;
+                    }
                     if read_start < repeat.end && read_end > repeat.start {
                         let call = from_record_with_target(
                             &record,
