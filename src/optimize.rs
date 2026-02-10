@@ -207,7 +207,6 @@ fn run_benchmarks(
     repeats: usize,
 ) -> Result<Vec<BenchmarkResult>, String> {
     use rand::seq::SliceRandom;
-    use rand::thread_rng;
 
     // Generate all test configurations
     let mut test_configs: Vec<(usize, u32, usize)> = Vec::new();
@@ -220,7 +219,7 @@ fn run_benchmarks(
     }
 
     // Randomize the order to avoid temporal bias
-    let mut rng = thread_rng();
+    let mut rng = rand::rng();
     test_configs.shuffle(&mut rng);
 
     eprintln!(
