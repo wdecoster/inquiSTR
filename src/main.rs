@@ -796,7 +796,7 @@ fn main() {
                 eprintln!("Error: Tolerance must be at least 1 bp (got {})", tolerance);
                 std::process::exit(1);
             }
-            
+
             benchmark::benchmark(
                 inquistr,
                 vcf,
