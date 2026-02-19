@@ -551,6 +551,7 @@ pub fn benchmark(
         if diff == 0.0 {
             exact_matches += 1;
             within_tolerance += 1; // Exact matches are also within tolerance
+            off_by_one += 1; // Exact matches are also within off-by-one (difference of 0 is within 1)
         } else if diff == 1.0 {
             off_by_one += 1;
             within_tolerance += 1; // Off-by-one is also within tolerance (assuming tolerance >= 1)
@@ -565,7 +566,7 @@ pub fn benchmark(
 
     println!("\n=== Accuracy Analysis ===");
     println!("Exact matches: {} ({:.2}%)", exact_matches, exact_percent);
-    println!("Off by one: {} ({:.2}%)", off_by_one, off_by_one_percent);
+    println!("Maximally off by one: {} ({:.2}%)", off_by_one, off_by_one_percent);
     println!(
         "Within {} bp tolerance: {} ({:.2}%)",
         tolerance, within_tolerance, within_tolerance_percent
