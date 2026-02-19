@@ -699,7 +699,7 @@ fn main() {
                 eprintln!("ERROR: Combined file does not exist: {}", combined.display());
                 std::process::exit(1);
             }
-            let subset = sample.map(|s| outlier::parse_sample_input(&s));
+            let subset = sample.map(|s| utils::parse_sample_input(&s));
             outlier::outlier(combined, minsize, zscore, method, subset, threads, count);
         }
         Commands::Query { combined, region } => {

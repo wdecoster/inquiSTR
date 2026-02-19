@@ -21,33 +21,6 @@ fn clean_sample_name(sample_name: &str) -> &str {
     }
 }
 
-/// Parse sample input - can be a file path, comma-separated names, or a single name
-pub fn parse_sample_input(input: &str) -> Vec<String> {
-    let path = Path::new(input);
-
-    // Check if input is a file path
-    if path.exists() && path.is_file() {
-        eprintln!("Reading sample names from file: {}", input);
-        let file = crate::utils::reader(input);
-        file.lines()
-            .map(|line| line.unwrap().trim().to_string())
-            .filter(|line| !line.is_empty())
-            .collect()
-    } else if input.contains(',') {
-        // Comma-separated sample names
-        eprintln!("Parsing comma-separated sample names");
-        input
-            .split(',')
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect()
-    } else {
-        // Single sample name
-        eprintln!("Using single sample name: {}", input);
-        vec![input.to_string()]
-    }
-}
-
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
 pub enum Method {
     Zscore,
@@ -675,21 +648,21 @@ mod tests {
     #[test]
     fn test_parse_sample_input_single() {
         let input = "Sample123";
-        let result = parse_sample_input(input);
+        let result = crate::utils::parse_sample_input(input);
         assert_eq!(result, vec!["Sample123"]);
     }
 
     #[test]
     fn test_parse_sample_input_comma_separated() {
         let input = "Sample1,Sample2,Sample3";
-        let result = parse_sample_input(input);
+        let result = crate::utils::parse_sample_input(input);
         assert_eq!(result, vec!["Sample1", "Sample2", "Sample3"]);
     }
 
     #[test]
     fn test_parse_sample_input_comma_separated_with_spaces() {
         let input = "Sample1, Sample2 , Sample3";
-        let result = parse_sample_input(input);
+        let result = crate::utils::parse_sample_input(input);
         assert_eq!(result, vec!["Sample1", "Sample2", "Sample3"]);
     }
 

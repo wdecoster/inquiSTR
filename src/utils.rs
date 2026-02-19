@@ -1,7 +1,7 @@
 use flate2::read::GzDecoder;
 use noodles_bgzf as bgzf;
 use std::fs::File;
-use std::io::{BufReader, Read};
+use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 
 /// Extract a sample name from a file path by removing path, extension, and common BAM/CRAM suffixes
@@ -86,6 +86,33 @@ pub fn reader(filename: &str) -> BufReader<Box<dyn Read>> {
             std::process::exit(1);
         });
         BufReader::new(Box::new(file) as Box<dyn Read>)
+    }
+}
+
+/// Parse sample input - can be a file path, comma-separated names, or a single name
+pub fn parse_sample_input(input: &str) -> Vec<String> {
+    let path = Path::new(input);
+
+    // Check if input is a file path
+    if path.exists() && path.is_file() {
+        eprintln!("Reading sample names from file: {}", input);
+        let file = reader(input);
+        file.lines()
+            .map(|line| line.unwrap().trim().to_string())
+            .filter(|line| !line.is_empty())
+            .collect()
+    } else if input.contains(',') {
+        // Comma-separated sample names
+        eprintln!("Parsing comma-separated sample names");
+        input
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect()
+    } else {
+        // Single sample name
+        eprintln!("Using single sample name: {}", input);
+        vec![input.to_string()]
     }
 }
 
