@@ -1,5 +1,5 @@
 use bio::io::bed;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 
@@ -193,6 +193,209 @@ fn is_combined_file(file_path: &Path) -> io::Result<bool> {
     Ok(num_cols > 6)
 }
 
+/// Helper function to clean sample names by removing _H1/_H2 suffixes
+#[inline]
+fn clean_sample_name(sample_name: &str) -> &str {
+    sample_name
+        .strip_suffix("_H1")
+        .or_else(|| sample_name.strip_suffix("_H2"))
+        .unwrap_or(sample_name)
+}
+
+/// Validate that a column pair represents a valid phased sample (matching base names with _H1/_H2 suffixes)
+fn validate_column_pair(column_pair: &[&str], pair_index: usize) -> Result<String, String> {
+    if column_pair.len() != 2 {
+        return Err(format!(
+            "Sample column pair {} has {} column(s), expected 2 (one for each haplotype)",
+            pair_index + 1,
+            column_pair.len()
+        ));
+    }
+
+    let col1 = column_pair[0];
+    let col2 = column_pair[1];
+
+    // Check that both columns have proper _H1/_H2 suffixes
+    if !col1.ends_with("_H1") && !col1.ends_with("_H2") {
+        return Err(format!(
+            "Column '{}' at position {} does not have _H1 or _H2 suffix",
+            col1,
+            4 + pair_index * 2
+        ));
+    }
+    if !col2.ends_with("_H1") && !col2.ends_with("_H2") {
+        return Err(format!(
+            "Column '{}' at position {} does not have _H1 or _H2 suffix",
+            col2,
+            4 + pair_index * 2 + 1
+        ));
+    }
+
+    // Check that one is _H1 and the other is _H2
+    let has_h1 = col1.ends_with("_H1") || col2.ends_with("_H1");
+    let has_h2 = col1.ends_with("_H2") || col2.ends_with("_H2");
+
+    if !has_h1 || !has_h2 {
+        return Err(format!(
+            "Column pair {} ('{}', '{}') must have one _H1 and one _H2 column",
+            pair_index + 1,
+            col1,
+            col2
+        ));
+    }
+
+    // Get base sample names (without _H1/_H2)
+    let sample1 = clean_sample_name(col1);
+    let sample2 = clean_sample_name(col2);
+
+    // Verify both columns belong to the same sample
+    if sample1 != sample2 {
+        return Err(format!(
+            "Column pair {} has mismatched sample names: '{}' (from '{}') and '{}' (from '{}')",
+            pair_index + 1,
+            sample1,
+            col1,
+            sample2,
+            col2
+        ));
+    }
+
+    Ok(sample1.to_string())
+}
+
+/// Determine which column indices to keep based on sample selection
+/// Returns tuple of (selected_columns, filtered_samples) where filtered_samples are unique sample names
+fn determine_columns_to_keep(
+    header_line: &str,
+    samples_to_keep: Option<&Vec<String>>,
+    samples_to_drop: Option<&Vec<String>>,
+) -> (Vec<usize>, Vec<String>) {
+    let header_fields: Vec<&str> = header_line.split('\t').collect();
+
+    // Extract sample columns (everything after chr, start, end, info)
+    let sample_columns: Vec<&str> = header_fields.iter().skip(4).copied().collect();
+
+    // Validate that we have an even number of sample columns (paired H1/H2)
+    if !sample_columns.len().is_multiple_of(2) {
+        eprintln!(
+            "ERROR: Invalid file format - expected even number of sample columns (paired haplotypes)"
+        );
+        eprintln!("Found {} sample columns after chr/start/end/info", sample_columns.len());
+        eprintln!("Each sample should have exactly 2 columns (e.g., sample_H1 and sample_H2)");
+        std::process::exit(1);
+    }
+
+    // Validate all column pairs upfront
+    for (pair_index, column_pair) in sample_columns.chunks_exact(2).enumerate() {
+        if let Err(e) = validate_column_pair(column_pair, pair_index) {
+            eprintln!("ERROR: Invalid sample column structure: {}", e);
+            eprintln!(
+                "\nExpected format: Each sample should have two columns with _H1 and _H2 suffixes"
+            );
+            eprintln!("Example: sample1_H1, sample1_H2, sample2_H1, sample2_H2, ...");
+            std::process::exit(1);
+        }
+    }
+
+    // If no sample filtering requested, keep all columns
+    if samples_to_keep.is_none() && samples_to_drop.is_none() {
+        let all_indices: Vec<usize> = (0..header_fields.len()).collect();
+        let all_samples: Vec<String> = sample_columns
+            .chunks_exact(2)
+            .map(|pair| clean_sample_name(pair[0]).to_string())
+            .collect();
+        return (all_indices, all_samples);
+    }
+
+    let mut selected_indices = vec![0, 1, 2, 3]; // Always keep chr, start, end, info
+    let mut selected_samples = Vec::new();
+
+    if let Some(to_keep) = samples_to_keep {
+        // Keep only specified samples
+        let keep_set: HashSet<String> = to_keep.iter().cloned().collect();
+
+        for (i, column_pair) in sample_columns.chunks_exact(2).enumerate() {
+            let sample_name = clean_sample_name(column_pair[0]);
+
+            if keep_set.contains(sample_name) {
+                // Add both H1 and H2 columns for this sample
+                selected_indices.push(4 + i * 2);
+                selected_indices.push(4 + i * 2 + 1);
+
+                if !selected_samples.contains(&sample_name.to_string()) {
+                    selected_samples.push(sample_name.to_string());
+                }
+            }
+        }
+
+        // Validate all requested samples were found
+        let found_samples: HashSet<_> = selected_samples.iter().cloned().collect();
+        let missing: Vec<_> = keep_set.difference(&found_samples).collect();
+        if !missing.is_empty() {
+            eprintln!("ERROR: The following samples were not found in the input file:");
+            for sample in &missing {
+                eprintln!("  - {}", sample);
+            }
+            eprintln!("\nAvailable samples:");
+            let mut available: Vec<String> = sample_columns
+                .chunks_exact(2)
+                .map(|pair| clean_sample_name(pair[0]).to_string())
+                .collect();
+            available.sort();
+            available.dedup();
+            for sample in available {
+                eprintln!("  - {}", sample);
+            }
+            std::process::exit(1);
+        }
+    } else if let Some(to_drop) = samples_to_drop {
+        // Drop specified samples, keep all others
+        let drop_set: HashSet<String> = to_drop.iter().cloned().collect();
+
+        for (i, column_pair) in sample_columns.chunks_exact(2).enumerate() {
+            let sample_name = clean_sample_name(column_pair[0]);
+
+            if !drop_set.contains(sample_name) {
+                // Add both H1 and H2 columns for this sample
+                selected_indices.push(4 + i * 2);
+                selected_indices.push(4 + i * 2 + 1);
+
+                if !selected_samples.contains(&sample_name.to_string()) {
+                    selected_samples.push(sample_name.to_string());
+                }
+            }
+        }
+
+        // Check if all dropped samples existed
+        let all_samples: Vec<String> = sample_columns
+            .chunks_exact(2)
+            .map(|pair| clean_sample_name(pair[0]).to_string())
+            .collect();
+        let found_samples: HashSet<_> = all_samples.into_iter().collect();
+        let not_found: Vec<_> = drop_set.difference(&found_samples).collect();
+        if !not_found.is_empty() {
+            eprintln!("WARNING: The following samples to drop were not found in the input file:");
+            for sample in not_found {
+                eprintln!("  - {}", sample);
+            }
+        }
+    }
+
+    (selected_indices, selected_samples)
+}
+
+/// Filter a tab-separated line to keep only selected columns
+fn filter_columns(line: &str, selected_indices: &[usize]) -> String {
+    let fields: Vec<&str> = line.split('\t').collect();
+    selected_indices
+        .iter()
+        .map(|&i| fields.get(i).unwrap_or(&""))
+        .cloned()
+        .collect::<Vec<&str>>()
+        .join("\t")
+}
+
+#[allow(clippy::too_many_arguments)]
 pub fn filter(
     input: PathBuf,
     minlen: Option<u32>,
@@ -200,6 +403,8 @@ pub fn filter(
     bed: Option<PathBuf>,
     call_rate: Option<f64>,
     min_cv: Option<f64>,
+    samples: Option<String>,
+    drop_samples: Option<String>,
 ) {
     // Validate call_rate range
     if let Some(rate) = call_rate
@@ -231,6 +436,22 @@ pub fn filter(
     if call_rate.is_some() && !is_combined {
         eprintln!("WARNING: --call-rate filter is ignored for single-sample files");
     }
+
+    // Validate samples/drop-samples with single-sample files
+    if (samples.is_some() || drop_samples.is_some()) && !is_combined {
+        eprintln!(
+            "ERROR: --samples and --drop-samples filters can only be used with combined files (multi-sample)"
+        );
+        std::process::exit(1);
+    }
+
+    // Parse sample lists if provided
+    let samples_to_keep = samples
+        .as_ref()
+        .map(|s| crate::utils::parse_sample_input(s));
+    let samples_to_drop = drop_samples
+        .as_ref()
+        .map(|s| crate::utils::parse_sample_input(s));
 
     // Verify input file is sorted if bed filter is specified
     if bed.is_some() {
@@ -288,6 +509,7 @@ pub fn filter(
     let mut line_num = 0;
     let progress_interval = (total_lines / 100).max(1000); // Update every 1% or 1000 lines
     let mut header_written = false;
+    let mut selected_columns: Vec<usize> = Vec::new();
 
     for line in reader.lines() {
         let line = line.expect("Failed to read line");
@@ -329,7 +551,23 @@ pub fn filter(
                 eprintln!("ERROR: Invalid STR file header: {}", e);
                 std::process::exit(1);
             }
-            writeln!(writer, "{}", line).expect("Failed to write header");
+
+            // Determine which columns to keep based on sample selection
+            let (cols, filtered_samples) = determine_columns_to_keep(
+                &line,
+                samples_to_keep.as_ref(),
+                samples_to_drop.as_ref(),
+            );
+            selected_columns = cols;
+
+            // Report sample filtering if applicable
+            if samples_to_keep.is_some() || samples_to_drop.is_some() {
+                eprintln!("✓ Selected {} samples for output", filtered_samples.len());
+            }
+
+            // Write filtered header
+            let filtered_header = filter_columns(&line, &selected_columns);
+            writeln!(writer, "{}", filtered_header).expect("Failed to write header");
             header_written = true;
             continue;
         }
@@ -440,7 +678,8 @@ pub fn filter(
 
         // Locus passed all filters
         passed_loci += 1;
-        writeln!(writer, "{}", line).expect("Failed to write output");
+        let filtered_line = filter_columns(&line, &selected_columns);
+        writeln!(writer, "{}", filtered_line).expect("Failed to write output");
     }
 
     eprint!("\r"); // Clear progress line

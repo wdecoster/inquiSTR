@@ -420,6 +420,11 @@ Options:
       --bed <BED>                  BED file to filter by overlap (requires both files to be sorted)
       --call-rate <CALL_RATE>      Minimum call rate (fraction 0.0-1.0) for combined files
       --min-cv <MIN_CV>            Minimum coefficient of variation (only for combined files)
+  -s, --samples <SAMPLES>          Sample(s) to keep: can be a single sample name, comma-separated sample names, 
+                                   or a file path containing sample names (one per line)
+  -d, --drop-samples <DROP_SAMPLES>
+                                   Sample(s) to drop: can be a single sample name, comma-separated sample names, 
+                                   or a file path containing sample names (one per line)
   -h, --help                       Print help
 ```
 

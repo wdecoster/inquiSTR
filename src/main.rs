@@ -294,6 +294,14 @@ enum Commands {
         /// Minimum coefficient of variation (only for combined files)
         #[clap(long, value_parser)]
         min_cv: Option<f64>,
+
+        /// Sample(s) to keep: can be a single sample name, comma-separated sample names, or a file path containing sample names (one per line)
+        #[clap(short = 's', long, value_parser)]
+        samples: Option<String>,
+
+        /// Sample(s) to drop: can be a single sample name, comma-separated sample names, or a file path containing sample names (one per line)
+        #[clap(short = 'd', long, value_parser, conflicts_with = "samples")]
+        drop_samples: Option<String>,
     },
     /// Find outliers from TSV
     Outlier {
@@ -691,8 +699,17 @@ fn main() {
         Commands::Combine { calls, threads } => {
             combine::combine(calls, threads);
         }
-        Commands::Filter { input, minlen, minchange, bed, call_rate, min_cv } => {
-            filter::filter(input, minlen, minchange, bed, call_rate, min_cv);
+        Commands::Filter {
+            input,
+            minlen,
+            minchange,
+            bed,
+            call_rate,
+            min_cv,
+            samples,
+            drop_samples,
+        } => {
+            filter::filter(input, minlen, minchange, bed, call_rate, min_cv, samples, drop_samples);
         }
         Commands::Outlier { combined, minsize, zscore, method, sample, threads, count } => {
             if !combined.exists() {
