@@ -1,0 +1,3 @@
+After making any code changes, run `cargo fmt`, `cargo clippy`, and `cargo test` in the terminal and fix any issues before considering the task complete. When adding new features, also update the documentation (doc comments, README, help strings) to reflect the changes.
+
+When updating documentation (doc comments, README, help strings), keep it user-facing: describe what something does and when to use it, not how it is implemented internally. Do not include implementation details that are irrelevant to end users. Keep examples minimal — at most one concise example per feature, only when it meaningfully aids understanding.
