@@ -71,7 +71,10 @@ impl Genotype {
 }
 
 /// Parse a VCF file and extract STR variants
-fn parse_vcf(vcf_path: &Path) -> Result<(Vec<String>, Vec<VcfVariant>), InquiSTRError> {
+fn parse_vcf(
+    vcf_path: &Path,
+    off_by_one: bool,
+) -> Result<(Vec<String>, Vec<VcfVariant>), InquiSTRError> {
     let reader = crate::utils::reader(&vcf_path.to_string_lossy());
     let mut sample_names: Vec<String> = Vec::new();
     let mut variants: Vec<VcfVariant> = Vec::new();
@@ -159,7 +162,7 @@ fn parse_vcf(vcf_path: &Path) -> Result<(Vec<String>, Vec<VcfVariant>), InquiSTR
 
         variants.push(VcfVariant {
             chromosome,
-            pos: pos - 1, // Convert to 0-based
+            pos: if off_by_one { pos } else { pos - 1 },
             end,
             id,
             ref_len: ref_seq.len(),
@@ -201,7 +204,7 @@ fn parse_genotype(gt: &str) -> (Option<i32>, Option<i32>) {
 }
 
 /// Convert VCF files to inquiSTR format
-pub fn convert_vcf(vcf_files: Vec<PathBuf>) -> Result<(), InquiSTRError> {
+pub fn convert_vcf(vcf_files: Vec<PathBuf>, off_by_one: bool) -> Result<(), InquiSTRError> {
     if vcf_files.is_empty() {
         return Err(InquiSTRError { message: "No VCF files provided".to_string() });
     }
@@ -213,7 +216,7 @@ pub fn convert_vcf(vcf_files: Vec<PathBuf>) -> Result<(), InquiSTRError> {
 
     for vcf_path in &vcf_files {
         eprintln!("Processing VCF file: {}", vcf_path.display());
-        let (sample_names, mut variants) = parse_vcf(vcf_path)?;
+        let (sample_names, mut variants) = parse_vcf(vcf_path, off_by_one)?;
 
         // Handle duplicate sample names by appending a suffix
         for sample in &sample_names {

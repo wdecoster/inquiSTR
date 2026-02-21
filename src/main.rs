@@ -602,6 +602,11 @@ enum Commands {
         /// VCF file(s) to convert (can be compressed). Single sample VCF produces individual_call file, multiple samples or multiple VCFs produce combined_call file.
         #[clap(value_parser, required = true)]
         vcf: Vec<PathBuf>,
+
+        /// Use VCF POS as-is instead of converting to 0-based coordinates.
+        /// Use this if your VCF positions are already 0-based.
+        #[clap(long)]
+        off_by_one: bool,
     },
 }
 
@@ -878,8 +883,8 @@ fn main() {
                 }
             }
         }
-        Commands::Convert { vcf } => {
-            if let Err(e) = convert::convert_vcf(vcf) {
+        Commands::Convert { vcf, off_by_one } => {
+            if let Err(e) = convert::convert_vcf(vcf, off_by_one) {
                 eprintln!("ERROR: {}", e.message);
                 std::process::exit(1);
             }
