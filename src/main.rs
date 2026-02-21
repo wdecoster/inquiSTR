@@ -501,18 +501,14 @@ enum Commands {
     },
     /// Benchmark inquiSTR calls against a truth VCF, BED, or another inquiSTR individual call file
     Benchmark {
-        /// inquiSTR call output file (.inq format)
-        #[clap(value_parser, required = true)]
-        inquistr: PathBuf,
+        /// inquiSTR call output file (.inq format) to benchmark
+        #[clap(long, value_parser, required = true)]
+        test: PathBuf,
 
-        /// VCF file with truth genotypes (can be compressed)
-        #[clap(long, value_parser)]
-        vcf: Option<PathBuf>,
-
-        /// BED file with truth genotypes (can be compressed, 9 columns with last 2 being haplotype lengths).
-        /// Also accepts an inquiSTR individual call file — detected automatically via file metadata.
-        #[clap(long, value_parser)]
-        bed: Option<PathBuf>,
+        /// Truth file: auto-detected as VCF (.vcf/.vcf.gz), inquiSTR call file (via metadata),
+        /// or adotto-style BED file (9 columns, last 2 being haplotype lengths)
+        #[clap(long, value_parser, required = true)]
+        truth: PathBuf,
 
         /// Mode for selecting alleles: MAX (default) or MIN
         #[clap(short, long, value_parser, default_value_t = String::from("MAX"))]
@@ -797,9 +793,8 @@ fn main() {
             }
         }
         Commands::Benchmark {
-            inquistr,
-            vcf,
-            bed,
+            test,
+            truth,
             mode,
             plot,
             max_plot_length,
@@ -816,9 +811,8 @@ fn main() {
             }
 
             benchmark::benchmark(
-                inquistr,
-                vcf,
-                bed,
+                test,
+                truth,
                 mode,
                 plot,
                 max_plot_length,

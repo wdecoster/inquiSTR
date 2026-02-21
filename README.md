@@ -590,57 +590,34 @@ Note that only canonical forms are shown. Rotations like CA, GA, GC, TA, TC, TG 
 
 Benchmark inquiSTR genotyping results (from [`inquiSTR call`](#inquistr-call---str-genotyping)) against truth data. Supported truth formats:
 
-- **VCF** (`--vcf`): standard variant call format, compressed or uncompressed
-- **BED** (`--bed`): 9-column BED file where the last two columns are haplotype lengths
-- **inquiSTR individual call file** (`--bed`): another `.inq` file produced by `inquiSTR call` or `inquiSTR convert` — detected automatically from the file's metadata header
+- **VCF** (`.vcf` or `.vcf.gz`): standard variant call format
+- **inquiSTR call file** (`.inq`): another file produced by `inquiSTR call` or `inquiSTR convert`, detected via metadata
+- **BED**: 9-column adotto-style BED file where the last two columns are haplotype lengths
 
-This command generates correlation plots and statistics to assess genotyping accuracy.
+This command generates correlation statistics and an optional interactive HTML plot.
 
 ```text
-Usage: inquiSTR benchmark [OPTIONS] --plot <PLOT> <INQUISTR>
-
-Arguments:
-  <INQUISTR>  inquiSTR call output file (.inq format)
+Usage: inquiSTR benchmark [OPTIONS] --test <TEST> --truth <TRUTH>
 
 Options:
-      --vcf <VCF>                        VCF file with truth genotypes (can be compressed)
-      --bed <BED>                        BED file with truth genotypes (can be compressed, 9 columns with the last 2 being haplotype lengths).
-                                         Also accepts an inquiSTR individual call file — detected automatically via file metadata.
-  -m, --mode <MODE>                      Mode for selecting alleles: MAX (default) or MIN [default: MAX]
-  -p, --plot <PLOT>                      Output file for correlation plot
-      --max-plot-length <MAX_PLOT_LENGTH> Maximum length to display on plot [default: 5000]
-      --tier1                            Only use Tier1 variants from BED file
-  -d, --diff-out <DIFF_OUT>              Create output file for largest differences
-      --max-locus <MAX_LOCUS>            Maximum locus size in bp to include
-      --nonzero                          Exclude zero-zero pairs from correlation
-      --tolerance <TOLERANCE>            Tolerance in bp for matching calls [default: 5]
-  -h, --help                             Print help
-```
-
-**Examples:**
-
-```bash
-# Compare against truth VCF
-inquiSTR benchmark inquistr_calls.inq --vcf truth.vcf.gz --plot correlation.html
-
-# Compare against truth BED file with Tier1 filtering and create a file with the largest discrepancies
-inquiSTR benchmark calls.inq --bed truth.bed.gz --tier1 --plot results.html --diff-out discrepancies.tsv
-
-# Exclude unchanged alleles and use a custom tolerance
-inquiSTR benchmark calls.inq --vcf truth.vcf.gz --plot corr.html --nonzero --tolerance 10
-
-# Filter by locus size and adjust plot range
-inquiSTR benchmark calls.inq --bed truth.bed --max-locus 5000 --max-plot-length 3000 --plot results.html
-
-# Compare two inquiSTR call files against each other (e.g. two callers or two runs)
-inquiSTR benchmark calls_method_a.inq --bed calls_method_b.inq --plot comparison.html
+      --test <TEST>                       inquiSTR call output file (.inq format) to benchmark
+      --truth <TRUTH>                     Truth file (VCF, BED, or inquiSTR call file — format auto-detected)
+  -m, --mode <MODE>                       Mode for selecting alleles: MAX (default) or MIN [default: MAX]
+  -p, --plot <PLOT>                       Output file for correlation plot (HTML)
+      --max-plot-length <MAX_PLOT_LENGTH>  Maximum allele length to display on plot [default: 5000]
+      --tier1                             Only use Tier1 variants from BED file
+  -d, --diff-out <DIFF_OUT>               Output file listing the largest discrepancies
+      --max-locus <MAX_LOCUS>             Exclude loci larger than this size (bp) from truth data
+      --nonzero                           Exclude zero-zero pairs (loci unchanged in both) from correlation
+      --tolerance <TOLERANCE>             Tolerance in bp for counting calls as matching [default: 5]
+  -h, --help                              Print help
 ```
 
 **Output:**
 
-- Interactive HTML plot showing correlation between truth and called allele lengths
-- Optional TSV file with largest discrepancies (using `--diff-out`)
-- Statistics printed to stderr including R² correlation coefficient
+- Correlation statistics (R², exact match rate, within-tolerance rate) printed to stdout
+- Optional interactive HTML plot (`--plot`)
+- Optional TSV of the largest discrepancies (`--diff-out`)
 
 ### `inquiSTR pca` - Principal Component Analysis
 

@@ -410,8 +410,7 @@ fn pearson_correlation(x: &[f64], y: &[f64]) -> f64 {
 #[allow(clippy::too_many_arguments)]
 pub fn benchmark(
     inquistr_file: PathBuf,
-    vcf_file: Option<PathBuf>,
-    bed_file: Option<PathBuf>,
+    truth_file: PathBuf,
     mode: String,
     plot_file: Option<PathBuf>,
     max_plot_length: f64,
@@ -421,19 +420,6 @@ pub fn benchmark(
     nonzero: bool,
     tolerance: u32,
 ) {
-    // Validate that exactly one truth file is provided
-    match (&vcf_file, &bed_file) {
-        (Some(_), Some(_)) => {
-            eprintln!("Error: Cannot specify both --vcf and --bed options. Choose one.");
-            std::process::exit(1);
-        }
-        (None, None) => {
-            eprintln!("Error: Must specify either --vcf or --bed option for truth data.");
-            std::process::exit(1);
-        }
-        _ => {} // Exactly one is specified, which is correct
-    }
-
     println!("Loading inquiSTR file: {}", inquistr_file.display());
     let inquistr_records = match parse_inquistr_file(&inquistr_file) {
         Ok(records) => records,
@@ -443,40 +429,42 @@ pub fn benchmark(
         }
     };
 
-    let truth_records = if let Some(vcf_path) = vcf_file {
-        println!("Loading VCF file: {}", vcf_path.display());
-        match parse_vcf_file(&vcf_path, max_locus) {
+    // Auto-detect truth file format:
+    //   1. VCF if extension is .vcf or ends with .vcf.gz
+    //   2. inquiSTR individual call file if it carries inquiSTR metadata
+    //   3. Adotto-style BED file otherwise
+    let truth_name = truth_file.to_string_lossy();
+    let is_vcf = truth_name.ends_with(".vcf") || truth_name.ends_with(".vcf.gz");
+
+    let truth_records = if is_vcf {
+        println!("Detected VCF file as truth: {}", truth_file.display());
+        match parse_vcf_file(&truth_file, max_locus) {
             Ok(records) => records,
             Err(e) => {
                 eprintln!("Error parsing VCF file: {}", e);
                 std::process::exit(1);
             }
         }
-    } else if let Some(bed_path) = bed_file {
-        // Auto-detect: if the file carries inquiSTR metadata, treat it as an inquiSTR call file
-        if let Some(file_type) = crate::filetype::read_file_type_metadata(&bed_path)
-            && file_type == crate::filetype::FileType::IndividualCall
-        {
-            println!("Detected inquiSTR individual call file as truth: {}", bed_path.display());
-            match parse_inquistr_as_truth(&bed_path, max_locus) {
-                Ok(records) => records,
-                Err(e) => {
-                    eprintln!("Error parsing inquiSTR truth file: {}", e);
-                    std::process::exit(1);
-                }
-            }
-        } else {
-            println!("Loading BED file: {}", bed_path.display());
-            match parse_bed_file(&bed_path, max_locus) {
-                Ok(records) => records,
-                Err(e) => {
-                    eprintln!("Error parsing BED file: {}", e);
-                    std::process::exit(1);
-                }
+    } else if let Some(file_type) = crate::filetype::read_file_type_metadata(&truth_file)
+        && file_type == crate::filetype::FileType::IndividualCall
+    {
+        println!("Detected inquiSTR individual call file as truth: {}", truth_file.display());
+        match parse_inquistr_as_truth(&truth_file, max_locus) {
+            Ok(records) => records,
+            Err(e) => {
+                eprintln!("Error parsing inquiSTR truth file: {}", e);
+                std::process::exit(1);
             }
         }
     } else {
-        unreachable!("Should have been caught by validation above");
+        println!("Detected BED file as truth: {}", truth_file.display());
+        match parse_bed_file(&truth_file, max_locus) {
+            Ok(records) => records,
+            Err(e) => {
+                eprintln!("Error parsing BED file: {}", e);
+                std::process::exit(1);
+            }
+        }
     };
 
     println!("inquiSTR records loaded: {}", inquistr_records.len());
