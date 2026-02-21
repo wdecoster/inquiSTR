@@ -104,7 +104,7 @@ Commands:
   association  Perform statistical association testing for STRs
   optimize-call Optimize batch_size and thread count for your system and dataset
   unmapped     Count kmer frequencies in unmapped reads
-  benchmark    Benchmark inquiSTR calls against truth VCF or BED files
+  benchmark    Benchmark inquiSTR calls against truth VCF, BED, or another inquiSTR call file
   help         Print this message or the help of the given subcommand(s)
 
 Options:
@@ -588,7 +588,13 @@ Note that only canonical forms are shown. Rotations like CA, GA, GC, TA, TC, TG 
 
 ### `inquiSTR benchmark` - Validate STR Calls
 
-Benchmark inquiSTR genotyping results (from [`inquiSTR call`](#inquistr-call---str-genotyping)) against truth data from a VCF or BED file. Let me know if your file does not work for inquiSTR benchmark. This command generates correlation plots and statistics to assess genotyping accuracy.
+Benchmark inquiSTR genotyping results (from [`inquiSTR call`](#inquistr-call---str-genotyping)) against truth data. Supported truth formats:
+
+- **VCF** (`--vcf`): standard variant call format, compressed or uncompressed
+- **BED** (`--bed`): 9-column BED file where the last two columns are haplotype lengths
+- **inquiSTR individual call file** (`--bed`): another `.inq` file produced by `inquiSTR call` or `inquiSTR convert` — detected automatically from the file's metadata header
+
+This command generates correlation plots and statistics to assess genotyping accuracy.
 
 ```text
 Usage: inquiSTR benchmark [OPTIONS] --plot <PLOT> <INQUISTR>
@@ -598,7 +604,8 @@ Arguments:
 
 Options:
       --vcf <VCF>                        VCF file with truth genotypes (can be compressed)
-      --bed <BED>                        BED file with truth genotypes (can be compressed, 9 columns with the last 2 being haplotype lengths)
+      --bed <BED>                        BED file with truth genotypes (can be compressed, 9 columns with the last 2 being haplotype lengths).
+                                         Also accepts an inquiSTR individual call file — detected automatically via file metadata.
   -m, --mode <MODE>                      Mode for selecting alleles: MAX (default) or MIN [default: MAX]
   -p, --plot <PLOT>                      Output file for correlation plot
       --max-plot-length <MAX_PLOT_LENGTH> Maximum length to display on plot [default: 5000]
@@ -624,6 +631,9 @@ inquiSTR benchmark calls.inq --vcf truth.vcf.gz --plot corr.html --nonzero --tol
 
 # Filter by locus size and adjust plot range
 inquiSTR benchmark calls.inq --bed truth.bed --max-locus 5000 --max-plot-length 3000 --plot results.html
+
+# Compare two inquiSTR call files against each other (e.g. two callers or two runs)
+inquiSTR benchmark calls_method_a.inq --bed calls_method_b.inq --plot comparison.html
 ```
 
 **Output:**

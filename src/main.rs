@@ -499,7 +499,7 @@ enum Commands {
         #[clap(long, value_parser, default_value_t = false)]
         combine_revcomp: bool,
     },
-    /// Benchmark inquiSTR calls against a truth VCF or BED file
+    /// Benchmark inquiSTR calls against a truth VCF, BED, or another inquiSTR individual call file
     Benchmark {
         /// inquiSTR call output file (.inq format)
         #[clap(value_parser, required = true)]
@@ -509,7 +509,8 @@ enum Commands {
         #[clap(long, value_parser)]
         vcf: Option<PathBuf>,
 
-        /// BED file with truth genotypes (can be compressed, 9 columns with last 2 being haplotype lengths)
+        /// BED file with truth genotypes (can be compressed, 9 columns with last 2 being haplotype lengths).
+        /// Also accepts an inquiSTR individual call file — detected automatically via file metadata.
         #[clap(long, value_parser)]
         bed: Option<PathBuf>,
 

@@ -186,6 +186,86 @@ fn parse_inquistr_file(
     Ok(records)
 }
 
+/// Parse another inquiSTR individual call file as truth data.
+/// Caller is responsible for verifying the file type via metadata before calling this function.
+fn parse_inquistr_as_truth(
+    file_path: &Path,
+    max_locus: Option<u32>,
+) -> Result<HashMap<String, TruthRecord>, Box<dyn std::error::Error>> {
+    let file_reader = crate::utils::reader(&file_path.to_string_lossy());
+    let mut lines = file_reader.lines();
+    let mut records = HashMap::new();
+    let mut filtered_count = 0;
+
+    // Skip metadata lines and read header
+    let header_line = crate::utils::skip_metadata_lines(&mut lines);
+
+    let header_fields: Vec<&str> = header_line.split('\t').collect();
+    match crate::filetype::validate_str_header(&header_fields) {
+        Ok(n_samples) => {
+            if n_samples != 1 {
+                return Err(format!(
+                    "Error: Expected individual call file with 1 sample as truth, but found {} samples.",
+                    n_samples
+                )
+                .into());
+            }
+        }
+        Err(e) => {
+            return Err(format!("Error: Invalid inquiSTR truth file header: {}", e).into());
+        }
+    }
+
+    for line_result in lines {
+        let line = line_result?;
+        let fields: Vec<&str> = line.split('\t').collect();
+        if fields.len() != 6 {
+            return Err(format!(
+                "Malformed line in inquiSTR truth file (expected 6 fields, got {}): {}",
+                fields.len(),
+                line
+            )
+            .into());
+        }
+
+        let chromosome = fields[0].to_string();
+        let begin: u32 = fields[1].parse()?;
+        let end: u32 = fields[2].parse()?;
+
+        // Filter by locus size if requested
+        if let Some(max_size) = max_locus
+            && end - begin > max_size
+        {
+            filtered_count += 1;
+            continue;
+        }
+
+        let h1 = fields[4].parse::<f64>().unwrap_or(f64::NAN);
+        let h2 = fields[5].parse::<f64>().unwrap_or(f64::NAN);
+
+        let record = TruthRecord {
+            chromosome: chromosome.clone(),
+            pos: begin,
+            h1,
+            h2,
+            tier: "Tier1".to_string(),
+        };
+        let key = format!("{}:{}", chromosome, begin);
+        records.insert(key, record);
+    }
+
+    if filtered_count > 0 {
+        println!(
+            "inquiSTR truth file: Filtered out {} intervals larger than {} bp (max-locus limit)",
+            filtered_count,
+            max_locus.unwrap()
+        );
+    }
+    println!("inquiSTR truth file processed: {} records loaded", records.len());
+
+    Ok(records)
+}
+
 /// Parse VCF file (supports compressed files)
 fn parse_vcf_file(
     file_path: &Path,
@@ -373,12 +453,26 @@ pub fn benchmark(
             }
         }
     } else if let Some(bed_path) = bed_file {
-        println!("Loading BED file: {}", bed_path.display());
-        match parse_bed_file(&bed_path, max_locus) {
-            Ok(records) => records,
-            Err(e) => {
-                eprintln!("Error parsing BED file: {}", e);
-                std::process::exit(1);
+        // Auto-detect: if the file carries inquiSTR metadata, treat it as an inquiSTR call file
+        if let Some(file_type) = crate::filetype::read_file_type_metadata(&bed_path)
+            && file_type == crate::filetype::FileType::IndividualCall
+        {
+            println!("Detected inquiSTR individual call file as truth: {}", bed_path.display());
+            match parse_inquistr_as_truth(&bed_path, max_locus) {
+                Ok(records) => records,
+                Err(e) => {
+                    eprintln!("Error parsing inquiSTR truth file: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        } else {
+            println!("Loading BED file: {}", bed_path.display());
+            match parse_bed_file(&bed_path, max_locus) {
+                Ok(records) => records,
+                Err(e) => {
+                    eprintln!("Error parsing BED file: {}", e);
+                    std::process::exit(1);
+                }
             }
         }
     } else {
