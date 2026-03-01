@@ -38,7 +38,7 @@ indicatif = { version = "0.18.4", features = ["rayon"] }
 itertools = "0.14.0"
 plotly = "0.14.1"
 num_cpus = "1.16"
-tempfile = "3.25.0"
+tempfile = "3.26.0"
 rand = "0.10.0"
 ndarray = "0.17.2"
 dbscan = "0.3.1"
