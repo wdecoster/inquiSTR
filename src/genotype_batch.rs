@@ -122,13 +122,17 @@ fn from_record_with_target(
     record: &rust_htslib::bam::Record,
     minlen: u32,
     target_interval: &(u32, u32), // (start, end)
+    no_extend: bool,
 ) -> Call {
     // Pre-compute STR calls for all overlapping targets
     let &(target_start, target_end) = target_interval;
 
-    // Calculate STR call using the original coordinates + analysis padding
-    let analysis_start = target_start.saturating_sub(10);
-    let analysis_end = target_end + 10;
+    // Calculate STR call using the original coordinates, optionally with 10bp analysis padding
+    let (analysis_start, analysis_end) = if no_extend {
+        (target_start, target_end)
+    } else {
+        (target_start.saturating_sub(10), target_end + 10)
+    };
     calculate_str_call_for_region(record, minlen, analysis_start, analysis_end)
 }
 
@@ -446,6 +450,7 @@ pub fn process_batch_with_reader(
                             &record,
                             genotype.minlen,
                             &(repeat.start, repeat.end),
+                            genotype.no_extend,
                         );
 
                         calls_map
@@ -565,6 +570,7 @@ pub fn process_batch_with_dedicated_reader(
                             &record,
                             genotype.minlen,
                             &(repeat.start, repeat.end),
+                            genotype.no_extend,
                         );
 
                         calls_map

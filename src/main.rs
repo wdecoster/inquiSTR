@@ -128,6 +128,10 @@ struct BatchStrArgs {
     #[clap(long, value_parser)]
     require_spanning: bool,
 
+    /// Disable the 10bp padding added around each target interval; use when targets are already padded
+    #[clap(long, value_parser)]
+    noextend: bool,
+
     /// Maximum locus size to consider (intervals larger than this will be filtered out)
     #[clap(long, value_parser)]
     max_locus: Option<u32>,
@@ -229,6 +233,10 @@ enum Commands {
         /// Only output genotypes supported by spanning reads; loci where genotyping relies on soft-clipped reads will be reported as missing
         #[clap(long, value_parser)]
         require_spanning: bool,
+
+        /// Disable the 10bp padding added around each target interval; use when targets are already padded
+        #[clap(long, value_parser)]
+        noextend: bool,
 
         /// sample name to use in output
         #[clap(long, value_parser)]
@@ -633,6 +641,7 @@ fn main() {
             threads,
             unphased,
             require_spanning,
+            noextend,
             sample_name,
             reference,
             max_locus,
@@ -642,7 +651,13 @@ fn main() {
             if let Err(e) = call::genotype_repeats(
                 bam,
                 repeats::TargetConfig { region, region_file, preset, max_locus },
-                call::GenotypeConfig { minlen, support, unphased, require_spanning },
+                call::GenotypeConfig {
+                    minlen,
+                    support,
+                    unphased,
+                    require_spanning,
+                    no_extend: noextend,
+                },
                 call::ProcessingConfig { threads, batch_size_kb: batch_size, output_vcf: vcf },
                 sample_name,
                 reference,
@@ -697,6 +712,7 @@ fn main() {
                         support: str_args.support,
                         unphased: str_args.unphased,
                         require_spanning: str_args.require_spanning,
+                        no_extend: str_args.noextend,
                     },
                     processing_config: call::ProcessingConfig {
                         threads: common.threads,
