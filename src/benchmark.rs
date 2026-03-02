@@ -685,7 +685,7 @@ pub fn benchmark(
                 // Write header
                 if writeln!(
                     writer,
-                    "chromosome\tbegin\tend\tinquistr_genotype\ttruth_genotype\tabsolute_difference"
+                    "chromosome\tbegin\tend\ttest_genotype\ttruth_genotype\tabsolute_difference"
                 )
                 .is_err()
                 {

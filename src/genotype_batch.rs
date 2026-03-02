@@ -66,16 +66,18 @@ impl Call {
 /// 1. If fewer than `support` calls, return NaN (insufficient data)
 /// 2. Separate calls into spanning and clipped groups
 /// 3. If ≥ `support` spanning reads exist, use only those for median
-/// 4. Otherwise, use all spanning reads + largest soft-clips to reach `support` threshold
-/// 5. Return median of the selected reads
+/// 4. If `require_spanning` is set and spanning reads < `support`, return NaN
+/// 5. Otherwise, use all spanning reads + largest soft-clips to reach `support` threshold
+/// 6. Return median of the selected reads
 ///
 /// # Arguments
 /// * `array` - Array of STR calls (sorted or unsorted)
 /// * `support` - Minimum number of reads required
+/// * `require_spanning` - If true, return NaN when fewer than `support` spanning reads are available
 ///
 /// # Returns
 /// Median STR length difference from reference, or NaN if insufficient support
-pub fn median_str_length(array: &[&Call], support: usize) -> f64 {
+pub fn median_str_length(array: &[&Call], support: usize, require_spanning: bool) -> f64 {
     if array.len() < support {
         return f64::NAN;
     }
@@ -95,6 +97,8 @@ pub fn median_str_length(array: &[&Call], support: usize) -> f64 {
     // Use spanning reads if we have enough, otherwise supplement with largest clips
     let mut values = if spanning.len() >= support {
         spanning
+    } else if require_spanning {
+        return f64::NAN;
     } else {
         // Sort clipped from large to small to get the largest clips
         clipped.sort_unstable_by(|a, b| b.cmp(a));
@@ -269,8 +273,16 @@ fn process_target_from_read_info(
             Genotype {
                 repeat: repeat.clone(),
                 // TODO: code below looks awful
-                phase1: median_str_length(&hap1.iter().collect::<Vec<_>>(), genotype.support),
-                phase2: median_str_length(&hap2.iter().collect::<Vec<_>>(), genotype.support),
+                phase1: median_str_length(
+                    &hap1.iter().collect::<Vec<_>>(),
+                    genotype.support,
+                    genotype.require_spanning,
+                ),
+                phase2: median_str_length(
+                    &hap2.iter().collect::<Vec<_>>(),
+                    genotype.support,
+                    genotype.require_spanning,
+                ),
             },
             false,
         )) // unphased mode never has HP tags
@@ -313,8 +325,16 @@ fn process_target_from_read_info(
             Ok((
                 Genotype {
                     repeat: repeat.clone(),
-                    phase1: median_str_length(&phase1_calls, genotype.support),
-                    phase2: median_str_length(&phase2_calls, genotype.support),
+                    phase1: median_str_length(
+                        &phase1_calls,
+                        genotype.support,
+                        genotype.require_spanning,
+                    ),
+                    phase2: median_str_length(
+                        &phase2_calls,
+                        genotype.support,
+                        genotype.require_spanning,
+                    ),
                 },
                 found_hp_tags,
             ))
@@ -336,8 +356,16 @@ fn process_target_from_read_info(
                 Ok((
                     Genotype {
                         repeat: repeat.clone(),
-                        phase1: median_str_length(hap1, genotype.support),
-                        phase2: median_str_length(hap2, genotype.support),
+                        phase1: median_str_length(
+                            hap1,
+                            genotype.support,
+                            genotype.require_spanning,
+                        ),
+                        phase2: median_str_length(
+                            hap2,
+                            genotype.support,
+                            genotype.require_spanning,
+                        ),
                     },
                     found_hp_tags,
                 ))

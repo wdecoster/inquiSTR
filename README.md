@@ -130,6 +130,7 @@ Options:
   -s, --support <SUPPORT>          minimal number of supporting reads [default: 3]
   -t, --threads <THREADS>          Number of parallel threads to use [default: 1]
   -u, --unphased                   If reads have to be considered unphased
+      --require-spanning           Only report genotypes supported by spanning reads; loci covered only by soft-clipped reads are reported as missing
       --sample-name <SAMPLE_NAME>  sample name to use in output
       --reference <REFERENCE>      reference fasta for cram decoding
       --max-locus <MAX_LOCUS>      maximum locus size to consider (intervals larger than this will be filtered out)
@@ -230,6 +231,7 @@ STR Genotyping Mode Options (default mode, without --unmapped):
   -m, --minlen <MINLEN>                  Minimal length of insertion/deletion operation [default: 5]
   -s, --support <SUPPORT>                Minimal number of supporting reads [default: 3]
   -u, --unphased                         If reads have to be considered unphased
+      --require-spanning                 Only report genotypes supported by spanning reads; loci covered only by soft-clipped reads are reported as missing
       --max-locus <MAX_LOCUS>            Maximum locus size to consider
       --batch-size <BATCH_SIZE>          Batch size in KB for grouping nearby STR targets [default: 50]
 

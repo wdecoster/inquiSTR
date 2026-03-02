@@ -292,7 +292,12 @@ fn run_single_benchmark(
             preset: None,
             max_locus: None,
         },
-        crate::call::GenotypeConfig { minlen: 1, support: 3, unphased: false },
+        crate::call::GenotypeConfig {
+            minlen: 1,
+            support: 3,
+            unphased: false,
+            require_spanning: false,
+        },
         crate::call::ProcessingConfig { threads, batch_size_kb: batch_size, output_vcf: false },
         None, // sample_name
         reference.clone(),
