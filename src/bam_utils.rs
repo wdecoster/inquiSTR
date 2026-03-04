@@ -177,6 +177,33 @@ pub fn cleanup_index_files(bam_path: &str) {
     }
 }
 
+/// One-time setup for remote file access: SSL certificates, CRAM reference caching,
+/// and libcurl global initialization.
+///
+/// Must be called from the main thread before spawning any parallel workers.
+/// Without this, all worker threads race to call `curl_global_init` simultaneously,
+/// causing `CURLE_FAILED_INIT` (error 2) or SSL CA errors (error 77) on some threads.
+///
+/// Note: when CRAM files are used with `--reference`, htslib reads chromosome lengths
+/// from the FAI file and never opens the remote file during preloading, so libcurl
+/// would otherwise remain uninitialized until workers start.
+pub fn setup_remote_access(bam_path: &str, reference: &Option<String>) {
+    setup_reference_caching(bam_path);
+    let is_remote = bam_path.starts_with("http://")
+        || bam_path.starts_with("https://")
+        || bam_path.starts_with("ftp://")
+        || bam_path.starts_with("s3://");
+    if is_remote {
+        setup_ssl_certificates();
+        // Open and immediately drop the remote file to force libcurl's global
+        // initialization (curl_global_init) on this thread. libcurl's init is not
+        // thread-safe; if workers are the first to call it they race and some fail.
+        // Ignore any error here — the goal is initialization, not a successful open.
+        let bam_path_owned = bam_path.to_owned();
+        let _ = get_bam_reader(&bam_path_owned, reference);
+    }
+}
+
 /// Sets up the CURL_CA_BUNDLE environment variable for HTTPS/S3 access
 /// Tries to use a CA bundle from standard locations, with appropriate fallbacks
 fn setup_ssl_certificates() {

@@ -462,13 +462,22 @@ pub fn process_batch_with_reader(
             }
             Err(e) => {
                 let error_str = e.to_string();
-                if error_str.contains("CRC32 failure") || error_str.contains("truncated record") {
+                if error_str.contains("CRC32 failure") {
                     error!(
-                        "CRAM format error in batch {}: {}. This usually indicates that the reference genome doesn't match the CRAM file or CRAM index is corrupted.",
+                        "CRAM decoding error (CRC32 mismatch) in batch {}: {}. The reference genome likely doesn't match the CRAM file.",
                         batch.chromosome, error_str
                     );
                     return Err(InquiSTRError::new(format!(
-                        "CRAM format error in batch {}: {}. This usually indicates that the reference genome doesn't match the CRAM file or CRAM index is corrupted.",
+                        "CRAM decoding error (CRC32 mismatch) in batch {}: {}. The reference genome likely doesn't match the CRAM file.",
+                        batch.chromosome, error_str
+                    )));
+                } else if error_str.contains("truncated record") {
+                    error!(
+                        "Truncated read in batch {}: {}. This is usually a transient network interruption for remote files.",
+                        batch.chromosome, error_str
+                    );
+                    return Err(InquiSTRError::new(format!(
+                        "truncated record in batch {}: {}",
                         batch.chromosome, error_str
                     )));
                 } else {
@@ -582,13 +591,22 @@ pub fn process_batch_with_dedicated_reader(
             }
             Err(e) => {
                 let error_str = e.to_string();
-                if error_str.contains("CRC32 failure") || error_str.contains("truncated record") {
+                if error_str.contains("CRC32 failure") {
                     error!(
-                        "CRAM format error in batch {}: {}. This usually indicates that the reference genome doesn't match the CRAM file or CRAM index is corrupted.",
+                        "CRAM decoding error (CRC32 mismatch) in batch {}: {}. The reference genome likely doesn't match the CRAM file.",
                         batch.chromosome, error_str
                     );
                     return Err(InquiSTRError::new(format!(
-                        "CRAM format error in batch {}: {}. This usually indicates that the reference genome doesn't match the CRAM file or CRAM index is corrupted.",
+                        "CRAM decoding error (CRC32 mismatch) in batch {}: {}. The reference genome likely doesn't match the CRAM file.",
+                        batch.chromosome, error_str
+                    )));
+                } else if error_str.contains("truncated record") {
+                    error!(
+                        "Truncated read in batch {}: {}. This is usually a transient network interruption for remote files.",
+                        batch.chromosome, error_str
+                    );
+                    return Err(InquiSTRError::new(format!(
+                        "truncated record in batch {}: {}",
                         batch.chromosome, error_str
                     )));
                 } else {

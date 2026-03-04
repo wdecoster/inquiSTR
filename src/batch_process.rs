@@ -180,6 +180,55 @@ fn validate_file_path(path: &str) -> Result<(), String> {
     }
 }
 
+/// Returns true if the error string looks like a transient network/IO failure
+/// that may succeed on retry, as opposed to a permanent format error.
+fn is_transient_error(e: &str) -> bool {
+    (e.contains("truncated record") || e.contains("Failed to read BGZF") || e.contains("bgzf_read"))
+        && !e.contains("CRC32")
+}
+
+const MAX_RETRIES: usize = 3;
+
+/// Wrapper around process_sample that retries on transient network errors.
+/// Uses exponential backoff (1s, 2s, 4s) between retries.
+fn process_sample_with_retry(
+    sample: &SampleInfo,
+    batches: &[crate::batching::Batch],
+    chrom_mapper: &crate::repeats::ChromosomeMapper,
+    genotype_config: &GenotypeConfig,
+    processing_config: &ProcessingConfig,
+    reference: &Option<String>,
+    output_path: &Path,
+) -> Result<(), String> {
+    let mut last_err = String::new();
+    for attempt in 0..=MAX_RETRIES {
+        if attempt > 0 {
+            let wait_secs = 1u64 << (attempt - 1); // 1s, 2s, 4s
+            eprintln!(
+                "  Retrying sample '{}' (attempt {}/{}) after {}s delay (transient network error)...",
+                sample.sample_name, attempt, MAX_RETRIES, wait_secs
+            );
+            std::thread::sleep(std::time::Duration::from_secs(wait_secs));
+        }
+        match process_sample(
+            sample,
+            batches,
+            chrom_mapper,
+            genotype_config,
+            processing_config,
+            reference,
+            output_path,
+        ) {
+            Ok(()) => return Ok(()),
+            Err(e) if is_transient_error(&e) && attempt < MAX_RETRIES => {
+                last_err = e;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Err(last_err)
+}
+
 /// Process a single sample for STR genotyping and write to output file
 /// Writes directly to file to avoid stdout redirection conflicts in parallel execution
 fn process_sample(
@@ -770,6 +819,13 @@ pub fn batch_process(config: BatchConfig, mode: BatchMode) {
         }
     };
 
+    // Set up SSL certificates and CRAM reference caching once on the main thread,
+    // before any parallel workers start. Doing this inside parallel workers risks a
+    // race on env::set_var that can produce libcurl SSL error 77.
+    if let Some(first_sample) = samples.first() {
+        crate::bam_utils::setup_remote_access(&first_sample.bam_path, &config.reference);
+    }
+
     // Preload target regions and batches once to avoid re-parsing the BED file for every sample
     let preloaded_str_data: Option<
         Arc<(Vec<crate::batching::Batch>, crate::repeats::ChromosomeMapper)>,
@@ -906,7 +962,7 @@ pub fn batch_process(config: BatchConfig, mode: BatchMode) {
                 BatchMode::StrGenotyping { genotype_config, processing_config, .. } => {
                     let preloaded = preloaded_str_data.as_ref().unwrap();
                     let (batches, chrom_mapper) = (&preloaded.0, &preloaded.1);
-                    process_sample(
+                    process_sample_with_retry(
                         sample,
                         batches,
                         chrom_mapper,
@@ -1010,7 +1066,7 @@ pub fn batch_process(config: BatchConfig, mode: BatchMode) {
                         } => {
                             let preloaded = preloaded_str_data.as_ref().unwrap();
                             let (batches, chrom_mapper) = (&preloaded.0, &preloaded.1);
-                            process_sample(
+                            process_sample_with_retry(
                                 sample,
                                 batches,
                                 chrom_mapper,
