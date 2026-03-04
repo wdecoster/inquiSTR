@@ -184,7 +184,8 @@ fn validate_file_path(path: &str) -> Result<(), String> {
 /// Writes directly to file to avoid stdout redirection conflicts in parallel execution
 fn process_sample(
     sample: &SampleInfo,
-    target_config: &TargetConfig,
+    batches: &[crate::batching::Batch],
+    chrom_mapper: &crate::repeats::ChromosomeMapper,
     genotype_config: &GenotypeConfig,
     processing_config: &ProcessingConfig,
     reference: &Option<String>,
@@ -195,14 +196,6 @@ fn process_sample(
 
     // Catch panics and convert to errors using helper
     catch_sample_panic(|| {
-        // Get all genotypes
-        let (all_repeats, chrom_mapper) = target_config.get_targets(&sample.bam_path, reference)?;
-        let batches = crate::batching::create_batches(
-            all_repeats,
-            processing_config.batch_size_kb * 1000,
-            &chrom_mapper,
-        );
-
         // CRITICAL FIX: Create a SINGLE BAM reader and reuse it for all batches
         // This prevents file descriptor exhaustion with CRAM files
         let mut bam = if !genotype_config.unphased && !batches.is_empty() {
@@ -260,12 +253,13 @@ fn process_sample(
                         .collect()
                 })
             } else {
-                // Sequential processing: Reuse the single BAM reader for all batches
-                // This dramatically reduces file descriptor usage
+                // Sequential processing: reuse the single BAM reader for all batches.
+                // Use the dedicated-reader variant which skips the global mutex —
+                // safe because this reader is never shared with another thread.
                 batches
                     .iter()
                     .map(|batch| {
-                        crate::genotype_batch::process_batch_with_reader(
+                        crate::genotype_batch::process_batch_with_dedicated_reader(
                             batch,
                             &mut bam,
                             genotype_config,
@@ -308,7 +302,7 @@ fn process_sample(
 
         // Write genotypes
         for genotype in &all_genotypes {
-            writeln!(writer, "{}", genotype.format_output(&chrom_mapper)).unwrap();
+            writeln!(writer, "{}", genotype.format_output(chrom_mapper)).unwrap();
         }
 
         // Ensure all data is flushed to disk
@@ -574,12 +568,14 @@ pub fn batch_process(config: BatchConfig, mode: BatchMode) {
     // Validate all file paths (especially URLs) before starting processing
     if !config.skip_validation {
         eprintln!("Validating file paths...");
-        let mut invalid_paths = Vec::new();
-        for sample in &samples {
-            if let Err(e) = validate_file_path(&sample.bam_path) {
-                invalid_paths.push((sample.sample_name.clone(), sample.bam_path.clone(), e));
-            }
-        }
+        let invalid_paths: Vec<_> = samples
+            .par_iter()
+            .filter_map(|sample| {
+                validate_file_path(&sample.bam_path)
+                    .err()
+                    .map(|e| (sample.sample_name.clone(), sample.bam_path.clone(), e))
+            })
+            .collect();
         if !invalid_paths.is_empty() {
             eprintln!("ERROR: {} invalid file path(s) found:", invalid_paths.len());
             for (sample_name, path, error) in &invalid_paths {
@@ -774,6 +770,36 @@ pub fn batch_process(config: BatchConfig, mode: BatchMode) {
         }
     };
 
+    // Preload target regions and batches once to avoid re-parsing the BED file for every sample
+    let preloaded_str_data: Option<
+        Arc<(Vec<crate::batching::Batch>, crate::repeats::ChromosomeMapper)>,
+    > = if let BatchMode::StrGenotyping { ref target_config, ref processing_config, .. } =
+        adjusted_mode
+    {
+        if let Some(first_sample) = samples.first() {
+            eprintln!("Preloading target regions (shared across all {} samples)...", samples.len());
+            match target_config.get_targets(&first_sample.bam_path, &config.reference) {
+                Ok((all_repeats, chrom_mapper)) => {
+                    let batches = crate::batching::create_batches(
+                        all_repeats,
+                        processing_config.batch_size_kb * 1000,
+                        &chrom_mapper,
+                    );
+                    eprintln!("  Loaded {} batches", batches.len());
+                    Some(Arc::new((batches, chrom_mapper)))
+                }
+                Err(e) => {
+                    eprintln!("ERROR: Failed to preload target regions: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
     // Create progress tracking
     let individual_files = Arc::new(Mutex::new(Vec::new()));
     let failed_samples = Arc::new(Mutex::new(Vec::new()));
@@ -877,10 +903,13 @@ pub fn batch_process(config: BatchConfig, mode: BatchMode) {
                         &individual_file,
                     )
                 }
-                BatchMode::StrGenotyping { target_config, genotype_config, processing_config } => {
+                BatchMode::StrGenotyping { genotype_config, processing_config, .. } => {
+                    let preloaded = preloaded_str_data.as_ref().unwrap();
+                    let (batches, chrom_mapper) = (&preloaded.0, &preloaded.1);
                     process_sample(
                         sample,
-                        target_config,
+                        batches,
+                        chrom_mapper,
                         genotype_config,
                         processing_config,
                         &config.reference,
@@ -975,17 +1004,22 @@ pub fn batch_process(config: BatchConfig, mode: BatchMode) {
                             )
                         }
                         BatchMode::StrGenotyping {
-                            target_config,
                             genotype_config,
                             processing_config,
-                        } => process_sample(
-                            sample,
-                            target_config,
-                            genotype_config,
-                            processing_config,
-                            &config.reference,
-                            &individual_file,
-                        ),
+                            ..
+                        } => {
+                            let preloaded = preloaded_str_data.as_ref().unwrap();
+                            let (batches, chrom_mapper) = (&preloaded.0, &preloaded.1);
+                            process_sample(
+                                sample,
+                                batches,
+                                chrom_mapper,
+                                genotype_config,
+                                processing_config,
+                                &config.reference,
+                                &individual_file,
+                            )
+                        }
                     };
 
                     match result {
