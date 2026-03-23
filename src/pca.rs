@@ -1102,126 +1102,65 @@ fn perform_proper_pca(
 
     let n_components = n_components.min(n_samples.min(n_features));
 
-    // Step 1: Center the data (subtract mean for each feature)
+    // Step 1: Standardize the data (center and scale each feature to unit variance)
+    // This ensures all features contribute equally regardless of their absolute scale,
+    // which is critical for STR data where allele lengths vary enormously between loci.
     let mean = data.mean_axis(Axis(0)).unwrap();
     let centered_data = data - &mean.insert_axis(Axis(0));
+    let std_dev = centered_data.map_axis(Axis(0), |col| {
+        let variance = col.iter().map(|x| x * x).sum::<f64>() / (n_samples as f64 - 1.0);
+        variance.sqrt()
+    });
+    // Avoid division by zero for constant features
+    let std_dev = std_dev.mapv(|s| if s == 0.0 { 1.0 } else { s });
+    let standardized_data = &centered_data / &std_dev.insert_axis(Axis(0));
 
-    // Step 2: Compute covariance matrix
-    // Cov = (X^T * X) / (n - 1)
-    println!("Computing covariance matrix ({} x {} features)...", n_features, n_features);
-    let covariance = centered_data.t().dot(&centered_data) / ((n_samples - 1) as f64);
+    // Step 2: Compute correlation matrix (covariance of standardized data)
+    println!("Computing correlation matrix ({} x {} features)...", n_features, n_features);
+    let covariance = standardized_data.t().dot(&standardized_data) / ((n_samples - 1) as f64);
 
-    // Step 3: Eigenvalue decomposition using power iteration for efficiency
-    // For large matrices, we'll use a simplified approach focusing on top components
-    let (eigenvalues, eigenvectors) = compute_top_eigenvectors(&covariance, n_components);
+    // Total variance = trace of the covariance matrix (sum of ALL eigenvalues)
+    let total_variance = covariance.diag().sum();
+
+    // Step 3: Eigenvalue decomposition using nalgebra's SymmetricEigen
+    let n = covariance.nrows();
+    let nalgebra_matrix = nalgebra::DMatrix::from_iterator(n, n, covariance.iter().copied());
+    let eigen = nalgebra::SymmetricEigen::new(nalgebra_matrix);
+
+    // Sort eigenvalues/eigenvectors by descending eigenvalue
+    let mut eigen_pairs: Vec<(f64, Vec<f64>)> = eigen
+        .eigenvalues
+        .iter()
+        .enumerate()
+        .map(|(i, &val)| {
+            let vec: Vec<f64> = eigen.eigenvectors.column(i).iter().copied().collect();
+            (val, vec)
+        })
+        .collect();
+    eigen_pairs.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+
+    let eigenvalues = Array1::from_vec(
+        eigen_pairs
+            .iter()
+            .take(n_components)
+            .map(|(v, _)| *v)
+            .collect(),
+    );
+    let mut eigenvectors = Array2::zeros((n, n_components));
+    for (i, (_, vec)) in eigen_pairs.iter().take(n_components).enumerate() {
+        for (j, &val) in vec.iter().enumerate() {
+            eigenvectors[[j, i]] = val;
+        }
+    }
 
     // Step 4: Project data onto principal components
-    // PC_scores = X_centered * eigenvectors
-    let pca_data = centered_data.dot(&eigenvectors);
+    // PC_scores = X_standardized * eigenvectors
+    let pca_data = standardized_data.dot(&eigenvectors);
 
-    // Step 5: Calculate explained variance ratios
-    let total_variance = eigenvalues.sum();
+    // Step 5: Calculate explained variance ratios using total variance from trace
     let explained_variance = eigenvalues.mapv(|x| (x / total_variance) * 100.0);
 
     (pca_data, explained_variance, eigenvectors)
-}
-
-/// Compute top k eigenvectors using power iteration method
-/// This is more efficient than full eigendecomposition for large matrices when we only need top components
-fn compute_top_eigenvectors(matrix: &Array2<f64>, k: usize) -> (Array1<f64>, Array2<f64>) {
-    let n = matrix.nrows();
-    let k = k.min(n);
-
-    let mut eigenvalues = Array1::zeros(k);
-    let mut eigenvectors = Array2::zeros((n, k));
-
-    // For small matrices, use a simplified approach
-    if n <= 1000 {
-        // Use nalgebra for proper eigendecomposition if available, otherwise simplified approach
-        return simplified_eigen_decomposition(matrix, k);
-    }
-
-    // Power iteration for large matrices
-    let mut remaining_matrix = matrix.clone();
-
-    for i in 0..k {
-        let (eigenval, eigenvec) = power_iteration(&remaining_matrix, 100, 1e-6);
-
-        eigenvalues[i] = eigenval;
-        eigenvectors.column_mut(i).assign(&eigenvec);
-
-        // Deflate matrix: remove the found eigenvector's contribution
-        let eigenvec_col = eigenvec.clone().insert_axis(Axis(1));
-        let eigenvec_row = eigenvec.insert_axis(Axis(0));
-        let outer_product = eigenvec_col.dot(&eigenvec_row);
-        remaining_matrix = &remaining_matrix - &(outer_product * eigenval);
-    }
-
-    (eigenvalues, eigenvectors)
-}
-
-/// Simplified eigendecomposition for smaller matrices
-fn simplified_eigen_decomposition(matrix: &Array2<f64>, k: usize) -> (Array1<f64>, Array2<f64>) {
-    let n = matrix.nrows();
-    let k = k.min(n);
-
-    // For demonstration, use power iteration even for small matrices
-    // In production, you'd want to use a proper linear algebra library
-    let mut eigenvalues = Array1::zeros(k);
-    let mut eigenvectors = Array2::zeros((n, k));
-
-    let mut working_matrix = matrix.clone();
-
-    for i in 0..k {
-        let (eigenval, eigenvec) = power_iteration(&working_matrix, 50, 1e-8);
-        eigenvalues[i] = eigenval;
-        eigenvectors.column_mut(i).assign(&eigenvec);
-
-        // Deflation: remove this component
-        let eigenvec_col = eigenvec.clone().insert_axis(Axis(1));
-        let eigenvec_row = eigenvec.insert_axis(Axis(0));
-        let rank_one = eigenvec_col.dot(&eigenvec_row) * eigenval;
-        working_matrix = &working_matrix - &rank_one;
-    }
-
-    (eigenvalues, eigenvectors)
-}
-
-/// Power iteration algorithm to find dominant eigenvector
-fn power_iteration(
-    matrix: &Array2<f64>,
-    max_iterations: usize,
-    tolerance: f64,
-) -> (f64, Array1<f64>) {
-    let n = matrix.nrows();
-
-    // Initialize with random vector
-    let mut vector = Array1::from_elem(n, 1.0 / (n as f64).sqrt());
-    let mut eigenvalue = 0.0;
-
-    for _iteration in 0..max_iterations {
-        // v_new = A * v
-        let new_vector = matrix.dot(&vector);
-
-        // Calculate eigenvalue (Rayleigh quotient)
-        let new_eigenvalue = vector.dot(&new_vector);
-
-        // Normalize vector
-        let norm = new_vector.iter().map(|x| x * x).sum::<f64>().sqrt();
-        if norm > 0.0 {
-            vector = new_vector / norm;
-        }
-
-        // Check convergence
-        if (new_eigenvalue - eigenvalue).abs() < tolerance {
-            eigenvalue = new_eigenvalue;
-            break;
-        }
-
-        eigenvalue = new_eigenvalue;
-    }
-
-    (eigenvalue, vector)
 }
 
 /// Write PC scores to a tab-separated file for use as covariates
