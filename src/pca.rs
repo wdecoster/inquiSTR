@@ -35,7 +35,19 @@ use plotly::{Plot, Scatter};
 use rayon::prelude::*;
 use std::io::BufRead;
 use std::path::PathBuf;
-// Removed unused imports for cleaner streaming implementation
+
+/// Parse a numeric field, treating NaN and empty as 0.0.
+/// Exits with an error for genuinely non-numeric values.
+fn parse_numeric_or_nan(field: &str, col: usize) -> f64 {
+    if field.eq_ignore_ascii_case("nan") || field.is_empty() {
+        0.0
+    } else {
+        field.parse().unwrap_or_else(|_| {
+            eprintln!("ERROR: Non-numeric value '{}' in column {} of input file", field, col + 1);
+            std::process::exit(1);
+        })
+    }
+}
 
 /// Methods for aggregating H1 and H2 allele lengths for PCA analysis
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -96,9 +108,9 @@ fn parse_combined_kmer_file_with_selection(
 
     // Validate kmer file header format
     if header_fields.len() < 2 || header_fields[0] != "kmer" {
-        panic!(
-            "Invalid combined kmer file header. Expected format: kmer\\tsample1\\tsample2\\t..."
-        );
+        eprintln!("ERROR: Invalid combined kmer file header.");
+        eprintln!("Expected format: kmer\tsample1\tsample2\t...");
+        std::process::exit(1);
     }
 
     // Extract sample names (all columns after "kmer")
@@ -106,7 +118,8 @@ fn parse_combined_kmer_file_with_selection(
     let num_samples = sample_names.len();
 
     if num_samples < 2 {
-        panic!("Need at least 2 samples for PCA, found {}", num_samples);
+        eprintln!("ERROR: Need at least 2 samples for PCA, found {}", num_samples);
+        std::process::exit(1);
     }
 
     println!("Detected {} samples in kmer file", num_samples);
@@ -135,26 +148,27 @@ fn parse_combined_kmer_file_with_selection(
         let expected_cols = 1 + num_samples;
         if fields.len() != expected_cols {
             eprintln!(
-                "Warning: Skipping malformed line {} (expected {} columns, got {})",
+                "ERROR: Malformed kmer line {} (expected {} columns, got {})",
                 line_num + 2,
                 expected_cols,
                 fields.len()
             );
-            continue;
+            std::process::exit(1);
         }
 
         // Parse kmer frequencies for this kmer across all samples
         let mut row_data = Vec::with_capacity(num_samples);
         for sample_idx in 0..num_samples {
             let freq_idx = 1 + sample_idx;
-            let freq: f64 = fields[freq_idx].parse().unwrap_or(0.0);
+            let freq = parse_numeric_or_nan(fields[freq_idx], freq_idx);
             row_data.push(freq);
         }
         data_rows.push(row_data);
     }
 
     if data_rows.is_empty() {
-        panic!("No data lines found after header in kmer file");
+        eprintln!("ERROR: No data lines found after header in kmer file.");
+        std::process::exit(1);
     }
 
     let num_kmers = data_rows.len();
@@ -190,14 +204,20 @@ fn parse_kmer_with_feature_selection(
     let mut feature_scores: Vec<(usize, f64)> = Vec::new();
 
     for (kmer_idx, line_result) in lines.enumerate() {
-        let line = match line_result {
-            Ok(l) => l,
-            Err(_) => continue,
-        };
+        let line = line_result.unwrap_or_else(|e| {
+            eprintln!("ERROR: Failed to read line {} in kmer file: {}", kmer_idx + 2, e);
+            std::process::exit(1);
+        });
 
         let fields: Vec<&str> = line.trim().split('\t').collect();
         if fields.len() != 1 + num_samples {
-            continue;
+            eprintln!(
+                "ERROR: Malformed kmer line {} (expected {} columns, got {})",
+                kmer_idx + 2,
+                1 + num_samples,
+                fields.len()
+            );
+            std::process::exit(1);
         }
 
         // Calculate variance for this kmer
@@ -206,7 +226,7 @@ fn parse_kmer_with_feature_selection(
         let mut count = 0;
 
         for sample_idx in 0..num_samples {
-            let freq: f64 = fields[1 + sample_idx].parse().unwrap_or(0.0);
+            let freq = parse_numeric_or_nan(fields[1 + sample_idx], 1 + sample_idx);
             sum += freq;
             sum_sq += freq * freq;
             count += 1;
@@ -243,18 +263,24 @@ fn parse_kmer_with_feature_selection(
 
     for (kmer_idx, line_result) in lines.enumerate() {
         if let Some(&new_idx) = selected_idx_map.get(&kmer_idx) {
-            let line = match line_result {
-                Ok(l) => l,
-                Err(_) => continue,
-            };
+            let line = line_result.unwrap_or_else(|e| {
+                eprintln!("ERROR: Failed to read line {} in kmer file: {}", kmer_idx + 2, e);
+                std::process::exit(1);
+            });
 
             let fields: Vec<&str> = line.trim().split('\t').collect();
             if fields.len() != 1 + num_samples {
-                continue;
+                eprintln!(
+                    "ERROR: Malformed kmer line {} (expected {} columns, got {})",
+                    kmer_idx + 2,
+                    1 + num_samples,
+                    fields.len()
+                );
+                std::process::exit(1);
             }
 
             for sample_idx in 0..num_samples {
-                let freq: f64 = fields[1 + sample_idx].parse().unwrap_or(0.0);
+                let freq = parse_numeric_or_nan(fields[1 + sample_idx], 1 + sample_idx);
                 data_matrix[[sample_idx, new_idx]] = freq;
             }
         }
@@ -303,7 +329,9 @@ fn parse_combined_file_with_selection(
                 // Unable to determine file type
                 eprintln!("Error: Unable to determine file type from header.");
                 eprintln!("Expected either:");
-                eprintln!("  - STR file: chromosome\\tbegin\\tend\\tsample1_H1\\tsample1_H2...");
+                eprintln!(
+                    "  - STR file: chromosome\\tbegin\\tend\\tinfo\\tsample1_H1\\tsample1_H2..."
+                );
                 eprintln!("  - Kmer file: kmer\\tsample1\\tsample2...");
                 eprintln!("\nGot header: {}", header_line);
                 std::process::exit(1);
@@ -346,7 +374,7 @@ fn parse_combined_str_file_with_selection(
     // Extract sample names from validated header
     let sample_names: Vec<String> = (0..num_samples)
         .map(|i| {
-            let h1_col = header_fields[4 + i * 2];
+            let h1_col = header_fields[crate::filetype::STR_FIXED_COLUMNS + i * 2];
             h1_col.trim_end_matches("_H1").to_string()
         })
         .collect();
@@ -372,15 +400,15 @@ fn parse_combined_str_file_with_selection(
 
         let fields: Vec<&str> = line.trim().split('\t').collect();
 
-        let expected_cols = 3 + num_samples * 2;
+        let expected_cols = crate::filetype::STR_FIXED_COLUMNS + num_samples * 2;
         if fields.len() != expected_cols {
-            panic!(
-                "Malformed line {} (expected {} columns, got {}): {}",
+            eprintln!(
+                "ERROR: Malformed line {} (expected {} columns, got {})",
                 line_num + 2,
                 expected_cols,
                 fields.len(),
-                line
             );
+            std::process::exit(1);
         }
 
         // Skip region name creation for memory efficiency
@@ -388,48 +416,11 @@ fn parse_combined_str_file_with_selection(
         // Parse STR lengths for this region across all samples
         let mut row_data = Vec::with_capacity(num_samples);
         for sample_idx in 0..num_samples {
-            let h1_idx = 3 + sample_idx * 2;
-            let h2_idx = 4 + sample_idx * 2;
+            let h1_idx = crate::filetype::STR_FIXED_COLUMNS + sample_idx * 2;
+            let h2_idx = crate::filetype::STR_FIXED_COLUMNS + 1 + sample_idx * 2;
 
-            let h1_val: f64 = fields[h1_idx]
-                .parse()
-                .map_err(|e| {
-                    format!(
-                        "Invalid H1 value '{}' at line {}, column {}: {}",
-                        fields[h1_idx],
-                        line_num + 2,
-                        h1_idx + 1,
-                        e
-                    )
-                })
-                .unwrap_or_else(|e| {
-                    // Handle NaN values specifically
-                    if fields[h1_idx].eq_ignore_ascii_case("nan") {
-                        0.0
-                    } else {
-                        panic!("{}", e);
-                    }
-                });
-
-            let h2_val: f64 = fields[h2_idx]
-                .parse()
-                .map_err(|e| {
-                    format!(
-                        "Invalid H2 value '{}' at line {}, column {}: {}",
-                        fields[h2_idx],
-                        line_num + 2,
-                        h2_idx + 1,
-                        e
-                    )
-                })
-                .unwrap_or_else(|e| {
-                    // Handle NaN values specifically
-                    if fields[h2_idx].eq_ignore_ascii_case("nan") {
-                        0.0
-                    } else {
-                        panic!("{}", e);
-                    }
-                });
+            let h1_val = parse_numeric_or_nan(fields[h1_idx], h1_idx);
+            let h2_val = parse_numeric_or_nan(fields[h2_idx], h2_idx);
 
             // Apply selected aggregation method for H1/H2 allele lengths
             let aggregated_value = aggregation.aggregate(h1_val, h2_val);
@@ -439,7 +430,9 @@ fn parse_combined_str_file_with_selection(
     }
 
     if data_rows.is_empty() {
-        panic!("No data lines found after header");
+        eprintln!("ERROR: No data lines found after header.");
+        eprintln!("The input file appears to have a header but no data.");
+        std::process::exit(1);
     }
 
     let num_regions = data_rows.len();
@@ -534,9 +527,16 @@ fn sequential_feature_selection(
         let fields: Vec<&str> = line.trim().split('\t').collect();
 
         // Quick validation
-        let expected_cols = 3 + num_samples * 2;
+        let expected_cols = crate::filetype::STR_FIXED_COLUMNS + num_samples * 2;
         if fields.len() != expected_cols {
-            continue; // Skip malformed lines
+            eprintln!(
+                "ERROR: Malformed data at line {} (expected {} columns, got {})",
+                region_idx + 2,
+                expected_cols,
+                fields.len()
+            );
+            eprintln!("The combined file may be corrupted or was not generated correctly.");
+            std::process::exit(1);
         }
 
         // Streaming statistics calculation - single pass, no Vec allocation
@@ -553,8 +553,8 @@ fn sequential_feature_selection(
         let max_allowed_missing = num_samples * 20 / 100; // Allow up to 20% missing
 
         for sample_idx in 0..num_samples {
-            let h1_idx = 3 + sample_idx * 2;
-            let h2_idx = 4 + sample_idx * 2;
+            let h1_idx = crate::filetype::STR_FIXED_COLUMNS + sample_idx * 2;
+            let h2_idx = crate::filetype::STR_FIXED_COLUMNS + 1 + sample_idx * 2;
 
             // Quick missing data check (both alleles missing)
             let h1_missing =
@@ -578,23 +578,12 @@ fn sequential_feature_selection(
 
         // PHASE 2: Full parsing and statistics (only for promising loci)
         for sample_idx in 0..num_samples {
-            let h1_idx = 3 + sample_idx * 2;
-            let h2_idx = 4 + sample_idx * 2;
+            let h1_idx = crate::filetype::STR_FIXED_COLUMNS + sample_idx * 2;
+            let h2_idx = crate::filetype::STR_FIXED_COLUMNS + 1 + sample_idx * 2;
 
             // Optimized parsing with early NaN check
-            let h1_val: f64 =
-                if fields[h1_idx].eq_ignore_ascii_case("nan") || fields[h1_idx].is_empty() {
-                    0.0
-                } else {
-                    fields[h1_idx].parse().unwrap_or(0.0)
-                };
-
-            let h2_val: f64 =
-                if fields[h2_idx].eq_ignore_ascii_case("nan") || fields[h2_idx].is_empty() {
-                    0.0
-                } else {
-                    fields[h2_idx].parse().unwrap_or(0.0)
-                };
+            let h1_val = parse_numeric_or_nan(fields[h1_idx], h1_idx);
+            let h2_val = parse_numeric_or_nan(fields[h2_idx], h2_idx);
 
             let aggregated_value = aggregation.aggregate(h1_val, h2_val);
 
@@ -696,27 +685,29 @@ fn parallel_feature_selection(
 
     // Process file in chunks
     for (idx, line_result) in lines.enumerate() {
-        if let Ok(line) = line_result {
-            chunk_buffer.push((idx, line));
+        let line = line_result.unwrap_or_else(|e| {
+            eprintln!("ERROR: Failed to read line {}: {}", idx + 2, e);
+            std::process::exit(1);
+        });
+        chunk_buffer.push((idx, line));
 
-            // When chunk is full, process it in parallel
-            if chunk_buffer.len() == chunk_size {
-                let chunk_scores: Vec<(usize, f64)> = chunk_buffer
-                    .par_iter()
-                    .filter_map(|(region_idx, line)| {
-                        calculate_feature_score(line, num_samples, *region_idx, aggregation)
-                    })
-                    .collect();
+        // When chunk is full, process it in parallel
+        if chunk_buffer.len() == chunk_size {
+            let chunk_scores: Vec<(usize, f64)> = chunk_buffer
+                .par_iter()
+                .filter_map(|(region_idx, line)| {
+                    calculate_feature_score(line, num_samples, *region_idx, aggregation)
+                })
+                .collect();
 
-                all_scores.extend(chunk_scores);
-                processed_count += chunk_buffer.len();
+            all_scores.extend(chunk_scores);
+            processed_count += chunk_buffer.len();
 
-                if processed_count % 50_000 == 0 {
-                    println!("Processed {} loci so far...", processed_count);
-                }
-
-                chunk_buffer.clear();
+            if processed_count % 50_000 == 0 {
+                println!("Processed {} loci so far...", processed_count);
             }
+
+            chunk_buffer.clear();
         }
     }
 
@@ -762,9 +753,16 @@ fn calculate_feature_score(
     let fields: Vec<&str> = line.trim().split('\t').collect();
 
     // Quick validation
-    let expected_cols = 3 + num_samples * 2;
+    let expected_cols = crate::filetype::STR_FIXED_COLUMNS + num_samples * 2;
     if fields.len() != expected_cols {
-        return None; // Skip malformed lines
+        eprintln!(
+            "ERROR: Malformed data at line {} (expected {} columns, got {})",
+            region_idx + 2,
+            expected_cols,
+            fields.len()
+        );
+        eprintln!("The combined file may be corrupted or was not generated correctly.");
+        std::process::exit(1);
     }
 
     // Streaming statistics calculation - single pass, no Vec allocation
@@ -780,8 +778,8 @@ fn calculate_feature_score(
     let max_allowed_missing = num_samples * 20 / 100; // Allow up to 20% missing
 
     for sample_idx in 0..num_samples {
-        let h1_idx = 3 + sample_idx * 2;
-        let h2_idx = 4 + sample_idx * 2;
+        let h1_idx = crate::filetype::STR_FIXED_COLUMNS + sample_idx * 2;
+        let h2_idx = crate::filetype::STR_FIXED_COLUMNS + 1 + sample_idx * 2;
 
         // Quick missing data check (both alleles missing)
         let h1_missing = fields[h1_idx].eq_ignore_ascii_case("nan") || fields[h1_idx].is_empty();
@@ -803,23 +801,12 @@ fn calculate_feature_score(
 
     // PHASE 2: Full parsing and statistics (only for promising loci)
     for sample_idx in 0..num_samples {
-        let h1_idx = 3 + sample_idx * 2;
-        let h2_idx = 4 + sample_idx * 2;
+        let h1_idx = crate::filetype::STR_FIXED_COLUMNS + sample_idx * 2;
+        let h2_idx = crate::filetype::STR_FIXED_COLUMNS + 1 + sample_idx * 2;
 
         // Optimized parsing with early NaN check
-        let h1_val: f64 = if fields[h1_idx].eq_ignore_ascii_case("nan") || fields[h1_idx].is_empty()
-        {
-            0.0
-        } else {
-            fields[h1_idx].parse().unwrap_or(0.0)
-        };
-
-        let h2_val: f64 = if fields[h2_idx].eq_ignore_ascii_case("nan") || fields[h2_idx].is_empty()
-        {
-            0.0
-        } else {
-            fields[h2_idx].parse().unwrap_or(0.0)
-        };
+        let h1_val = parse_numeric_or_nan(fields[h1_idx], h1_idx);
+        let h2_val = parse_numeric_or_nan(fields[h2_idx], h2_idx);
 
         let max_allele = aggregation.aggregate(h1_val, h2_val);
 
@@ -913,11 +900,11 @@ fn sequential_data_loading(
 
             // Parse and store data for this selected region
             for sample_idx in 0..num_samples {
-                let h1_idx = 3 + sample_idx * 2;
-                let h2_idx = 4 + sample_idx * 2;
+                let h1_idx = crate::filetype::STR_FIXED_COLUMNS + sample_idx * 2;
+                let h2_idx = crate::filetype::STR_FIXED_COLUMNS + 1 + sample_idx * 2;
 
-                let h1_val: f64 = fields[h1_idx].parse().unwrap_or(0.0);
-                let h2_val: f64 = fields[h2_idx].parse().unwrap_or(0.0);
+                let h1_val = parse_numeric_or_nan(fields[h1_idx], h1_idx);
+                let h2_val = parse_numeric_or_nan(fields[h2_idx], h2_idx);
 
                 let max_allele = aggregation.aggregate(h1_val, h2_val);
                 data_matrix[[sample_idx, new_idx]] = max_allele;
@@ -966,56 +953,57 @@ fn parallel_data_loading(
     println!("Processing data loading in streaming chunks of {} lines...", chunk_size);
 
     for (region_idx, line_result) in lines.enumerate() {
-        if let Ok(line) = line_result {
-            // Only collect lines for selected indices
-            if selected_idx_map.contains_key(&region_idx) {
-                chunk_buffer.push((region_idx, line));
+        let line = line_result.unwrap_or_else(|e| {
+            eprintln!("ERROR: Failed to read line {} during data loading: {}", region_idx + 2, e);
+            std::process::exit(1);
+        });
+        // Only collect lines for selected indices
+        if selected_idx_map.contains_key(&region_idx) {
+            chunk_buffer.push((region_idx, line));
+        }
+
+        // Process chunk when full or when we have enough selected lines
+        if chunk_buffer.len() >= chunk_size
+            || (!chunk_buffer.is_empty() && chunk_buffer.len() >= selected_indices.len().min(1000))
+        {
+            // Process chunk in parallel
+            let parsed_chunk: Vec<(usize, Vec<f64>)> = chunk_buffer
+                .par_iter()
+                .filter_map(|(region_idx, line)| {
+                    if let Some(&new_idx) = selected_idx_map.get(region_idx) {
+                        let fields: Vec<&str> = line.trim().split('\t').collect();
+
+                        // Parse sample data for this region
+                        let mut sample_data = Vec::with_capacity(num_samples);
+                        for sample_idx in 0..num_samples {
+                            let h1_idx = crate::filetype::STR_FIXED_COLUMNS + sample_idx * 2;
+                            let h2_idx = crate::filetype::STR_FIXED_COLUMNS + 1 + sample_idx * 2;
+
+                            let h1_val = parse_numeric_or_nan(fields[h1_idx], h1_idx);
+                            let h2_val = parse_numeric_or_nan(fields[h2_idx], h2_idx);
+                            let max_allele = aggregation.aggregate(h1_val, h2_val);
+                            sample_data.push(max_allele);
+                        }
+
+                        Some((new_idx, sample_data))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            // Fill matrix with parsed chunk data
+            for (new_idx, sample_data) in parsed_chunk {
+                for (sample_idx, &value) in sample_data.iter().enumerate() {
+                    data_matrix[[sample_idx, new_idx]] = value;
+                }
             }
 
-            // Process chunk when full or when we have enough selected lines
-            if chunk_buffer.len() >= chunk_size
-                || (!chunk_buffer.is_empty()
-                    && chunk_buffer.len() >= selected_indices.len().min(1000))
-            {
-                // Process chunk in parallel
-                let parsed_chunk: Vec<(usize, Vec<f64>)> = chunk_buffer
-                    .par_iter()
-                    .filter_map(|(region_idx, line)| {
-                        if let Some(&new_idx) = selected_idx_map.get(region_idx) {
-                            let fields: Vec<&str> = line.trim().split('\t').collect();
+            processed_lines += chunk_buffer.len();
+            chunk_buffer.clear();
 
-                            // Parse sample data for this region
-                            let mut sample_data = Vec::with_capacity(num_samples);
-                            for sample_idx in 0..num_samples {
-                                let h1_idx = 3 + sample_idx * 2;
-                                let h2_idx = 4 + sample_idx * 2;
-
-                                let h1_val: f64 = fields[h1_idx].parse().unwrap_or(0.0);
-                                let h2_val: f64 = fields[h2_idx].parse().unwrap_or(0.0);
-                                let max_allele = aggregation.aggregate(h1_val, h2_val);
-                                sample_data.push(max_allele);
-                            }
-
-                            Some((new_idx, sample_data))
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
-
-                // Fill matrix with parsed chunk data
-                for (new_idx, sample_data) in parsed_chunk {
-                    for (sample_idx, &value) in sample_data.iter().enumerate() {
-                        data_matrix[[sample_idx, new_idx]] = value;
-                    }
-                }
-
-                processed_lines += chunk_buffer.len();
-                chunk_buffer.clear();
-
-                if processed_lines % 10_000 == 0 {
-                    println!("Processed {} selected lines so far...", processed_lines);
-                }
+            if processed_lines % 10_000 == 0 {
+                println!("Processed {} selected lines so far...", processed_lines);
             }
         }
     }
@@ -1030,11 +1018,11 @@ fn parallel_data_loading(
 
                     let mut sample_data = Vec::with_capacity(num_samples);
                     for sample_idx in 0..num_samples {
-                        let h1_idx = 3 + sample_idx * 2;
-                        let h2_idx = 4 + sample_idx * 2;
+                        let h1_idx = crate::filetype::STR_FIXED_COLUMNS + sample_idx * 2;
+                        let h2_idx = crate::filetype::STR_FIXED_COLUMNS + 1 + sample_idx * 2;
 
-                        let h1_val: f64 = fields[h1_idx].parse().unwrap_or(0.0);
-                        let h2_val: f64 = fields[h2_idx].parse().unwrap_or(0.0);
+                        let h1_val = parse_numeric_or_nan(fields[h1_idx], h1_idx);
+                        let h2_val = parse_numeric_or_nan(fields[h2_idx], h2_idx);
                         let max_allele = aggregation.aggregate(h1_val, h2_val);
                         sample_data.push(max_allele);
                     }
@@ -1069,9 +1057,11 @@ fn estimate_feature_count(combined: &std::path::Path) -> usize {
     let mut count = 0;
 
     for line_result in lines.take(sample_size) {
-        if line_result.is_ok() {
-            count += 1;
-        }
+        let _line = line_result.unwrap_or_else(|e| {
+            eprintln!("ERROR: Failed to read line while estimating feature count: {}", e);
+            std::process::exit(1);
+        });
+        count += 1;
     }
 
     if count < sample_size {
@@ -1096,7 +1086,18 @@ fn perform_proper_pca(
     let n_features = data.ncols();
 
     if n_samples == 0 || n_features == 0 {
-        panic!("Empty data matrix provided to PCA");
+        eprintln!(
+            "ERROR: No features remained after filtering (0 out of {} samples × {} features).",
+            n_samples, n_features
+        );
+        eprintln!("This typically means all loci were excluded due to high missing data rates.");
+        eprintln!("\nPossible causes:");
+        eprintln!("  - The input file has too many missing/NaN values");
+        eprintln!("  - The data lacks sufficient variation across samples");
+        eprintln!("\nSuggestions:");
+        eprintln!("  - Check the input file for data quality issues");
+        eprintln!("  - Ensure the combined file was generated correctly with 'inquiSTR combine'");
+        std::process::exit(1);
     }
 
     let n_components = n_components.min(n_samples.min(n_features));
@@ -1108,13 +1109,7 @@ fn perform_proper_pca(
     // Step 2: Compute covariance matrix
     // Cov = (X^T * X) / (n - 1)
     println!("Computing covariance matrix ({} x {} features)...", n_features, n_features);
-    let covariance = if n_features > 1000 {
-        // For large matrices, the matrix multiplication can benefit from parallel BLAS
-        // ndarray uses OpenBLAS or similar which should parallelize automatically
-        centered_data.t().dot(&centered_data) / ((n_samples - 1) as f64)
-    } else {
-        centered_data.t().dot(&centered_data) / ((n_samples - 1) as f64)
-    };
+    let covariance = centered_data.t().dot(&centered_data) / ((n_samples - 1) as f64);
 
     // Step 3: Eigenvalue decomposition using power iteration for efficiency
     // For large matrices, we'll use a simplified approach focusing on top components
@@ -1351,7 +1346,8 @@ pub fn pca(
     scores_output: Option<PathBuf>,
 ) {
     if !combined.exists() {
-        panic!("Combined file does not exist: {}", combined.display());
+        eprintln!("ERROR: Combined file does not exist: {}", combined.display());
+        std::process::exit(1);
     }
 
     // Validate that input is a combined file, not individual, and detect data type
@@ -1441,7 +1437,9 @@ pub fn pca(
     }
 
     if sample_names.len() < 2 {
-        panic!("Need at least 2 samples for PCA, but only {} found", sample_names.len());
+        eprintln!("ERROR: Need at least 2 samples for PCA, but only {} found.", sample_names.len());
+        eprintln!("PCA requires data from at least 2 samples.");
+        std::process::exit(1);
     }
 
     // Show information about feature selection (if it occurred)
