@@ -87,7 +87,15 @@ fn verify_sorted<R: BufRead>(reader: &mut R, file_name: &str, skip_header: bool)
 
         let fields: Vec<&str> = line.split('\t').collect();
         if fields.len() < 3 {
-            continue;
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "Malformed line {} in {} (expected at least 3 columns, got {})",
+                    line_num,
+                    file_name,
+                    fields.len()
+                ),
+            ));
         }
 
         let chrom = fields[0].to_string();
@@ -273,7 +281,11 @@ fn determine_columns_to_keep(
     let header_fields: Vec<&str> = header_line.split('\t').collect();
 
     // Extract sample columns (everything after chr, start, end, info)
-    let sample_columns: Vec<&str> = header_fields.iter().skip(4).copied().collect();
+    let sample_columns: Vec<&str> = header_fields
+        .iter()
+        .skip(crate::filetype::STR_FIXED_COLUMNS)
+        .copied()
+        .collect();
 
     // Validate that we have an even number of sample columns (paired H1/H2)
     if !sample_columns.len().is_multiple_of(2) {
@@ -319,8 +331,8 @@ fn determine_columns_to_keep(
 
             if keep_set.contains(sample_name) {
                 // Add both H1 and H2 columns for this sample
-                selected_indices.push(4 + i * 2);
-                selected_indices.push(4 + i * 2 + 1);
+                selected_indices.push(crate::filetype::STR_FIXED_COLUMNS + i * 2);
+                selected_indices.push(crate::filetype::STR_FIXED_COLUMNS + i * 2 + 1);
 
                 if !selected_samples.contains(&sample_name.to_string()) {
                     selected_samples.push(sample_name.to_string());
@@ -357,8 +369,8 @@ fn determine_columns_to_keep(
 
             if !drop_set.contains(sample_name) {
                 // Add both H1 and H2 columns for this sample
-                selected_indices.push(4 + i * 2);
-                selected_indices.push(4 + i * 2 + 1);
+                selected_indices.push(crate::filetype::STR_FIXED_COLUMNS + i * 2);
+                selected_indices.push(crate::filetype::STR_FIXED_COLUMNS + i * 2 + 1);
 
                 if !selected_samples.contains(&sample_name.to_string()) {
                     selected_samples.push(sample_name.to_string());
@@ -535,10 +547,11 @@ pub fn filter(
         if !header_written {
             // Validate and store expected field count from header
             let header_fields: Vec<&str> = line.split('\t').collect();
-            if header_fields.len() < 6 {
+            if header_fields.len() < crate::filetype::STR_MIN_COLUMNS {
                 eprintln!("ERROR: Invalid header format");
                 eprintln!(
-                    "Expected at least 6 columns (chromosome, begin, end, info, sample_H1, sample_H2)"
+                    "Expected at least {} columns (chromosome, begin, end, info, sample_H1, sample_H2)",
+                    crate::filetype::STR_MIN_COLUMNS
                 );
                 eprintln!("Got {} columns", header_fields.len());
                 std::process::exit(1);
@@ -574,10 +587,11 @@ pub fn filter(
 
         // Parse line
         let fields: Vec<&str> = line.split('\t').collect();
-        if fields.len() < 6 {
+        if fields.len() < crate::filetype::STR_MIN_COLUMNS {
             eprintln!("ERROR: Invalid line {} in input file", line_num);
             eprintln!(
-                "Expected at least 6 columns (chr, start, end, info, H1, H2), got {}",
+                "Expected at least {} columns (chr, start, end, info, H1, H2), got {}",
+                crate::filetype::STR_MIN_COLUMNS,
                 fields.len()
             );
             eprintln!("Line content: '{}'", line);
@@ -602,8 +616,8 @@ pub fn filter(
             continue;
         }
 
-        // Parse allele values (columns 4 onwards, skipping info at column 3)
-        let alleles: Vec<&str> = fields[4..].to_vec();
+        // Parse allele values (columns after fixed columns, skipping info at column 3)
+        let alleles: Vec<&str> = fields[crate::filetype::STR_FIXED_COLUMNS..].to_vec();
 
         // 2. minlen filter (only positive values >= minlen)
         if let Some(min) = minlen {
