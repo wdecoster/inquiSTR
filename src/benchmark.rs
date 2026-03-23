@@ -171,8 +171,12 @@ fn parse_inquistr_file(
         // Skip info field at index 3
 
         // Parse H1 and H2, handling NaN values
-        let h1 = fields[4].parse::<f64>().unwrap_or(f64::NAN);
-        let h2 = fields[5].parse::<f64>().unwrap_or(f64::NAN);
+        let h1 = fields[crate::filetype::STR_FIXED_COLUMNS]
+            .parse::<f64>()
+            .unwrap_or(f64::NAN);
+        let h2 = fields[crate::filetype::STR_FIXED_COLUMNS + 1]
+            .parse::<f64>()
+            .unwrap_or(f64::NAN);
 
         let record = InquiSTRRecord { chromosome: chromosome.clone(), begin, end, h1, h2 };
 
@@ -240,8 +244,12 @@ fn parse_inquistr_as_truth(
             continue;
         }
 
-        let h1 = fields[4].parse::<f64>().unwrap_or(f64::NAN);
-        let h2 = fields[5].parse::<f64>().unwrap_or(f64::NAN);
+        let h1 = fields[crate::filetype::STR_FIXED_COLUMNS]
+            .parse::<f64>()
+            .unwrap_or(f64::NAN);
+        let h2 = fields[crate::filetype::STR_FIXED_COLUMNS + 1]
+            .parse::<f64>()
+            .unwrap_or(f64::NAN);
 
         let record = TruthRecord {
             chromosome: chromosome.clone(),

@@ -344,7 +344,7 @@ fn merge_combined_files(combined_files: Vec<PathBuf>, individual_files: Vec<Path
         ];
 
         // Add all sample columns from combined file (skip chr, begin, end, info)
-        merged_header.extend(&combined_header_fields[4..]);
+        merged_header.extend(&combined_header_fields[crate::filetype::STR_FIXED_COLUMNS..]);
 
         // Add sample columns from additional combined files
         for header in all_combined_headers.iter().skip(1) {
@@ -357,7 +357,7 @@ fn merge_combined_files(combined_files: Vec<PathBuf>, individual_files: Vec<Path
                 std::process::exit(1);
             }
             // Add sample columns (skip chr, begin, end, info)
-            merged_header.extend(&header_fields[4..]);
+            merged_header.extend(&header_fields[crate::filetype::STR_FIXED_COLUMNS..]);
         }
 
         // Add sample columns from individual files
@@ -440,7 +440,7 @@ fn merge_combined_files(combined_files: Vec<PathBuf>, individual_files: Vec<Path
 
             if let Some(existing) = combined_data.get_mut(&key) {
                 // Locus exists - merge sample columns (skip first 4 columns: chr, start, end, info)
-                let new_samples = &fields[4..];
+                let new_samples = &fields[crate::filetype::STR_FIXED_COLUMNS..];
                 existing.push('\t');
                 existing.push_str(&new_samples.join("\t"));
                 merged_loci += 1;
@@ -770,10 +770,11 @@ fn read_and_validate_headers(calls: &[PathBuf]) -> Vec<String> {
 /// Output the combined header line
 fn output_combined_header(headers: &[String]) {
     let first_header_fields: Vec<&str> = headers[0].split('\t').collect();
-    if first_header_fields.len() < 6 {
+    if first_header_fields.len() < crate::filetype::STR_MIN_COLUMNS {
         eprintln!("Error: Invalid header format in first file.");
         eprintln!(
-            "Expected at least 6 columns: chromosome, begin, end, info, sample_H1, sample_H2"
+            "Expected at least {} columns: chromosome, begin, end, info, sample_H1, sample_H2",
+            crate::filetype::STR_MIN_COLUMNS
         );
         eprintln!("Got {} columns: {}", first_header_fields.len(), headers[0]);
         std::process::exit(1);
@@ -793,20 +794,21 @@ fn output_combined_header(headers: &[String]) {
     ];
 
     // Add sample columns from first file (skip chr, begin, end, info)
-    combined_header.extend(&first_header_fields[4..]);
+    combined_header.extend(&first_header_fields[crate::filetype::STR_FIXED_COLUMNS..]);
 
     // Add sample columns from other files (skip chr, begin, end, info)
     for header in &headers[1..] {
         let fields: Vec<&str> = header.split('\t').collect();
-        if fields.len() < 6 {
+        if fields.len() < crate::filetype::STR_MIN_COLUMNS {
             eprintln!("Error: Invalid header format in one of the input files.");
             eprintln!(
-                "Expected at least 6 columns: chromosome, begin, end, info, sample_H1, sample_H2"
+                "Expected at least {} columns: chromosome, begin, end, info, sample_H1, sample_H2",
+                crate::filetype::STR_MIN_COLUMNS
             );
             eprintln!("Got {} columns: {}", fields.len(), header);
             std::process::exit(1);
         }
-        combined_header.extend(&fields[4..]);
+        combined_header.extend(&fields[crate::filetype::STR_FIXED_COLUMNS..]);
     }
 
     println!("{}", combined_header.join("\t"));
@@ -1091,10 +1093,12 @@ fn combine_data_lines(data_lines: &[String], line_number: usize) -> String {
 
     // Parse first line to get coordinates
     let first_line_fields: Vec<&str> = data_lines[0].split('\t').collect();
-    if first_line_fields.len() < 6 {
+    if first_line_fields.len() < crate::filetype::STR_MIN_COLUMNS {
         panic!(
-            "Invalid data line format at line {} (expected at least 6 columns): {}",
-            line_number, data_lines[0]
+            "Invalid data line format at line {} (expected at least {} columns): {}",
+            line_number,
+            crate::filetype::STR_MIN_COLUMNS,
+            data_lines[0]
         );
     }
 
@@ -1144,12 +1148,12 @@ fn combine_data_lines(data_lines: &[String], line_number: usize) -> String {
     combined_fields.push(first_line_fields[3]); // info column
 
     // Add all sample data from first file (skip chr, start, end, info)
-    combined_fields.extend(&first_line_fields[4..]);
+    combined_fields.extend(&first_line_fields[crate::filetype::STR_FIXED_COLUMNS..]);
 
     // Add sample data from other files (skip chr, start, end, info)
     for line in &data_lines[1..] {
         let fields: Vec<&str> = line.split('\t').collect();
-        combined_fields.extend(&fields[4..]);
+        combined_fields.extend(&fields[crate::filetype::STR_FIXED_COLUMNS..]);
     }
 
     combined_fields.join("\t")

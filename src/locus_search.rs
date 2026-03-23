@@ -82,7 +82,7 @@ pub fn find_locus(config: LocusSearchConfig) -> Option<LocusMatch> {
         if matches {
             let values: Vec<f64> = splitline
                 .iter()
-                .skip(4) // Skip chr, start, end, info
+                .skip(crate::filetype::STR_FIXED_COLUMNS) // Skip chr, start, end, info
                 .map(|number| number.parse::<f64>().expect("Failed parsing lengths"))
                 .collect();
 
@@ -132,7 +132,7 @@ pub fn find_locus(config: LocusSearchConfig) -> Option<LocusMatch> {
         if matches {
             let values: Vec<f64> = splitline
                 .iter()
-                .skip(4) // Skip chr, start, end, info
+                .skip(crate::filetype::STR_FIXED_COLUMNS) // Skip chr, start, end, info
                 .map(|number| number.parse::<f64>().expect("Failed parsing lengths"))
                 .collect();
 
@@ -191,7 +191,7 @@ pub fn find_multiple_loci(
 pub fn extract_sample_names(header_line: &str) -> Vec<String> {
     header_line
         .split('\t')
-        .skip(4) // Skip chromosome, begin, end, info
+        .skip(crate::filetype::STR_FIXED_COLUMNS) // Skip chromosome, begin, end, info
         .map(|s| s.to_string())
         .collect()
 }
@@ -200,7 +200,7 @@ pub fn extract_sample_names(header_line: &str) -> Vec<String> {
 pub fn extract_clean_sample_names(header_line: &str) -> Vec<String> {
     header_line
         .split('\t')
-        .skip(4) // Skip chromosome, begin, end, info
+        .skip(crate::filetype::STR_FIXED_COLUMNS) // Skip chromosome, begin, end, info
         .map(|s| s.replace("_H1", "").replace("_H2", ""))
         .collect()
 }

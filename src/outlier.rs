@@ -206,7 +206,7 @@ fn outlier_str_analysis(
     // Parse sample names once and store them
     let sample_names: Vec<String> = header_line
         .split('\t')
-        .skip(4) // Skip chromosome, begin, end, info
+        .skip(crate::filetype::STR_FIXED_COLUMNS) // Skip chromosome, begin, end, info
         .map(|s| s.to_string())
         .collect();
 
@@ -487,20 +487,23 @@ fn process_kmer_chunk(
 
 /// Get repeat lengths for outlier analysis
 fn get_repeat_lengths(line: &[&str], minsize: u32) -> Option<Vec<f32>> {
-    if line.len() < 4 {
+    if line.len() < crate::filetype::STR_FIXED_COLUMNS {
         return None;
     }
 
     let mut max_value = 0.0f32;
-    let mut values = Vec::with_capacity(line.len() - 4);
+    let mut values = Vec::with_capacity(line.len() - crate::filetype::STR_FIXED_COLUMNS);
 
     // Single pass to parse and find max
-    for field in line.iter().skip(4) {
+    for field in line.iter().skip(crate::filetype::STR_FIXED_COLUMNS) {
         // Skip chromosome, begin, end, info
         let value = if field.eq_ignore_ascii_case("nan") || field.is_empty() {
             0.0
         } else {
-            field.parse().unwrap_or(0.0)
+            field.parse().unwrap_or_else(|_| {
+                eprintln!("ERROR: Non-numeric value '{}' in STR file", field);
+                std::process::exit(1);
+            })
         };
 
         if value > max_value {
@@ -531,7 +534,10 @@ fn get_kmer_frequencies(line: &[&str], minsize: u32) -> Option<Vec<f32>> {
         let value = if field.eq_ignore_ascii_case("nan") || field.is_empty() {
             0.0
         } else {
-            field.parse().unwrap_or(0.0)
+            field.parse().unwrap_or_else(|_| {
+                eprintln!("ERROR: Non-numeric value '{}' in kmer file", field);
+                std::process::exit(1);
+            })
         };
 
         if value > max_value {

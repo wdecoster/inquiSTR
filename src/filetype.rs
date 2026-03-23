@@ -8,6 +8,12 @@
 use std::io::BufRead;
 use std::path::Path;
 
+/// Number of fixed (non-sample) columns in STR data lines: chromosome, begin, end, info
+pub const STR_FIXED_COLUMNS: usize = 4;
+
+/// Minimum number of columns in a valid individual STR file (chr, begin, end, info, H1, H2)
+pub const STR_MIN_COLUMNS: usize = STR_FIXED_COLUMNS + 2;
+
 /// File types that can be detected from metadata headers
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub enum FileType {
@@ -206,7 +212,7 @@ pub fn validate_str_header(header_fields: &[&str]) -> Result<usize, String> {
     // Fourth column is 'info' - we don't validate the name as it may vary,
     // but we ensure it exists by requiring at least 5 columns above
 
-    let sample_cols = &header_fields[4..];
+    let sample_cols = &header_fields[STR_FIXED_COLUMNS..];
     if !sample_cols.len().is_multiple_of(2) {
         return Err(format!(
             "Must have even number of sample columns (H1/H2 pairs), got {} columns after chr/begin/end/info",
@@ -220,10 +226,18 @@ pub fn validate_str_header(header_fields: &[&str]) -> Result<usize, String> {
         let h2_col = sample_cols[i * 2 + 1];
 
         if !h1_col.ends_with("_H1") {
-            return Err(format!("Column {} should end with '_H1', got: '{}'", 4 + i * 2, h1_col));
+            return Err(format!(
+                "Column {} should end with '_H1', got: '{}'",
+                STR_FIXED_COLUMNS + i * 2,
+                h1_col
+            ));
         }
         if !h2_col.ends_with("_H2") {
-            return Err(format!("Column {} should end with '_H2', got: '{}'", 5 + i * 2, h2_col));
+            return Err(format!(
+                "Column {} should end with '_H2', got: '{}'",
+                STR_FIXED_COLUMNS + 1 + i * 2,
+                h2_col
+            ));
         }
 
         let name_h1 = h1_col.trim_end_matches("_H1");
@@ -231,8 +245,8 @@ pub fn validate_str_header(header_fields: &[&str]) -> Result<usize, String> {
         if name_h1 != name_h2 {
             return Err(format!(
                 "Sample name mismatch for H1/H2 pair at columns {}-{}: '{}' vs '{}'",
-                4 + i * 2,
-                5 + i * 2,
+                STR_FIXED_COLUMNS + i * 2,
+                STR_FIXED_COLUMNS + 1 + i * 2,
                 name_h1,
                 name_h2
             ));
