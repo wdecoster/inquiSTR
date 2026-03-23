@@ -135,7 +135,7 @@ fn parse_combined_file(combined: &std::path::Path) -> (GenotypeMatrix, Vec<Strin
     // Extract sample names from validated header
     let sample_names: Vec<String> = (0..n_samples)
         .map(|i| {
-            let h1_col = header_fields[4 + i * 2];
+            let h1_col = header_fields[crate::filetype::STR_FIXED_COLUMNS + i * 2];
             h1_col.trim_end_matches("_H1").to_string()
         })
         .collect();
@@ -150,7 +150,7 @@ fn parse_combined_file(combined: &std::path::Path) -> (GenotypeMatrix, Vec<Strin
         let line = line_result.expect("Error reading line");
         let fields: Vec<&str> = line.trim().split('\t').collect();
 
-        let expected_fields = 4 + n_samples * 2; // chr, start, end, info + H1/H2 pairs
+        let expected_fields = crate::filetype::STR_FIXED_COLUMNS + n_samples * 2; // chr, start, end, info + H1/H2 pairs
         if fields.len() != expected_fields {
             eprintln!(
                 "ERROR: Malformed line {} in combined file: expected {} fields, got {}",
@@ -174,8 +174,8 @@ fn parse_combined_file(combined: &std::path::Path) -> (GenotypeMatrix, Vec<Strin
         // Parse genotypes for this locus (all samples)
         let mut locus_genotypes = Vec::new();
         for i in 0..n_samples {
-            let h1_idx = 3 + i * 2;
-            let h2_idx = 3 + i * 2 + 1;
+            let h1_idx = crate::filetype::STR_FIXED_COLUMNS + i * 2;
+            let h2_idx = crate::filetype::STR_FIXED_COLUMNS + i * 2 + 1;
 
             let h1 = fields
                 .get(h1_idx)
