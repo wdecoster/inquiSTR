@@ -406,16 +406,21 @@ fn write_vcf_to_stdout(tsv_path: &std::path::Path, sample: &str, reference: &Opt
         }
 
         let fields: Vec<&str> = line.split('\t').collect();
-        if fields.len() != 6 {
-            continue; // Skip malformed lines
+        if fields.len() != crate::filetype::STR_MIN_COLUMNS {
+            eprintln!(
+                "ERROR: Malformed line in TSV (expected {} columns, got {})",
+                crate::filetype::STR_MIN_COLUMNS,
+                fields.len()
+            );
+            std::process::exit(1);
         }
 
         let chrom = fields[0];
-        let start: u32 = fields[1].parse().unwrap_or(0);
-        let end: u32 = fields[2].parse().unwrap_or(0);
+        let start: u32 = fields[1].parse().expect("Invalid start coordinate in TSV");
+        let end: u32 = fields[2].parse().expect("Invalid end coordinate in TSV");
         let _info = fields[3]; // Currently unused, but available if needed
-        let phase1_str = fields[4];
-        let phase2_str = fields[5];
+        let phase1_str = fields[crate::filetype::STR_FIXED_COLUMNS];
+        let phase2_str = fields[crate::filetype::STR_FIXED_COLUMNS + 1];
 
         idx += 1;
         let pos = start + 1; // VCF is 1-based
