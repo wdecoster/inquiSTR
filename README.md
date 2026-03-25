@@ -3,7 +3,9 @@
 [![CI](https://github.com/wdecoster/inquiSTR/actions/workflows/test.yml/badge.svg)](https://github.com/wdecoster/inquiSTR/actions/workflows/test.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-A toolkit for lightning-fast Tandem Repeat (TR) length genotyping and downstream analysis from long-read sequencing data. inquiSTR (/ɪnˈkwɪzɪtər/, pronounced like "inquisitor") works with Oxford Nanopore Technologies and PacBio BAM/CRAM files and supports both phased and unphased data. Additional subcommands are provided for combining results across samples for cohort studies with statistical association testing, outlier detection, relatedness assssment and visualization. inquiSTR provides seamless access to remote files via HTTP/HTTPS/FTP/S3 URLs and efficiently leverages multi-core systems through parallelized code.
+A toolkit for lightning-fast Tandem Repeat (TR) length genotyping and downstream analysis from long-read sequencing data. inquiSTR (/ɪnˈkwɪzɪtər/, pronounced like "inquisitor") works with Oxford Nanopore Technologies and PacBio BAM/CRAM files and supports both phased and unphased data. While being fast, it does not compromise on accuracy and shows high concordance with truth callsets and other STR genotypers (see also our publication). Additional subcommands are provided for combining results across samples for cohort studies with statistical association testing, outlier detection, relatedness assssment and visualization. inquiSTR provides seamless access to remote files via HTTP/HTTPS/FTP/S3 URLs and efficiently leverages multi-core systems through parallelized code.
+
+InquiSTR call performs length genotyping without sequence-level resolution, and is as such suitable as a fast first-pass large-scale genotyper, for selection of repeats of interest, with follow-up analysis also possible with other genotypers.
 
 ## Quick Start
 
