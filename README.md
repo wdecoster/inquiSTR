@@ -136,7 +136,7 @@ Options:
       --reference <REFERENCE>      reference fasta for cram decoding
       --max-locus <MAX_LOCUS>      maximum locus size to consider (intervals larger than this will be filtered out)
       --batch-size <BATCH_SIZE>    Batch size in KB for grouping nearby STR targets [default: 50]
-      --vcf <VCF>                  Output VCF file path (optional, TSV still written to stdout)
+      --vcf                        Output VCF format to stdout instead of TSV
   -h, --help                       Print help
 ```
 
