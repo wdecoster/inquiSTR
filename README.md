@@ -128,7 +128,7 @@ Options:
   -r, --region <REGION>            region string to genotype expansion in
   -R, --region-file <REGION_FILE>  Bed file with region(s) to genotype expansion(s) in
       --preset <PRESET>            Use a predefined TR catalog: pathogenic, adotto, trexplorer, or codis
-  -m, --minlen <MINLEN>            minimal length of insertion/deletion operation [default: 5]
+  -m, --minlen <MINLEN>            minimal length of insertion/deletion operation [default: 1]
   -s, --support <SUPPORT>          minimal number of supporting reads [default: 3]
   -t, --threads <THREADS>          Number of parallel threads to use [default: 1]
   -u, --unphased                   If reads have to be considered unphased
@@ -233,7 +233,7 @@ STR Genotyping Mode Options (default mode, without --unmapped):
   -r, --region <REGION>                  Region string to genotype expansion in
   -R, --region-file <REGION_FILE>        Bed file with region(s) to genotype expansion(s) in
       --preset <PRESET>                  Use a predefined TR catalog (pathogenic, adotto, trexplorer, or codis)
-  -m, --minlen <MINLEN>                  Minimal length of insertion/deletion operation [default: 5]
+  -m, --minlen <MINLEN>                  Minimal length of insertion/deletion operation [default: 1]
   -s, --support <SUPPORT>                Minimal number of supporting reads [default: 3]
   -u, --unphased                         If reads have to be considered unphased
       --require-spanning                 Only report genotypes supported by spanning reads; loci covered only by soft-clipped reads are reported as missing
