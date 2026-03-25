@@ -38,6 +38,7 @@ For detailed options, presets and additional commands, see the full documentatio
   - [inquiSTR association - Statistical Association Testing](#inquistr-association---statistical-association-testing)
   - [inquiSTR optimize-call - Parameter Optimization](#inquistr-optimize-call---parameter-optimization)
 - [Output File Formats](docs/OUTPUT_FORMATS.md)
+- [Call Algorithm](docs/CALL_ALGORITHM.md)
 - [Contributing](#-contributing)
 
 ## 📦 Installation
@@ -160,7 +161,7 @@ inquiSTR call sample.bam -R regions.bed
 inquiSTR call sample.bam --preset pathogenic
 ```
 
-The default output is a tab-separated file with one row per locus. See [Output File Formats](docs/OUTPUT_FORMATS.md) for a full description of the columns and metadata header.
+The default output is a tab-separated file with one row per locus. See [Output File Formats](docs/OUTPUT_FORMATS.md) for a full description of the columns and metadata header. For a description of the genotyping algorithm, see [Call Algorithm](docs/CALL_ALGORITHM.md).
 
 #### Predefined TR Catalogs
 
