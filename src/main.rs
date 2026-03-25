@@ -184,6 +184,7 @@ pub mod repeats;
 pub mod sample_info;
 pub mod unmapped;
 pub mod utils;
+pub mod vcf;
 
 // The arguments end up in the Cli struct
 #[derive(Parser, Debug)]

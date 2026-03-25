@@ -334,7 +334,7 @@ pub fn genotype_repeats(
 
     // Write VCF if requested by converting from the temp TSV file and writing to stdout
     if let Some(temp_path) = temp_tsv_path.as_ref() {
-        write_vcf_to_stdout(temp_path, &sample, &reference);
+        crate::vcf::write_vcf_to_stdout(temp_path, &sample, &reference, &bam);
         // Clean up temp file
         std::fs::remove_file(temp_path).ok(); // Ignore errors if already deleted
     }
@@ -343,122 +343,6 @@ pub fn genotype_repeats(
     crate::bam_utils::cleanup_index_files(&bam);
 
     Ok(())
-}
-
-/// Write VCF to stdout by reading from a TSV file (avoids keeping all genotypes in memory)
-fn write_vcf_to_stdout(tsv_path: &std::path::Path, sample: &str, reference: &Option<String>) {
-    use std::fs::File;
-    use std::io::{BufRead, BufReader};
-
-    let stdout = io::stdout();
-    let mut writer = io::BufWriter::new(stdout);
-
-    // Write VCF header
-    writeln!(writer, "##fileformat=VCFv4.3").expect("Failed writing VCF header");
-    writeln!(writer, "##source=inquiSTR").expect("Failed writing VCF header");
-
-    // Add reference if provided
-    if let Some(ref_path) = reference {
-        writeln!(writer, "##reference={}", ref_path).expect("Failed writing VCF header");
-    }
-
-    // Add INFO fields
-    writeln!(
-        writer,
-        "##INFO=<ID=END,Number=1,Type=Integer,Description=\"End position of the variant\">"
-    )
-    .expect("Failed writing VCF header");
-    writeln!(
-        writer,
-        "##INFO=<ID=SVTYPE,Number=1,Type=String,Description=\"Type of structural variant\">"
-    )
-    .expect("Failed writing VCF header");
-    writeln!(writer, "##INFO=<ID=SVLEN,Number=.,Type=Integer,Description=\"Difference in length between REF and ALT alleles\">").expect("Failed writing VCF header");
-
-    // Add FORMAT fields
-    writeln!(writer, "##FORMAT=<ID=GT,Number=1,Type=String,Description=\"Genotype\">")
-        .expect("Failed writing VCF header");
-    writeln!(
-        writer,
-        "##FORMAT=<ID=AL,Number=.,Type=Float,Description=\"Allele length (relative to reference)\">"
-    )
-    .expect("Failed writing VCF header");
-
-    // Add ALT definition for STR
-    writeln!(writer, "##ALT=<ID=STR,Description=\"Short Tandem Repeat\">")
-        .expect("Failed writing VCF header");
-
-    // Write column headers
-    writeln!(writer, "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t{}", sample)
-        .expect("Failed writing VCF header");
-
-    // Read TSV and convert to VCF records
-    let tsv_file = File::open(tsv_path).expect("Failed to open temp TSV file");
-    let reader = BufReader::new(tsv_file);
-
-    let mut idx = 0;
-    for line in reader.lines() {
-        let line = line.expect("Failed reading TSV line");
-
-        // Skip header line
-        if line.starts_with("chromosome") || line.starts_with('#') {
-            continue;
-        }
-
-        let fields: Vec<&str> = line.split('\t').collect();
-        if fields.len() != crate::filetype::STR_MIN_COLUMNS {
-            eprintln!(
-                "ERROR: Malformed line in TSV (expected {} columns, got {})",
-                crate::filetype::STR_MIN_COLUMNS,
-                fields.len()
-            );
-            std::process::exit(1);
-        }
-
-        let chrom = fields[0];
-        let start: u32 = fields[1].parse().expect("Invalid start coordinate in TSV");
-        let end: u32 = fields[2].parse().expect("Invalid end coordinate in TSV");
-        let _info = fields[3]; // Currently unused, but available if needed
-        let phase1_str = fields[crate::filetype::STR_FIXED_COLUMNS];
-        let phase2_str = fields[crate::filetype::STR_FIXED_COLUMNS + 1];
-
-        idx += 1;
-        let pos = start + 1; // VCF is 1-based
-        let id = format!("STR_{}", idx);
-
-        // Parse phase values (handle "nan" or numeric values)
-        let phase1: Option<f64> = phase1_str.parse().ok();
-        let phase2: Option<f64> = phase2_str.parse().ok();
-
-        // Determine genotype and allele lengths
-        let (gt, al1, al2) = match (phase1, phase2) {
-            (None, None) => ("./.".to_string(), ".".to_string(), ".".to_string()),
-            (None, Some(p2)) => ("./1".to_string(), ".".to_string(), format!("{:.0}", p2)),
-            (Some(p1), None) => ("0/.".to_string(), format!("{:.0}", p1), ".".to_string()),
-            (Some(p1), Some(p2)) => ("0|1".to_string(), format!("{:.0}", p1), format!("{:.0}", p2)),
-        };
-
-        // Calculate SVLEN (using max of the two alleles for simplicity)
-        let svlen = match (phase1, phase2) {
-            (Some(p1), Some(p2)) => format!("{:.0}", p1.max(p2)),
-            (Some(p1), None) => format!("{:.0}", p1),
-            (None, Some(p2)) => format!("{:.0}", p2),
-            (None, None) => ".".to_string(),
-        };
-
-        let info = format!("END={};SVTYPE=STR;SVLEN={}", end, svlen);
-        let format_str = "GT:AL";
-        let sample_data = format!("{}:{},{}", gt, al1, al2);
-
-        writeln!(
-            writer,
-            "{}\t{}\t{}\tN\t<STR>\t.\tPASS\t{}\t{}\t{}",
-            chrom, pos, id, info, format_str, sample_data
-        )
-        .expect("Failed writing VCF record");
-    }
-
-    writer.flush().expect("Failed to flush VCF to stdout");
 }
 
 #[cfg(test)]
