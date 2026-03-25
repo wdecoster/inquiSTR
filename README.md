@@ -37,6 +37,7 @@ For detailed options, presets and additional commands, see the full documentatio
   - [inquiSTR relate - Compute Sample Relatedness](#inquistr-relate---compute-sample-relatedness)
   - [inquiSTR association - Statistical Association Testing](#inquistr-association---statistical-association-testing)
   - [inquiSTR optimize-call - Parameter Optimization](#inquistr-optimize-call---parameter-optimization)
+- [Output File Formats](docs/OUTPUT_FORMATS.md)
 - [Contributing](#-contributing)
 
 ## 📦 Installation
@@ -158,6 +159,8 @@ inquiSTR call sample.bam -R regions.bed
 # Use the predefined STRchive TR catalog (automatically downloads and caches, see below)
 inquiSTR call sample.bam --preset pathogenic
 ```
+
+The default output is a tab-separated file with one row per locus. See [Output File Formats](docs/OUTPUT_FORMATS.md) for a full description of the columns and metadata header.
 
 #### Predefined TR Catalogs
 
