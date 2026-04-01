@@ -26,6 +26,25 @@ use clap::{Args, Parser, Subcommand};
 use log::info;
 use std::path::PathBuf;
 
+fn parse_spacing(val: &str) -> Result<u32, String> {
+    let mut s = val.trim().to_ascii_lowercase();
+    let multiplier = if s.ends_with('m') {
+        s.pop();
+        1_000_000u32
+    } else if s.ends_with('k') {
+        s.pop();
+        1_000u32
+    } else {
+        1u32
+    };
+    match s.parse::<u32>() {
+        Ok(base) => base
+            .checked_mul(multiplier)
+            .ok_or_else(|| format!("min-spacing overflow: {}", val)),
+        Err(e) => Err(format!("invalid min-spacing '{}': {}", val, e)),
+    }
+}
+
 /// inquiSTR version from Cargo.toml
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -139,6 +158,10 @@ struct BatchStrArgs {
     /// Batch size in KB for grouping nearby STR targets
     #[clap(long, value_parser, default_value_t = 10)]
     batch_size: u32,
+
+    /// Expect imbalance in allele support for --unphased genotyping
+    #[clap(long, value_parser)]
+    imbalance: bool,
 }
 
 /// Unmapped kmer mode arguments
@@ -258,6 +281,10 @@ enum Commands {
         /// Output VCF format to stdout instead of TSV
         #[clap(long, value_parser)]
         vcf: bool,
+
+        /// Expect imbalance in allele support for --unphased
+        #[clap(long, value_parser)]
+        imbalance: bool,
     },
     /// Process multiple samples in batch and combine results
     #[clap(arg_required_else_help = true)]
@@ -455,8 +482,8 @@ enum Commands {
         #[clap(required = true)]
         region: String,
 
-        /// HTML output file name
-        #[clap(short, long, value_parser, default_value_t=String::from("groupplot.html"))]
+        /// SVG output file name (open in browser for interactivity)
+        #[clap(short, long, value_parser, default_value_t=String::from("groupplot.svg"))]
         output: String,
     },
     /// Perform PCA analysis on combined STR or kmer data
@@ -465,8 +492,8 @@ enum Commands {
         #[clap(value_parser, required = true)]
         combined: PathBuf,
 
-        /// HTML output file name for interactive PCA plot
-        #[clap(short, long, value_parser, default_value_t=String::from("pca_plot.html"))]
+        /// SVG output file name for interactive PCA plot (open in browser for interactivity)
+        #[clap(short, long, value_parser, default_value_t=String::from("pca_plot.svg"))]
         output: String,
 
         /// Number of principal components to compute (currently only first 2 are plotted)
@@ -555,8 +582,8 @@ enum Commands {
         #[clap(long)]
         nonzero: bool,
 
-        /// Tolerance in bp for considering calls as matching (default: 5)
-        #[clap(long, value_parser, default_value_t = 5)]
+        /// Tolerance in bp for considering calls as matching (default: 3)
+        #[clap(long, value_parser, default_value_t = 3)]
         tolerance: u32,
     },
     /// Compute relatedness between samples
@@ -573,6 +600,16 @@ enum Commands {
         /// Number of threads to use for parallel processing
         #[clap(short, long, value_parser, default_value_t = 1)]
         threads: usize,
+
+        /// Minimum genomic distance (in bp) between loci used for relatedness
+        /// (thins highly correlated nearby STRs to reduce LD-driven inflation).
+        /// Supports K/M suffixes (e.g. 100k, 5M).
+        #[clap(long, value_parser = parse_spacing, default_value_t = 100_000)]
+        min_spacing: u32,
+
+        /// Tolerance for allele length matching in IBS (bp). Default: 1.
+        #[clap(long, value_parser, default_value_t = 1)]
+        tolerance: u32,
     },
     /// Optimize batch_size and thread count for your system and dataset
     #[clap(arg_required_else_help = true)]
@@ -648,6 +685,7 @@ fn main() {
             max_locus,
             batch_size,
             vcf,
+            imbalance,
         } => {
             if let Err(e) = call::genotype_repeats(
                 bam,
@@ -658,6 +696,7 @@ fn main() {
                     unphased,
                     require_spanning,
                     no_extend: noextend,
+                    imbalance,
                 },
                 call::ProcessingConfig { threads, batch_size_kb: batch_size, output_vcf: vcf },
                 sample_name,
@@ -714,6 +753,7 @@ fn main() {
                         unphased: str_args.unphased,
                         require_spanning: str_args.require_spanning,
                         no_extend: str_args.noextend,
+                        imbalance: str_args.imbalance,
                     },
                     processing_config: call::ProcessingConfig {
                         threads: common.threads,
@@ -855,8 +895,8 @@ fn main() {
                 tolerance,
             );
         }
-        Commands::Relate { combined, output, threads } => {
-            relate::compute_relatedness(combined, output, threads);
+        Commands::Relate { combined, output, threads, min_spacing, tolerance } => {
+            relate::compute_relatedness(combined, output, threads, min_spacing, tolerance);
         }
         Commands::OptimizeCall {
             bam,

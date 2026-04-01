@@ -27,11 +27,8 @@
 //! components. For production use with large datasets, consider using more sophisticated
 //! eigenvalue decomposition methods.
 
+use kuva::prelude::*;
 use ndarray::{Array1, Array2, Axis};
-use plotly::color::{NamedColor, Rgba};
-use plotly::common::{Marker, Mode, Title};
-use plotly::layout::{Axis as PlotAxis, Layout};
-use plotly::{Plot, Scatter};
 use rayon::prelude::*;
 use std::io::BufRead;
 use std::path::PathBuf;
@@ -1215,7 +1212,7 @@ fn write_pc_scores(
     );
 }
 
-/// Create a PCA plot using Plotly
+/// Create a PCA plot using kuva
 fn create_pca_plot(
     pca_data: &Array2<f64>,
     sample_names: &[String],
@@ -1223,46 +1220,35 @@ fn create_pca_plot(
     output: &str,
     title: &str,
 ) {
-    // Extract PC1 and PC2 coordinates
-    let pc1_coords: Vec<f64> = pca_data.column(0).to_vec();
-    let pc2_coords: Vec<f64> = pca_data.column(1).to_vec();
+    // Extract PC1 and PC2 coordinates and zip into (x, y) pairs
+    let data: Vec<(f64, f64)> = pca_data
+        .column(0)
+        .iter()
+        .copied()
+        .zip(pca_data.column(1).iter().copied())
+        .collect();
 
-    // Create scatter plot
-    let trace = Scatter::new(pc1_coords, pc2_coords)
-        .mode(Mode::Markers)
-        .name("Samples")
-        .text_array(sample_names.to_vec())
-        .marker(
-            Marker::new()
-                .size(10)
-                .color(Rgba::new(31, 119, 180, 1.0))
-                .line(
-                    plotly::common::Line::new()
-                        .color(NamedColor::White)
-                        .width(1.0),
-                ),
-        );
+    // Create scatter plot with sample names shown on hover
+    let trace = ScatterPlot::new()
+        .with_data(data)
+        .with_color("steelblue")
+        .with_size(5.0)
+        .with_marker_opacity(0.8)
+        .with_tooltip_labels(sample_names.iter().cloned())
+        .with_tooltips();
 
-    let mut plot = Plot::new();
-    plot.add_trace(trace);
+    let plots: Vec<Plot> = vec![trace.into()];
 
     // Set up layout
-    let layout = Layout::new()
-        .title(Title::with_text(title))
-        .x_axis(
-            PlotAxis::new()
-                .title(Title::with_text(format!("PC1 ({:.1}% variance)", explained_variance[0]))),
-        )
-        .y_axis(
-            PlotAxis::new()
-                .title(Title::with_text(format!("PC2 ({:.1}% variance)", explained_variance[1]))),
-        )
-        .show_legend(false);
+    let layout = Layout::auto_from_plots(&plots)
+        .with_title(title)
+        .with_x_label(format!("PC1 ({:.1}% variance)", explained_variance[0]))
+        .with_y_label(format!("PC2 ({:.1}% variance)", explained_variance[1]))
+        .with_interactive();
 
-    plot.set_layout(layout);
-
-    // Save to HTML file
-    plot.write_html(output);
+    // Save to SVG file
+    let svg = render_to_svg(plots, layout);
+    std::fs::write(output, svg).expect("Failed to write PCA plot");
     println!("PCA plot saved to: {}", output);
 
     // Print summary statistics
@@ -1436,10 +1422,10 @@ mod tests {
         // This test requires the combined test data file with proper header to exist
         let test_file = PathBuf::from("test_combined_with_header.tsv");
         if test_file.exists() {
-            // This should not panic and should create the HTML file
+            // This should not panic and should create the SVG file
             pca(
                 test_file,
-                "test_pca_output.html".to_string(),
+                "test_pca_output.svg".to_string(),
                 10,
                 0,
                 AlleleAggregation::Max,
@@ -1447,10 +1433,10 @@ mod tests {
             );
 
             // Verify the output file was created
-            assert!(PathBuf::from("test_pca_output.html").exists());
+            assert!(PathBuf::from("test_pca_output.svg").exists());
 
             // Clean up
-            std::fs::remove_file("test_pca_output.html").ok();
+            std::fs::remove_file("test_pca_output.svg").ok();
         }
     }
 }

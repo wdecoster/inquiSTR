@@ -36,7 +36,7 @@ flate2 = "1.1.8"
 histo_fp = "0.2.1"
 indicatif = { version = "0.18.4", features = ["rayon"] }
 itertools = "0.14.0"
-plotly = "0.14.1"
+kuva = "0.1"
 num_cpus = "1.16"
 tempfile = "3.26.0"
 rand = "0.10.0"

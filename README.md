@@ -10,8 +10,8 @@ InquiSTR call performs length genotyping without sequence-level resolution, and 
 ## Quick Start
 
 ```bash
-# 1. Genotype a single sample at pathogenic STR loci
-inquiSTR call sample.bam --preset pathogenic --output sample.inq
+# 1. Genotype a single sample using the adotto catalog
+inquiSTR call sample.bam --preset adotto --output sample.inq
 
 # 2. Combine results for cohort analysis
 inquiSTR combine *.inq --output combined.tsv
@@ -159,8 +159,8 @@ inquiSTR call sample.bam -r chr1:1000-1100
 # Multiple regions from BED file
 inquiSTR call sample.bam -R regions.bed
 
-# Use the predefined STRchive TR catalog (automatically downloads and caches, see below)
-inquiSTR call sample.bam --preset pathogenic
+# Use the predefined adotto TR catalog (automatically downloads and caches, see below)
+inquiSTR call sample.bam --preset adotto
 ```
 
 The default output is a tab-separated file with one row per locus. See [Output File Formats](docs/OUTPUT_FORMATS.md) for a full description of the columns and metadata header. For a description of the genotyping algorithm, see [Call Algorithm](docs/CALL_ALGORITHM.md).
@@ -171,7 +171,7 @@ The `--preset` option provides quick access to well-known TR catalogs without ma
 
 Available presets:
 
-- **pathogenic**: STRchive pathogenic disease-associated STRs - curated database of STRs linked to human diseases (**75 loci**). See also [Hiatt et al., 2025](https://genomemedicine.biomedcentral.com/articles/10.1186/s13073-025-01454-4).
+- **pathogenic**: STRchive pathogenic disease-associated STRs - curated database of STRs linked to human diseases (**75 loci**). See also [Hiatt et al., 2025](https://genomemedicine.biomedcentral.com/articles/10.1186/s13073-025-01454-4). Note that inquiSTR does not investigate motif composition of expansions, a feature that is relevant for some of these loci, and pathogenic lengths may require follow up by a sequence-level genotyper such as [STRdust](https://github.com/wdecoster/STRdust) or [TRGT](https://github.com/PacificBiosciences/trgt).
 - **adotto**: Adotto TR regions catalog v1.2.1 - comprehensive TR regions from the Adotto project and benchmark (**1,784,804 loci**). See also [English et al., 2025](https://www.nature.com/articles/s41587-024-02225-z).
 - **trexplorer**: Broad Institute TR Explorer catalog - genome-wide TR catalog covering 1-1000bp motifs (**4,863,041 loci**). See also [Weisburd et al., 2025](https://www.biorxiv.org/content/10.1101/2024.10.04.615514v2).
 - **codis**: CODIS forensic STR markers from the USAT catalog - standard forensic STR markers used for human identification (**20 loci**). See also [Wang et al., 2024](https://link.springer.com/article/10.1186/s12859-022-05021-1).
@@ -335,8 +335,8 @@ Options:
 - `benchmark_results.tsv` - Raw timing data for all test runs
 - `aggregated_stats.tsv` - Statistical summaries (mean, std dev, min times)
 - `recommendation.txt` - Human-readable recommendation with rationale
-- `wall_time_heatmap.html` - Interactive heatmap showing performance across configurations
-- `optimization_analysis.html` - 4-panel analysis (speedup, efficiency, batch size trends)
+- `wall_time_heatmap.svg` - Heatmap showing performance across configurations (open in browser for interactivity)
+- `optimization_analysis.svg` - 4-panel analysis (speedup, efficiency, batch size trends)
 
 **Examples:**
 
@@ -521,7 +521,7 @@ Arguments:
 
 Options:
   -c, --condition <CONDITION>  test column and groups to plot e.g. group:PAT,CON
-  -o, --output <OUTPUT>        HTML output file name [default: groupplot.html]
+  -o, --output <OUTPUT>        SVG output file name (open in browser for interactivity) [default: groupplot.svg]
   -h, --help                   Print help
 ```
 
@@ -529,7 +529,7 @@ Options:
 
 ```bash
 # Compare patient vs control groups
-inquiSTR plot combined.tsv metadata.tsv chr1:1000-2000 --condition "group:PAT,CON" --output patient_control.html
+inquiSTR plot combined.tsv metadata.tsv chr1:1000-2000 --condition "group:PAT,CON" --output patient_control.svg
 ```
 
 ### `inquiSTR unmapped` - Kmer Frequency Analysis
@@ -604,7 +604,7 @@ Benchmark inquiSTR genotyping results (from [`inquiSTR call`](#inquistr-call---s
 - **inquiSTR call file** (`.inq`): another file produced by `inquiSTR call` or `inquiSTR convert`, detected via metadata
 - **BED**: 9-column adotto-style BED file where the last two columns are haplotype lengths
 
-This command generates correlation statistics and an optional interactive HTML plot.
+This command generates correlation statistics and an optional interactive SVG plot (open in browser for interactivity).
 
 ```text
 Usage: inquiSTR benchmark [OPTIONS] --test <TEST> --truth <TRUTH>
@@ -613,20 +613,20 @@ Options:
       --test <TEST>                       inquiSTR call output file (.inq format) to benchmark
       --truth <TRUTH>                     Truth file (VCF, BED, or inquiSTR call file — format auto-detected)
   -m, --mode <MODE>                       Mode for selecting alleles: MAX (default) or MIN [default: MAX]
-  -p, --plot <PLOT>                       Output file for correlation plot (HTML)
+  -p, --plot <PLOT>                       Output file for correlation plot (SVG)
       --max-plot-length <MAX_PLOT_LENGTH>  Maximum allele length to display on plot [default: 5000]
       --tier1                             Only use Tier1 variants from BED file
   -d, --diff-out <DIFF_OUT>               Output file listing the largest discrepancies
       --max-locus <MAX_LOCUS>             Exclude loci larger than this size (bp) from truth data
       --nonzero                           Exclude zero-zero pairs (loci unchanged in both) from correlation
-      --tolerance <TOLERANCE>             Tolerance in bp for counting calls as matching [default: 5]
+      --tolerance <TOLERANCE>             Tolerance in bp for counting calls as matching [default: 3]
   -h, --help                              Print help
 ```
 
 **Output:**
 
 - Correlation statistics (R², exact match rate, within-tolerance rate) printed to stdout
-- Optional interactive HTML plot (`--plot`)
+- Optional interactive SVG plot (`--plot`; open in browser for interactivity)
 - Optional TSV of the largest discrepancies (`--diff-out`)
 
 ### `inquiSTR pca` - Principal Component Analysis
@@ -640,7 +640,7 @@ Arguments:
   <COMBINED>  Combined file from inquiSTR combine (supports both STR calls and kmer frequencies)
 
 Options:
-  -o, --output <OUTPUT>            HTML output file name for interactive PCA plot [default: pca_plot.html]
+  -o, --output <OUTPUT>            SVG output file name for interactive PCA plot (open in browser for interactivity) [default: pca_plot.svg]
   -c, --components <COMPONENTS>    Number of principal components to compute (currently only first 2 are plotted) [default: 10]
   -t, --threads <THREADS>          Number of threads to use for parallel processing [default: 1]
   -a, --aggregation <AGGREGATION>  Method for aggregating H1/H2 allele lengths: max (default), min, or sum (only applies to STR files, ignored for kmer files) [default: max]
@@ -656,10 +656,10 @@ inquiSTR pca combined.tsv
 
 # Compute more principal components (only first 2 are plotted) 
 # and save PC scores to a file for use as covariates in association testing
-inquiSTR pca combined.tsv --components 20 --output pca.html --scores pc_scores.tsv
+inquiSTR pca combined.tsv --components 20 --output pca.svg --scores pc_scores.tsv
 
 # PCA analysis on kmer frequencies from unmapped reads
-inquiSTR pca inquiSTR_unmapped.tsv --output kmer_pca.html
+inquiSTR pca inquiSTR_unmapped.tsv --output kmer_pca.svg
 ```
 
 **PC Scores Output:**
@@ -685,31 +685,36 @@ Arguments:
 Options:
   -o, --output <OUTPUT>    Output file for relatedness matrix
   -t, --threads <THREADS>  Number of threads to use for parallel processing [default: 1]
+      --min-spacing <BPS>  Minimum distance between loci (bp) to include in relatedness computation, for LD thinning [default: 100000]. Suffixes k/M allowed (100k, 1M).
+      --tolerance <BP>     Tolerance for allele length matching in IBS (bp) [default: 1].
   -h, --help               Print help
 ```
 
-**Method:**
+**Method (experimental):**
 
-The relatedness coefficient is computed using Identity-by-State (IBS):
+The relatedness coefficient is a method-of-moments estimator using population-corrected Identity-by-State (IBS). STRs form a continuum of allele lengths and are subject to read-level noise, somatic mosaicism, and supporting read imbalance, so this approach is inherently less deterministic than biallelic SNP kinship. For each locus *l*, the expected IBS/2 for unrelated individuals (E0) is estimated empirically as the mean IBS/2 across all sample pairs, and the bias-corrected homozygosity h is used to derive the expected parent-child IBS/2 (E_PC = 0.5 + 0.5h). The relatedness between two samples is:
 
-- For each locus, count matching alleles between two samples (0, 1, or 2 matches)
-- Relatedness = (IBS2 + 0.5 × IBS1) / n_loci
-- Only informative loci (where both samples have valid calls) are used
+- Relatedness = sum(IBS/2 - E0) / sum(1 + h - 2*E0)
+
+Because STR allele uncertainty is greater than SNPs, small differences in allele value can shift relatedness notably; users should treat relatedness estimates as approximate and apply additional validation (pedigree data, independent genotype assays) for decision-making.
+
+- `--min-spacing` removes closely spaced loci to reduce LD-driven inflation, so relatedness is more stable across genome-wide STRs.
+- `--tolerance` allows allele values to match within +/- BP (default 1), which mitigates PCR/alignment rounding noise in STR allele calls.
 
 **Expected Relatedness Values:**
 
-- **1.0**: Identical twins / duplicate samples
-- **0.5**: Parent-child / full siblings
-- **0.25**: Half-siblings / grandparent-grandchild
-- **0.125**: First cousins
-- **0.0**: Unrelated individuals
+- **>1**: Identical twins / duplicate samples (typical for method-of-moments estimators)
+- **~0.5**: Parent-child / full siblings
+- **~0.25**: Half-siblings / grandparent-grandchild
+- **~0.125**: First cousins
+- **~0.0**: Unrelated individuals
 
 **Output Format:**
 
 TSV file with columns:
 
 - `sample1`, `sample2`: Sample pair names
-- `relatedness`: Coefficient (0-1), sorted descending
+- `relatedness`: Coefficient (~0 for unrelated, ~0.5 for parent-child), sorted descending
 - `n_loci`: Number of informative loci used
 - `ibs0`, `ibs1`, `ibs2`: Counts of loci with 0, 1, or 2 shared alleles
 

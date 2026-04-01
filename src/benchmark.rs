@@ -1,6 +1,5 @@
-use plotly::common::{Mode, Title};
-use plotly::layout::{Axis, Layout};
-use plotly::{Plot, Scatter};
+use kuva::plot::scatter::TrendLine;
+use kuva::prelude::*;
 use std::collections::HashMap;
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
@@ -728,23 +727,12 @@ pub fn benchmark(
     }
 
     // Filter points for plotting based on max_plot_length
-    let mut plot_inquistr = Vec::new();
-    let mut plot_truth = Vec::new();
-    let mut plot_hover_text = Vec::new();
+    let mut plot_data: Vec<(f64, f64)> = Vec::new();
     let mut hidden_count = 0;
 
-    for ((inq_val, truth_val), locus) in inquistr_values
-        .iter()
-        .zip(truth_values.iter())
-        .zip(loci_info.iter())
-    {
+    for (inq_val, truth_val) in inquistr_values.iter().zip(truth_values.iter()) {
         if inq_val.abs() <= max_plot_length && truth_val.abs() <= max_plot_length {
-            plot_inquistr.push(*inq_val);
-            plot_truth.push(*truth_val);
-            plot_hover_text.push(format!(
-                "{}:{}-{}<br>inquiSTR: {:.1}<br>Truth: {:.1}",
-                locus.0, locus.1, locus.2, inq_val, truth_val
-            ));
+            plot_data.push((*inq_val, *truth_val));
         } else {
             hidden_count += 1;
         }
@@ -760,12 +748,15 @@ pub fn benchmark(
     // Determine axis range for square plot
     let axis_limit = max_plot_length;
 
-    // Create scatter plot with custom hover text
-    let trace = Scatter::new(plot_inquistr.clone(), plot_truth.clone())
-        .mode(Mode::Markers)
-        .name("Data points")
-        .text_array(plot_hover_text)
-        .hover_template("%{text}<extra></extra>");
+    // Create scatter plot with trend line and R²
+    let trace = ScatterPlot::new()
+        .with_data(plot_data)
+        .with_color("steelblue")
+        .with_size(3.0)
+        .with_marker_opacity(0.5)
+        .with_trend(TrendLine::Linear)
+        .with_correlation()
+        .with_legend("Data points");
 
     let title_text = if nonzero {
         format!(
@@ -776,32 +767,19 @@ pub fn benchmark(
         format!("inquiSTR vs Truth Genotypes (Mode: {}, R² = {:.4})", mode, r_squared_all)
     };
 
-    let layout = Layout::new()
-        .title(Title::with_text(title_text))
-        .x_axis(
-            Axis::new()
-                .title(Title::with_text("inquiSTR genotypes"))
-                .range(vec![-axis_limit, axis_limit])
-                .constrain(plotly::layout::AxisConstrain::Domain)
-                .scale_anchor("y"),
-        )
-        .y_axis(
-            Axis::new()
-                .title(Title::with_text("Truth genotypes"))
-                .range(vec![-axis_limit, axis_limit])
-                .scale_anchor("x"),
-        )
-        .width(800)
-        .height(800);
+    let layout = Layout::new((-axis_limit, axis_limit), (-axis_limit, axis_limit))
+        .with_title(title_text)
+        .with_x_label("inquiSTR genotypes")
+        .with_y_label("Truth genotypes")
+        .with_width(800.0)
+        .with_height(800.0)
+        .with_interactive();
 
     // Save plot if output file is specified
     if let Some(plot_path) = plot_file {
-        let mut plot = Plot::new();
-        plot.add_trace(trace);
-        plot.set_layout(layout);
-
-        let html_content = plot.to_html();
-        match std::fs::write(&plot_path, html_content) {
+        let plots: Vec<Plot> = vec![trace.into()];
+        let svg = render_to_svg(plots, layout);
+        match std::fs::write(&plot_path, svg) {
             Ok(_) => println!("Plot saved to: {}", plot_path.display()),
             Err(e) => {
                 eprintln!("Error saving plot: {}", e);

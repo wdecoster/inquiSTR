@@ -13,11 +13,7 @@
  */
 
 use crate::repeats::{RepeatInterval, TargetConfig};
-use plotly::{
-    HeatMap, Plot, Scatter,
-    common::Title,
-    layout::{Axis, GridPattern, Layout, LayoutGrid},
-};
+use kuva::prelude::*;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -298,6 +294,7 @@ fn run_single_benchmark(
             unphased: false,
             require_spanning: false,
             no_extend: false,
+            imbalance: false,
         },
         crate::call::ProcessingConfig { threads, batch_size_kb: batch_size, output_vcf: false },
         None, // sample_name
@@ -367,7 +364,7 @@ fn aggregate_results(results: &[BenchmarkResult]) -> Vec<ConfigStats> {
     stats
 }
 
-/// Generate plotly visualizations
+/// Generate kuva visualizations
 fn generate_visualizations(stats: &[ConfigStats], output_dir: &Path) -> Result<(), String> {
     // Create heatmap of wall times
     create_wall_time_heatmap(stats, output_dir)?;
@@ -407,24 +404,23 @@ fn create_wall_time_heatmap(stats: &[ConfigStats], output_dir: &Path) -> Result<
         }
     }
 
-    let heatmap = HeatMap::new_z(z_matrix)
-        .x(unique_threads.iter().map(|t| *t as f64).collect())
-        .y(unique_batch_sizes.iter().map(|bs| *bs as f64).collect())
-        .color_scale(plotly::common::ColorScale::Palette(
-            plotly::common::ColorScalePalette::Viridis,
-        ));
+    let heatmap = Heatmap::new().with_data(z_matrix).with_values();
 
-    let layout = Layout::new()
-        .title(Title::from("Wall Time (seconds) vs Threads and Batch Size"))
-        .x_axis(Axis::new().title(Title::from("Number of Threads")))
-        .y_axis(Axis::new().title(Title::from("Batch Size")));
+    let x_labels: Vec<String> = unique_threads.iter().map(|t| t.to_string()).collect();
+    let y_labels: Vec<String> = unique_batch_sizes.iter().map(|bs| bs.to_string()).collect();
 
-    let mut plot = Plot::new();
-    plot.add_trace(heatmap);
-    plot.set_layout(layout);
+    let plots: Vec<Plot> = vec![heatmap.into()];
+    let layout = Layout::auto_from_plots(&plots)
+        .with_title("Wall Time (seconds) vs Threads and Batch Size")
+        .with_x_label("Number of Threads")
+        .with_y_label("Batch Size")
+        .with_x_categories(x_labels)
+        .with_y_categories(y_labels)
+        .with_interactive();
 
-    let output_file = output_dir.join("wall_time_heatmap.html");
-    plot.write_html(&output_file);
+    let svg = render_to_svg(plots, layout);
+    let output_file = output_dir.join("wall_time_heatmap.svg");
+    std::fs::write(&output_file, svg).map_err(|e| e.to_string())?;
 
     eprintln!("Saved: {}", output_file.display());
     Ok(())
@@ -450,93 +446,100 @@ fn create_optimization_plots(stats: &[ConfigStats], output_dir: &Path) -> Result
     sorted_best.sort_by_key(|(threads, _)| *threads);
 
     // Extract data for plots
-    let threads: Vec<usize> = sorted_best.iter().map(|(t, _)| *t).collect();
-    let batch_sizes: Vec<u32> = sorted_best.iter().map(|(_, s)| s.batch_size).collect();
+    let threads: Vec<f64> = sorted_best.iter().map(|(t, _)| *t as f64).collect();
+    let batch_sizes: Vec<f64> = sorted_best
+        .iter()
+        .map(|(_, s)| s.batch_size as f64)
+        .collect();
     let wall_times: Vec<f64> = sorted_best.iter().map(|(_, s)| s.mean_wall_time).collect();
 
     // Calculate speedup (vs 1 thread baseline)
     let baseline = wall_times[0];
     let speedups: Vec<f64> = wall_times.iter().map(|t| baseline / t).collect();
 
-    // Create 4-panel plot using subplot grid
-    let mut plot = Plot::new();
-
-    // Plot 1: Optimal batch size vs threads
-    let trace1 = Scatter::new(threads.clone(), batch_sizes)
-        .mode(plotly::common::Mode::LinesMarkers)
-        .name("Optimal Batch Size")
-        .x_axis("x1")
-        .y_axis("y1");
-    plot.add_trace(trace1);
-
-    // Plot 2: Speedup vs threads
-    let trace2 = Scatter::new(threads.clone(), speedups.clone())
-        .mode(plotly::common::Mode::LinesMarkers)
-        .name("Speedup")
-        .x_axis("x2")
-        .y_axis("y2");
-    plot.add_trace(trace2);
-
     // Calculate efficiency (speedup / threads)
     let efficiency: Vec<f64> = threads
         .iter()
         .zip(speedups.iter())
-        .map(|(t, s)| s / (*t as f64))
+        .map(|(t, s)| s / t)
         .collect();
 
-    // Plot 3: Parallel efficiency
-    let trace3 = Scatter::new(threads.clone(), efficiency)
-        .mode(plotly::common::Mode::LinesMarkers)
-        .name("Efficiency")
-        .x_axis("x3")
-        .y_axis("y3");
-    plot.add_trace(trace3);
+    // Panel 1: Optimal batch size vs threads
+    let line1 = LinePlot::new()
+        .with_data(
+            threads
+                .iter()
+                .copied()
+                .zip(batch_sizes.iter().copied())
+                .collect::<Vec<_>>(),
+        )
+        .with_color("steelblue")
+        .with_legend("Optimal Batch Size");
 
-    // Plot 4: Wall time vs threads
-    let trace4 = Scatter::new(threads, wall_times)
-        .mode(plotly::common::Mode::LinesMarkers)
-        .name("Wall Time")
-        .x_axis("x4")
-        .y_axis("y4");
-    plot.add_trace(trace4);
+    // Panel 2: Speedup vs threads
+    let line2 = LinePlot::new()
+        .with_data(
+            threads
+                .iter()
+                .copied()
+                .zip(speedups.iter().copied())
+                .collect::<Vec<_>>(),
+        )
+        .with_color("steelblue")
+        .with_legend("Speedup");
 
-    let layout = Layout::new()
-        .title(Title::from("Optimization Analysis"))
-        .grid(
-            LayoutGrid::new()
-                .rows(2)
-                .columns(2)
-                .pattern(GridPattern::Independent),
+    // Panel 3: Parallel efficiency
+    let line3 = LinePlot::new()
+        .with_data(
+            threads
+                .iter()
+                .copied()
+                .zip(efficiency.iter().copied())
+                .collect::<Vec<_>>(),
         )
-        .x_axis(
-            Axis::new()
-                .title(Title::from("Threads"))
-                .domain(&[0.0, 0.45]),
-        )
-        .y_axis(Axis::new().title(Title::from("Batch Size (KB)")))
-        .x_axis2(
-            Axis::new()
-                .title(Title::from("Threads"))
-                .domain(&[0.55, 1.0]),
-        )
-        .y_axis2(Axis::new().title(Title::from("Speedup")).anchor("x2"))
-        .x_axis3(
-            Axis::new()
-                .title(Title::from("Threads"))
-                .domain(&[0.0, 0.45]),
-        )
-        .y_axis3(Axis::new().title(Title::from("Efficiency")).anchor("x3"))
-        .x_axis4(
-            Axis::new()
-                .title(Title::from("Threads"))
-                .domain(&[0.55, 1.0]),
-        )
-        .y_axis4(Axis::new().title(Title::from("Wall Time (s)")).anchor("x4"));
+        .with_color("steelblue")
+        .with_legend("Efficiency");
 
-    plot.set_layout(layout);
+    // Panel 4: Wall time vs threads
+    let line4 = LinePlot::new()
+        .with_data(
+            threads
+                .iter()
+                .copied()
+                .zip(wall_times.iter().copied())
+                .collect::<Vec<_>>(),
+        )
+        .with_color("steelblue")
+        .with_legend("Wall Time");
 
-    let output_file = output_dir.join("optimization_analysis.html");
-    plot.write_html(&output_file);
+    let plots1: Vec<Plot> = vec![line1.into()];
+    let plots2: Vec<Plot> = vec![line2.into()];
+    let plots3: Vec<Plot> = vec![line3.into()];
+    let plots4: Vec<Plot> = vec![line4.into()];
+
+    let layout1 = Layout::auto_from_plots(&plots1)
+        .with_x_label("Threads")
+        .with_y_label("Batch Size (KB)");
+    let layout2 = Layout::auto_from_plots(&plots2)
+        .with_x_label("Threads")
+        .with_y_label("Speedup");
+    let layout3 = Layout::auto_from_plots(&plots3)
+        .with_x_label("Threads")
+        .with_y_label("Efficiency");
+    let layout4 = Layout::auto_from_plots(&plots4)
+        .with_x_label("Threads")
+        .with_y_label("Wall Time (s)");
+
+    let figure = Figure::new(2, 2)
+        .with_title("Optimization Analysis")
+        .with_plots(vec![plots1, plots2, plots3, plots4])
+        .with_layouts(vec![layout1, layout2, layout3, layout4]);
+
+    let scene = figure.render();
+    let svg = SvgBackend.render_scene(&scene);
+
+    let output_file = output_dir.join("optimization_analysis.svg");
+    std::fs::write(&output_file, svg).map_err(|e| e.to_string())?;
 
     eprintln!("Saved: {}", output_file.display());
     Ok(())

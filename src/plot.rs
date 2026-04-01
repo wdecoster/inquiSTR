@@ -1,7 +1,7 @@
 use crate::locus_search::{
     LocusSearchConfig, OverlapStrategy, extract_clean_sample_names, find_locus,
 };
-use plotly::{Histogram, Plot};
+use kuva::prelude::*;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -58,7 +58,6 @@ pub fn plot(
     let locus_match = find_locus(config).expect("Specified interval not found!");
 
     let mut lengths_for_plot: HashMap<String, Vec<f64>> = HashMap::new();
-    let mut ids_for_plot: HashMap<String, Vec<&String>> = HashMap::new();
 
     for (sample, length) in samples.iter().zip(locus_match.values) {
         if samples_map.contains_key(sample) {
@@ -66,29 +65,51 @@ pub fn plot(
                 .entry(samples_map[sample].clone())
                 .or_default()
                 .push(length);
-            ids_for_plot
-                .entry(samples_map[sample].clone())
-                .or_default()
-                .push(sample);
         }
     }
-    plot_hist(lengths_for_plot, ids_for_plot, output);
+    plot_hist(lengths_for_plot, output);
 }
 
-fn plot_hist(
-    lengths_map: HashMap<String, Vec<f64>>,
-    ids_map: HashMap<String, Vec<&String>>,
-    output: String,
-) {
-    let mut plot = Plot::new();
-    for (group, lengths) in lengths_map {
-        let trace = Histogram::new(lengths)
-            .name(&group)
-            .opacity(0.5)
-            .text_array(ids_map[&group].clone());
-        plot.add_trace(trace);
+fn plot_hist(lengths_map: HashMap<String, Vec<f64>>, output: String) {
+    // Compute shared range across all groups
+    let mut global_min = f64::INFINITY;
+    let mut global_max = f64::NEG_INFINITY;
+    for lengths in lengths_map.values() {
+        for &v in lengths {
+            if v < global_min {
+                global_min = v;
+            }
+            if v > global_max {
+                global_max = v;
+            }
+        }
+    }
+    let range = (global_min, global_max);
+
+    // Semi-transparent colors for overlapping histograms (~50% alpha)
+    let colors = [
+        "#4682b480",
+        "#dc143c80",
+        "#2e8b5780",
+        "#ff8c0080",
+        "#8a2be280",
+        "#00ced180",
+    ];
+
+    let mut plots: Vec<Plot> = Vec::new();
+    for (i, (group, lengths)) in lengths_map.into_iter().enumerate() {
+        let color = colors[i % colors.len()];
+        let hist = Histogram::new()
+            .with_data(lengths)
+            .with_bins(100)
+            .with_range(range)
+            .with_color(color)
+            .with_legend(&group);
+        plots.push(hist.into());
     }
 
-    // plot.set_layout(Layout::new().bar_mode(BarMode::Overlay));
-    plot.write_html(output);
+    let layout = Layout::auto_from_plots(&plots).with_interactive();
+
+    let svg = render_to_svg(plots, layout);
+    std::fs::write(&output, svg).expect("Failed to write SVG plot");
 }

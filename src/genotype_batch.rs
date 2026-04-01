@@ -271,7 +271,12 @@ fn process_target_from_read_info(
         }
 
         repeat_calls.sort_unstable_by_key(|call| call.value());
-        let (hap1, hap2) = repeat_calls.split_at(repeat_calls.len() / 2);
+        let mid: usize = if genotype.imbalance {
+            0
+        } else {
+            repeat_calls.len() / 2
+        };
+        let (hap1, hap2) = repeat_calls.split_at(mid);
 
         Ok((
             Genotype {

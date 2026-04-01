@@ -19,6 +19,7 @@ pub struct GenotypeConfig {
     pub unphased: bool,
     pub require_spanning: bool,
     pub no_extend: bool,
+    pub imbalance: bool,
 }
 
 /// Configuration for processing (threads, batching, etc.)
@@ -362,6 +363,7 @@ fn test_region() {
             unphased: true,
             require_spanning: false,
             no_extend: false,
+            imbalance: false,
         },
         ProcessingConfig { threads: 4, batch_size_kb: 50, output_vcf: false },
         Some("sample".to_string()),
@@ -384,7 +386,7 @@ fn test_region_from_url() {
             preset: None,
             max_locus: None,
         },
-        GenotypeConfig { minlen: 5, support: 3, unphased: true, require_spanning: false, no_extend: false },
+        GenotypeConfig { minlen: 5, support: 3, unphased: true, require_spanning: false, no_extend: false, imbalance: false },
         ProcessingConfig { threads: 4, batch_size_kb: 50, output_vcf: false },
         Some("sample".to_string()),
         Some(String::from(
@@ -410,6 +412,7 @@ fn test_region_bed() {
             unphased: true,
             require_spanning: false,
             no_extend: false,
+            imbalance: false,
         },
         ProcessingConfig { threads: 4, batch_size_kb: 50, output_vcf: false },
         Some("sample".to_string()),
@@ -434,6 +437,7 @@ fn test_unphased() {
             unphased: true,
             require_spanning: false,
             no_extend: false,
+            imbalance: false,
         },
         ProcessingConfig { threads: 4, batch_size_kb: 50, output_vcf: false },
         Some("sample".to_string()),
@@ -475,6 +479,7 @@ fn test_phasing_validation_triggers() {
             unphased: true,
             require_spanning: false,
             no_extend: false,
+            imbalance: false,
         },
         ProcessingConfig { threads: 1, batch_size_kb: 50, output_vcf: false },
         Some("sample".to_string()),
@@ -511,6 +516,7 @@ fn test_nan_genotype_for_unphased_loci() {
             unphased: true,
             require_spanning: false,
             no_extend: false,
+            imbalance: false,
         },
         ProcessingConfig { threads: 1, batch_size_kb: 50, output_vcf: false },
         Some("test_sample".to_string()),
