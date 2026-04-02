@@ -910,7 +910,12 @@ fn main() {
             output,
         } => {
             // Determine max_threads if not specified, capped at 16
-            let max_threads = max_threads.unwrap_or_else(|| num_cpus::get().min(16));
+            let max_threads = max_threads.unwrap_or_else(|| {
+                std::thread::available_parallelism()
+                    .map(|n| n.get())
+                    .unwrap_or(1)
+                    .min(16)
+            });
 
             // Validate inputs
             if !bam.exists() {

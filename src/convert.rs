@@ -302,7 +302,7 @@ pub fn convert_vcf(vcf_files: Vec<PathBuf>, off_by_one: bool) -> Result<(), Inqu
         };
         let (chr_a, pos_a, end_a) = parse_locus(a);
         let (chr_b, pos_b, end_b) = parse_locus(b);
-        human_sort::compare(&chr_a, &chr_b)
+        crate::batching::human_cmp(&chr_a, &chr_b)
             .then(pos_a.cmp(&pos_b))
             .then(end_a.cmp(&end_b))
     });

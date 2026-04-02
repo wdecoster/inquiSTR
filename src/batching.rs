@@ -1,7 +1,41 @@
-use human_sort::compare as human_compare;
+use std::cmp::Ordering;
 use std::collections::HashMap;
 
 use crate::repeats::{ChromosomeMapper, RepeatInterval};
+
+/// Compare two strings with natural (human) ordering, so "chr2" < "chr10".
+/// Splits each string into runs of digits and non-digits and compares segment by segment.
+pub fn human_cmp(a: &str, b: &str) -> Ordering {
+    fn segments(s: &str) -> Vec<(bool, &str)> {
+        let mut parts = Vec::new();
+        let bytes = s.as_bytes();
+        let mut i = 0;
+        while i < bytes.len() {
+            let is_digit = bytes[i].is_ascii_digit();
+            let start = i;
+            while i < bytes.len() && bytes[i].is_ascii_digit() == is_digit {
+                i += 1;
+            }
+            parts.push((is_digit, &s[start..i]));
+        }
+        parts
+    }
+
+    let pa = segments(a);
+    let pb = segments(b);
+    for (sa, sb) in pa.iter().zip(pb.iter()) {
+        let ord = if sa.0 && sb.0 {
+            // Both numeric: compare by length first (avoids overflow), then lexicographic
+            sa.1.len().cmp(&sb.1.len()).then_with(|| sa.1.cmp(sb.1))
+        } else {
+            sa.1.cmp(sb.1)
+        };
+        if ord != Ordering::Equal {
+            return ord;
+        }
+    }
+    pa.len().cmp(&pb.len())
+}
 
 /// Represents a batch of nearby repeats to be processed together
 /// Batches are created within chromosome boundaries and within distance threshold
@@ -101,8 +135,7 @@ pub fn create_batches(
     }
 
     // Sort batches by chromosome and position for deterministic processing
-    all_batches
-        .sort_by(|a, b| human_compare(&a.chromosome, &b.chromosome).then(a.start.cmp(&b.start)));
+    all_batches.sort_by(|a, b| human_cmp(&a.chromosome, &b.chromosome).then(a.start.cmp(&b.start)));
 
     all_batches
 }

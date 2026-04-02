@@ -274,7 +274,19 @@ impl TargetLoader {
         let (url, cache_filename) = preset.metadata();
         let preset_name = preset.display_name();
 
-        let cache_dir = dirs::cache_dir()
+        let cache_dir = std::env::var_os("XDG_CACHE_HOME")
+            .map(std::path::PathBuf::from)
+            .filter(|p| p.is_absolute())
+            .or_else(|| {
+                std::env::var_os("HOME").map(|h| {
+                    let home = std::path::PathBuf::from(h);
+                    if cfg!(target_os = "macos") {
+                        home.join("Library").join("Caches")
+                    } else {
+                        home.join(".cache")
+                    }
+                })
+            })
             .unwrap_or_else(std::env::temp_dir)
             .join("inquistr");
 

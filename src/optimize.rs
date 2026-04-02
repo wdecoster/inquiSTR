@@ -135,7 +135,9 @@ struct SystemInfo {
 }
 
 fn detect_system_info() -> SystemInfo {
-    let cpu_count = num_cpus::get();
+    let cpu_count = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1);
 
     // Attempt to get memory info (Linux-specific)
     let memory_gb = if cfg!(target_os = "linux") {
