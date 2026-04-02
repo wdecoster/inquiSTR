@@ -16,6 +16,7 @@ Each file starts with metadata comment lines, followed by a column header and th
 # minlen=<minimum STR length threshold>
 # support=<minimum read support threshold>
 # unphased=<true|false>
+# haploid=<comma-separated chromosome names, or None>
 ```
 
 ### Columns
@@ -33,7 +34,7 @@ chromosome  begin  end  info  <sample>_H1  <sample>_H2
 | `<sample>_H1` | STR length change relative to reference for haplotype 1 (bp) |
 | `<sample>_H2` | STR length change relative to reference for haplotype 2 (bp) |
 
-The allele length values (`H1`, `H2`) are the median length difference from the reference genome in base pairs, computed from all supporting reads assigned to that haplotype. Positive values indicate expansion, negative values indicate contraction. A value of `NaN` means insufficient reads met the support threshold (or no phased reads were available for that haplotype).
+The allele length values (`H1`, `H2`) are the median length difference from the reference genome in base pairs, computed from all supporting reads assigned to that haplotype. Positive values indicate expansion, negative values indicate contraction. A value of `NaN` means insufficient reads met the support threshold, no phased reads were available for that haplotype, or the locus is on a haploid chromosome (in which case `H1` carries the single allele value and `H2` is always `NaN`).
 
 ## Combined call file
 

@@ -12,14 +12,15 @@ use crate::genotype_batch::{process_batch_with_dedicated_reader, process_batch_w
 use crate::repeats::{ChromosomeMapper, RepeatInterval, TargetConfig};
 
 /// Configuration for genotyping parameters (how to call STRs)
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct GenotypeConfig {
     pub minlen: u32,
     pub support: usize,
     pub unphased: bool,
     pub require_spanning: bool,
     pub no_extend: bool,
-    pub imbalance: bool,
+    pub imbalance: Option<f64>,
+    pub haploid: Option<Vec<String>>,
 }
 
 /// Configuration for processing (threads, batching, etc.)
@@ -156,6 +157,16 @@ pub fn genotype_repeats(
         writeln!(handle, "# minlen={}", genotype.minlen).expect("Failed writing metadata.");
         writeln!(handle, "# support={}", genotype.support).expect("Failed writing metadata.");
         writeln!(handle, "# unphased={}", genotype.unphased).expect("Failed writing metadata.");
+        writeln!(
+            handle,
+            "# haploid={}",
+            genotype
+                .haploid
+                .as_ref()
+                .map(|v| v.join(","))
+                .unwrap_or_else(|| "None".to_string())
+        )
+        .expect("Failed writing metadata.");
     }
 
     // Write data header to either stdout (if TSV) or temp file (if VCF)
@@ -363,7 +374,8 @@ fn test_region() {
             unphased: true,
             require_spanning: false,
             no_extend: false,
-            imbalance: false,
+            imbalance: None,
+            haploid: None,
         },
         ProcessingConfig { threads: 4, batch_size_kb: 50, output_vcf: false },
         Some("sample".to_string()),
@@ -386,7 +398,7 @@ fn test_region_from_url() {
             preset: None,
             max_locus: None,
         },
-        GenotypeConfig { minlen: 5, support: 3, unphased: true, require_spanning: false, no_extend: false, imbalance: false },
+        GenotypeConfig { minlen: 5, support: 3, unphased: true, require_spanning: false, no_extend: false, imbalance: None, haploid: None },
         ProcessingConfig { threads: 4, batch_size_kb: 50, output_vcf: false },
         Some("sample".to_string()),
         Some(String::from(
@@ -412,7 +424,8 @@ fn test_region_bed() {
             unphased: true,
             require_spanning: false,
             no_extend: false,
-            imbalance: false,
+            imbalance: None,
+            haploid: None,
         },
         ProcessingConfig { threads: 4, batch_size_kb: 50, output_vcf: false },
         Some("sample".to_string()),
@@ -437,7 +450,8 @@ fn test_unphased() {
             unphased: true,
             require_spanning: false,
             no_extend: false,
-            imbalance: false,
+            imbalance: None,
+            haploid: None,
         },
         ProcessingConfig { threads: 4, batch_size_kb: 50, output_vcf: false },
         Some("sample".to_string()),
@@ -479,7 +493,8 @@ fn test_phasing_validation_triggers() {
             unphased: true,
             require_spanning: false,
             no_extend: false,
-            imbalance: false,
+            imbalance: None,
+            haploid: None,
         },
         ProcessingConfig { threads: 1, batch_size_kb: 50, output_vcf: false },
         Some("sample".to_string()),
@@ -516,7 +531,8 @@ fn test_nan_genotype_for_unphased_loci() {
             unphased: true,
             require_spanning: false,
             no_extend: false,
-            imbalance: false,
+            imbalance: None,
+            haploid: None,
         },
         ProcessingConfig { threads: 1, batch_size_kb: 50, output_vcf: false },
         Some("test_sample".to_string()),

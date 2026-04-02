@@ -1058,11 +1058,22 @@ fn process_data_parallel(calls: &[PathBuf]) {
                     data_lines.push(line);
                     all_done = false;
                 }
-                Some(Err(e)) => panic!("Error reading file {}: {}", calls[file_idx].display(), e),
+                Some(Err(e)) => {
+                    eprintln!("Error: failed to read file {}: {}", calls[file_idx].display(), e);
+                    std::process::exit(1);
+                }
                 None => {
                     // File is finished - check if all files are done
                     if !all_done {
-                        panic!("Files have different number of data lines at line {}", line_count);
+                        eprintln!(
+                            "Error: files have different numbers of loci. \
+                             File '{}' ended after {} loci while other files still have data.\n\
+                             Hint: ensure all input files were called using the same BED file \
+                             and that multiple inquiSTR instances did not race to download the same preset file.",
+                            calls[file_idx].display(),
+                            line_count
+                        );
+                        std::process::exit(1);
                     }
                 }
             }

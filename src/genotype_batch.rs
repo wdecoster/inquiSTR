@@ -255,7 +255,32 @@ fn process_target_from_read_info(
     batch_calls: &mut HashMap<(u32, u32), Vec<Call>>,
     repeat: &RepeatInterval,
     genotype: &crate::call::GenotypeConfig,
+    chromosome: &str,
 ) -> Result<(Genotype, bool), String> {
+    // Haploid path: pool all reads regardless of HP tags, produce single allele + NaN
+    if genotype
+        .haploid
+        .as_ref()
+        .is_some_and(|chroms| chroms.iter().any(|c| c == chromosome))
+    {
+        let repeat_calls = match batch_calls.get(&(repeat.start, repeat.end)) {
+            Some(calls) => calls,
+            None => return Err(format!("Insufficient support: {} < {}", 0, genotype.support)),
+        };
+
+        if repeat_calls.len() < genotype.support {
+            return Err(format!(
+                "Insufficient support: {} < {}",
+                repeat_calls.len(),
+                genotype.support
+            ));
+        }
+
+        let all_refs: Vec<&Call> = repeat_calls.iter().collect();
+        let median = median_str_length(&all_refs, genotype.support, genotype.require_spanning);
+        return Ok((Genotype { repeat: repeat.clone(), phase1: median, phase2: f64::NAN }, false));
+    }
+
     if genotype.unphased {
         let repeat_calls: &mut Vec<Call> = match batch_calls.get_mut(&(repeat.start, repeat.end)) {
             Some(calls) => calls,
@@ -271,12 +296,11 @@ fn process_target_from_read_info(
         }
 
         repeat_calls.sort_unstable_by_key(|call| call.value());
-        let mid: usize = if genotype.imbalance {
-            0
-        } else {
-            repeat_calls.len() / 2
-        };
-        let (hap1, hap2) = repeat_calls.split_at(mid);
+        let top_fraction = genotype.imbalance.unwrap_or(0.5);
+        let cut: usize = ((repeat_calls.len() as f64) * (1.0 - top_fraction)) as usize;
+        // Clamp to valid range to avoid empty slices
+        let cut = cut.clamp(1, repeat_calls.len() - 1);
+        let (hap1, hap2) = repeat_calls.split_at(cut);
 
         Ok((
             Genotype {
@@ -498,7 +522,8 @@ pub fn process_batch_with_reader(
 
     // Process each target in the batch using the lightweight read info
     for repeat in &batch.repeats {
-        let result = process_target_from_read_info(&mut calls_map, repeat, genotype);
+        let result =
+            process_target_from_read_info(&mut calls_map, repeat, genotype, &batch.chromosome);
 
         match result {
             Ok((genotype, _had_hp_tags)) => {
@@ -627,7 +652,8 @@ pub fn process_batch_with_dedicated_reader(
 
     // Process each target in the batch using the lightweight read info
     for repeat in &batch.repeats {
-        let result = process_target_from_read_info(&mut calls_map, repeat, genotype);
+        let result =
+            process_target_from_read_info(&mut calls_map, repeat, genotype, &batch.chromosome);
 
         match result {
             Ok((genotype, _had_hp_tags)) => {
@@ -667,7 +693,7 @@ pub fn process_batch_worker(
     batch: &Batch,
     bamp: &String,
     reference: &Option<String>,
-    genotype: crate::call::GenotypeConfig,
+    genotype: &crate::call::GenotypeConfig,
 ) -> InquiSTRResult<Vec<Genotype>> {
     // Serialize BAM reader creation and fetch to prevent concurrent htslib index operations
     // This prevents segfaults in cram_index_free when multiple threads open the same CRAM
@@ -687,7 +713,7 @@ pub fn process_batch_worker(
     };
 
     // Use the new efficient function
-    let results = process_batch_with_reader(batch, &mut bam, &genotype)?;
+    let results = process_batch_with_reader(batch, &mut bam, genotype)?;
 
     // Explicitly drop the BAM reader to free file descriptors immediately
     drop(bam);

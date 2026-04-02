@@ -131,6 +131,13 @@ pub struct TargetLoader {
     pub chrom_mapper: ChromosomeMapper,
 }
 
+enum DownloadError {
+    /// Download failed but a cached version may be available
+    FallbackToCache(String),
+    /// Cache write failed but the data is available in memory
+    InMemoryData(Vec<u8>),
+}
+
 impl TargetLoader {
     // parse a region string in format "chr:start-end"
     pub fn from_string(reg: &str, chrom_lengths: HashMap<String, u64>) -> Self {
@@ -265,7 +272,8 @@ impl TargetLoader {
     ///
     /// This method handles downloading TR catalogs from remote URLs, caching them
     /// locally for 7 days, and handling network failures gracefully by falling back
-    /// to cached versions when available.
+    /// to cached versions when available. When multiple inquiSTR instances run
+    /// concurrently, a lock file prevents them from corrupting the cache.
     pub fn from_preset(
         preset: TRPreset,
         chrom_lengths: HashMap<String, u64>,
@@ -317,100 +325,88 @@ impl TargetLoader {
             true // File doesn't exist, download
         };
 
-        // Download if needed
+        // Download if needed, using atomic write to prevent race conditions
+        // between concurrent inquiSTR instances
         if needs_download {
-            eprintln!("Downloading {} catalog...", preset_name);
-            match reqwest::blocking::get(url) {
-                Ok(resp) => {
-                    if !resp.status().is_success() {
-                        let status = resp.status();
-                        // Fall back to cache if download fails
+            let lock_file = cache_dir.join(format!("{}.lock", cache_filename));
+
+            // Try to acquire a lock file (non-blocking)
+            // If another process is already downloading, skip and use the existing cache
+            let lock_acquired = if let Ok(f) = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&lock_file)
+            {
+                drop(f);
+                true
+            } else {
+                // Another process is downloading - use existing cache if available
+                if cache_file.exists() {
+                    eprintln!(
+                        "Another process is downloading the {} catalog, using cached version",
+                        preset_name
+                    );
+                    false
+                } else {
+                    // No cache and another process has the lock - wait for it
+                    eprintln!(
+                        "Waiting for another process to finish downloading the {} catalog...",
+                        preset_name
+                    );
+                    for _ in 0..60 {
+                        std::thread::sleep(std::time::Duration::from_secs(1));
+                        if cache_file.exists() && !lock_file.exists() {
+                            break;
+                        }
+                    }
+                    // Clean up stale lock if it's still there after 60s
+                    if lock_file.exists() {
+                        let _ = std::fs::remove_file(&lock_file);
+                    }
+                    false
+                }
+            };
+
+            if lock_acquired {
+                eprintln!("Downloading {} catalog...", preset_name);
+                let download_result = Self::download_to_cache(url, &cache_file, &cache_dir);
+                // Always remove the lock file when done
+                let _ = std::fs::remove_file(&lock_file);
+
+                match download_result {
+                    Ok(()) => {
+                        eprintln!("Cached {} catalog to: {}", preset_name, cache_file.display());
+                    }
+                    Err(DownloadError::FallbackToCache(msg)) => {
                         if cache_file.exists() {
-                            eprintln!(
-                                "Warning: Download returned status {}, using cached version",
-                                status
-                            );
+                            eprintln!("Warning: {}, using cached version", msg);
                         } else {
-                            eprintln!(
-                                "ERROR: Failed to download {} catalog: HTTP status {}",
-                                preset_name, status
-                            );
-                            eprintln!(
-                                "The catalog URL may have changed. Please check for updates or report this issue."
-                            );
+                            eprintln!("ERROR: Failed to download {} catalog: {}", preset_name, msg);
+                            eprintln!("Please check your network connection and try again.");
+                            eprintln!("URL: {}", url);
                             std::process::exit(1);
                         }
-                    } else {
-                        match resp.bytes() {
-                            Ok(body) => {
-                                if let Err(e) = std::fs::write(&cache_file, &body) {
-                                    eprintln!(
-                                        "Warning: Failed to cache {} catalog: {}",
-                                        preset_name, e
+                    }
+                    Err(DownloadError::InMemoryData(data)) => {
+                        // Cache write failed but we have in-memory data
+                        if cache_filename.ends_with(".gz") {
+                            match Self::decompress_gzip(&data) {
+                                Ok(decompressed) => {
+                                    return Self::from_string_data(
+                                        &decompressed,
+                                        chrom_lengths,
+                                        max_locus,
                                     );
-                                    // Continue with in-memory data - decompress if gzipped
-                                    if cache_filename.ends_with(".gz") {
-                                        match Self::decompress_gzip(&body) {
-                                            Ok(decompressed) => {
-                                                return Self::from_string_data(
-                                                    &decompressed,
-                                                    chrom_lengths,
-                                                    max_locus,
-                                                );
-                                            }
-                                            Err(e) => {
-                                                eprintln!(
-                                                    "ERROR: Failed to decompress gzipped catalog: {}",
-                                                    e
-                                                );
-                                                std::process::exit(1);
-                                            }
-                                        }
-                                    } else {
-                                        let text = String::from_utf8_lossy(&body).to_string();
-                                        return Self::from_string_data(
-                                            &text,
-                                            chrom_lengths,
-                                            max_locus,
-                                        );
-                                    }
                                 }
-                                eprintln!(
-                                    "Cached {} catalog to: {}",
-                                    preset_name,
-                                    cache_file.display()
-                                );
-                            }
-                            Err(e) => {
-                                // Fall back to cache if reading response fails
-                                if cache_file.exists() {
-                                    eprintln!(
-                                        "Warning: Failed to read response body ({}), using cached version",
-                                        e
-                                    );
-                                } else {
-                                    eprintln!(
-                                        "ERROR: Failed to download {} catalog: {}",
-                                        preset_name, e
-                                    );
-                                    eprintln!(
-                                        "Please check your network connection and try again."
-                                    );
+                                Err(e) => {
+                                    eprintln!("ERROR: Failed to decompress gzipped catalog: {}", e);
                                     std::process::exit(1);
                                 }
                             }
+                        } else {
+                            let text = String::from_utf8_lossy(&data).to_string();
+                            return Self::from_string_data(&text, chrom_lengths, max_locus);
                         }
-                    }
-                }
-                Err(e) => {
-                    // If download fails but we have a cached version, use it even if old
-                    if cache_file.exists() {
-                        eprintln!("Warning: Download failed ({}), using cached version", e);
-                    } else {
-                        eprintln!("ERROR: Failed to download {} catalog: {}", preset_name, e);
-                        eprintln!("Please check your network connection and try again.");
-                        eprintln!("URL: {}", url);
-                        std::process::exit(1);
                     }
                 }
             }
@@ -422,6 +418,53 @@ impl TargetLoader {
         } else {
             Self::from_bed(&cache_file.to_string_lossy(), chrom_lengths, max_locus)
         }
+    }
+
+    /// Download a URL to the cache file atomically (write to temp, then rename).
+    /// Returns Ok(()) on success, or a DownloadError variant on failure.
+    fn download_to_cache(
+        url: &str,
+        cache_file: &std::path::Path,
+        cache_dir: &std::path::Path,
+    ) -> Result<(), DownloadError> {
+        let resp = match reqwest::blocking::get(url) {
+            Ok(r) => r,
+            Err(e) => return Err(DownloadError::FallbackToCache(e.to_string())),
+        };
+
+        if !resp.status().is_success() {
+            return Err(DownloadError::FallbackToCache(format!("HTTP status {}", resp.status())));
+        }
+
+        let body = match resp.bytes() {
+            Ok(b) => b,
+            Err(e) => {
+                return Err(DownloadError::FallbackToCache(format!(
+                    "Failed to read response body ({})",
+                    e
+                )));
+            }
+        };
+
+        // Write to a temporary file in the same directory, then atomically rename.
+        // This prevents concurrent readers from seeing a partially-written file.
+        let tmp_file = cache_dir.join(format!(
+            ".{}.tmp.{}",
+            cache_file.file_name().unwrap().to_string_lossy(),
+            std::process::id()
+        ));
+        if let Err(e) = std::fs::write(&tmp_file, &body) {
+            eprintln!("Warning: Failed to write temp cache file: {}", e);
+            // Clean up the temp file if it was partially written
+            let _ = std::fs::remove_file(&tmp_file);
+            return Err(DownloadError::InMemoryData(body.to_vec()));
+        }
+        if let Err(e) = std::fs::rename(&tmp_file, cache_file) {
+            eprintln!("Warning: Failed to move temp file to cache: {}", e);
+            let _ = std::fs::remove_file(&tmp_file);
+            return Err(DownloadError::InMemoryData(body.to_vec()));
+        }
+        Ok(())
     }
 
     /// Decompress gzipped data

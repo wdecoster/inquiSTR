@@ -296,7 +296,8 @@ fn run_single_benchmark(
             unphased: false,
             require_spanning: false,
             no_extend: false,
-            imbalance: false,
+            imbalance: None,
+            haploid: None,
         },
         crate::call::ProcessingConfig { threads, batch_size_kb: batch_size, output_vcf: false },
         None, // sample_name

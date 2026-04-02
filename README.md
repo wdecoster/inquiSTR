@@ -141,6 +141,8 @@ Options:
       --max-locus <MAX_LOCUS>      maximum locus size to consider (intervals larger than this will be filtered out)
       --batch-size <BATCH_SIZE>    Batch size in KB for grouping nearby STR targets [default: 50]
       --vcf                        Output VCF format to stdout instead of TSV
+      --imbalance <IMBALANCE>      Fraction of reads to be assigned to the longer allele for --unphased genotyping (e.g. 0.2), between 0 and 1 exclusive, for example for target capture data with imbalanced allele coverage
+      --haploid <HAPLOID>          Comma-separated list of haploid chromosomes (e.g. chrX,chrY for a male sample)
   -h, --help                       Print help
 ```
 
@@ -162,6 +164,14 @@ inquiSTR call sample.bam -R regions.bed
 # Use the predefined adotto TR catalog (automatically downloads and caches, see below)
 inquiSTR call sample.bam --preset adotto
 ```
+
+#### Imbalanced allele support
+
+When using `--unphased`, inquiSTR splits sorted read calls in half to assign them to two pseudo-haplotypes. In target capture data, one allele may have substantially more coverage than the other. Use `--imbalance` to specify the fraction of reads to assign to the longer allele. For example, `--imbalance 0.2` assigns the top 20% longest calls to one haplotype and takes the median, and the bottom 80% to the other. The value must be between 0 and 1 (exclusive).
+
+#### Haploid chromosomes
+
+For male samples, sex chromosomes (chrX, chrY) are haploid and should not be split into two haplotypes. Use `--haploid chrX,chrY` to treat loci on these chromosomes as single-allele: all reads are pooled regardless of HP tags, a single median is computed for H1, and H2 is reported as `NaN`. This avoids artificial splitting of a single haplotype into two alleles. For female samples, do not use `--haploid` since both X chromosomes are diploid. The PAR (pseudoautosomal region) is not treated specially.
 
 The default output is a tab-separated file with one row per locus. See [Output File Formats](docs/OUTPUT_FORMATS.md) for a full description of the columns and metadata header. For a description of the genotyping algorithm, see [Call Algorithm](docs/CALL_ALGORITHM.md).
 
@@ -242,6 +252,8 @@ STR Genotyping Mode Options (default mode, without --unmapped):
       --noextend                         Disable the 10bp padding added around each target interval; use when targets are already padded
       --max-locus <MAX_LOCUS>            Maximum locus size to consider
       --batch-size <BATCH_SIZE>          Batch size in KB for grouping nearby STR targets [default: 50]
+      --imbalance <IMBALANCE>            Fraction of reads assigned to the longer allele for --unphased genotyping (e.g. 0.2)
+      --haploid <HAPLOID>                Comma-separated list of haploid chromosomes (e.g. chrX,chrY for a male sample)
 
   -h, --help                             Print help
 ```

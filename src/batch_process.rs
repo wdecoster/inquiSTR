@@ -344,6 +344,16 @@ fn process_sample(
         writeln!(writer, "# minlen={}", genotype_config.minlen).unwrap();
         writeln!(writer, "# support={}", genotype_config.support).unwrap();
         writeln!(writer, "# unphased={}", genotype_config.unphased).unwrap();
+        writeln!(
+            writer,
+            "# haploid={}",
+            genotype_config
+                .haploid
+                .as_ref()
+                .map(|v| v.join(","))
+                .unwrap_or_else(|| "None".to_string())
+        )
+        .unwrap();
 
         // Write data header
         writeln!(writer, "chromosome\tbegin\tend\tinfo\t{}_H1\t{}_H2", sample_name, sample_name)

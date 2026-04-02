@@ -45,6 +45,17 @@ fn parse_spacing(val: &str) -> Result<u32, String> {
     }
 }
 
+fn parse_imbalance(val: &str) -> Result<f64, String> {
+    let v: f64 = val
+        .parse()
+        .map_err(|e| format!("invalid imbalance value '{}': {}", val, e))?;
+    if v > 0.0 && v < 1.0 {
+        Ok(v)
+    } else {
+        Err(format!("imbalance must be between 0 and 1 (exclusive), got {}", v))
+    }
+}
+
 /// inquiSTR version from Cargo.toml
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -159,9 +170,13 @@ struct BatchStrArgs {
     #[clap(long, value_parser, default_value_t = 10)]
     batch_size: u32,
 
-    /// Expect imbalance in allele support for --unphased genotyping
+    /// Fraction of reads assigned to the longer allele for --unphased genotyping (e.g. 0.2 assigns the top 20% of calls to one haplotype)
+    #[clap(long, value_parser = parse_imbalance)]
+    imbalance: Option<f64>,
+
+    /// Comma-separated list of haploid chromosomes (e.g. chrX,chrY for a male sample); loci on these chromosomes are genotyped as single-allele
     #[clap(long, value_parser)]
-    imbalance: bool,
+    haploid: Option<String>,
 }
 
 /// Unmapped kmer mode arguments
@@ -282,9 +297,13 @@ enum Commands {
         #[clap(long, value_parser)]
         vcf: bool,
 
-        /// Expect imbalance in allele support for --unphased
+        /// Fraction of reads assigned to the longer allele for --unphased genotyping (e.g. 0.2 assigns the top 20% of calls to one haplotype)
+        #[clap(long, value_parser = parse_imbalance)]
+        imbalance: Option<f64>,
+
+        /// Comma-separated list of haploid chromosomes (e.g. chrX,chrY for a male sample); loci on these chromosomes are genotyped as single-allele
         #[clap(long, value_parser)]
-        imbalance: bool,
+        haploid: Option<String>,
     },
     /// Process multiple samples in batch and combine results
     #[clap(arg_required_else_help = true)]
@@ -686,6 +705,7 @@ fn main() {
             batch_size,
             vcf,
             imbalance,
+            haploid,
         } => {
             if let Err(e) = call::genotype_repeats(
                 bam,
@@ -697,6 +717,7 @@ fn main() {
                     require_spanning,
                     no_extend: noextend,
                     imbalance,
+                    haploid: haploid.map(|s| s.split(',').map(|c| c.trim().to_string()).collect()),
                 },
                 call::ProcessingConfig { threads, batch_size_kb: batch_size, output_vcf: vcf },
                 sample_name,
@@ -754,6 +775,9 @@ fn main() {
                         require_spanning: str_args.require_spanning,
                         no_extend: str_args.noextend,
                         imbalance: str_args.imbalance,
+                        haploid: str_args
+                            .haploid
+                            .map(|s| s.split(',').map(|c| c.trim().to_string()).collect()),
                     },
                     processing_config: call::ProcessingConfig {
                         threads: common.threads,

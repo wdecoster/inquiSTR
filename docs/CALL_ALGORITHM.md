@@ -44,7 +44,7 @@ If reads with `HP=1` and `HP=2` are both present, each haplotype is genotyped in
 
 ### Unphased mode (`--unphased`)
 
-All reads are sorted by call value and split at the median into a lower half (H1) and an upper half (H2).
+All reads are sorted by call value and split at the midpoint into a lower half (H1) and an upper half (H2). With `--imbalance <FRACTION>`, the split point is adjusted so that the top `FRACTION` of reads (by call length) are assigned to H2 and the remainder to H1. For example, `--imbalance 0.2` puts the longest 20% of calls into H2 and the shortest 80% into H1. This is useful for target capture data where allele coverage may be unequal.
 
 ## Step 5: Summary statistic per haplotype
 
