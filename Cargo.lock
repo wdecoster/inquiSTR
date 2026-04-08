@@ -1373,6 +1373,7 @@ dependencies = [
  "regex",
  "reqwest",
  "rust-htslib",
+ "statrs",
  "tempfile",
  "url",
 ]

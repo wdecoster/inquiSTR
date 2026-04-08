@@ -106,6 +106,7 @@ Commands:
   pca          Perform Principal Component Analysis on combined STR data
   relate       Compute relatedness between samples
   association  Perform statistical association testing for STRs
+  association-r Perform association testing using the legacy R-based implementation
   optimize-call Optimize batch_size and thread count for your system and dataset
   unmapped     Count kmer frequencies in unmapped reads
   benchmark    Benchmark inquiSTR calls against truth VCF, BED, or another inquiSTR call file
@@ -704,29 +705,29 @@ Options:
 
 **Method (experimental):**
 
-The relatedness coefficient is a method-of-moments estimator using population-corrected Identity-by-State (IBS). STRs form a continuum of allele lengths and are subject to read-level noise, somatic mosaicism, and supporting read imbalance, so this approach is inherently less deterministic than biallelic SNP kinship. For each locus *l*, the expected IBS/2 for unrelated individuals (E0) is estimated empirically as the mean IBS/2 across all sample pairs, and the bias-corrected homozygosity h is used to derive the expected parent-child IBS/2 (E_PC = 0.5 + 0.5h). The relatedness between two samples is:
+The kinship coefficient is computed using the KING-robust estimator (Manichaikul et al., 2010), which is robust to population structure. Unlike frequency-based methods, it normalizes by per-individual heterozygosity rather than population allele frequencies:
 
-- Relatedness = sum(IBS/2 - E0) / sum(1 + h - 2*E0)
+- Kinship = (N_het_IBS2 - 2 * N_IBS0) / (N_het_i + N_het_j)
 
-Because STR allele uncertainty is greater than SNPs, small differences in allele value can shift relatedness notably; users should treat relatedness estimates as approximate and apply additional validation (pedigree data, independent genotype assays) for decision-making.
+where N_het_IBS2 is the number of loci where both samples are heterozygous and share both alleles (IBS=2), N_IBS0 is the number of loci with zero shared alleles, and N_het_i/N_het_j are the per-sample heterozygous locus counts. Because STR allele uncertainty is greater than SNPs, users should treat kinship estimates as approximate and apply additional validation (pedigree data, independent genotype assays) for decision-making.
 
-- `--min-spacing` removes closely spaced loci to reduce LD-driven inflation, so relatedness is more stable across genome-wide STRs.
+- `--min-spacing` removes closely spaced loci to reduce LD-driven inflation, so kinship is more stable across genome-wide STRs.
 - `--tolerance` allows allele values to match within +/- BP (default 1), which mitigates PCR/alignment rounding noise in STR allele calls.
 
-**Expected Relatedness Values:**
+**Expected Kinship Values:**
 
-- **>1**: Identical twins / duplicate samples (typical for method-of-moments estimators)
-- **~0.5**: Parent-child / full siblings
-- **~0.25**: Half-siblings / grandparent-grandchild
-- **~0.125**: First cousins
-- **~0.0**: Unrelated individuals
+- **~0.5**: Identical twins / duplicate samples
+- **~0.25**: Parent-child / full siblings
+- **~0.125**: Half-siblings / grandparent-grandchild
+- **~0.0625**: First cousins
+- **~0.0**: Unrelated individuals (or slightly negative)
 
 **Output Format:**
 
 TSV file with columns:
 
 - `sample1`, `sample2`: Sample pair names
-- `relatedness`: Coefficient (~0 for unrelated, ~0.5 for parent-child), sorted descending
+- `kinship`: Kinship coefficient (~0 for unrelated, ~0.25 for parent-child), sorted descending
 - `n_loci`: Number of informative loci used
 - `ibs0`, `ibs1`, `ibs2`: Counts of loci with 0, 1, or 2 shared alleles
 
@@ -738,47 +739,30 @@ inquiSTR relate combined.tsv --output relatedness.tsv
 
 ### `inquiSTR association` - Statistical Association Testing
 
-Perform statistical association testing for STRs from a combined file (from [`inquiSTR combine`](#inquistr-combine---multi-sample-analysis)).
+Perform statistical association testing for STRs or kmer frequencies from a combined file (from [`inquiSTR combine`](#inquistr-combine---multi-sample-analysis)). This is the native Rust implementation — no external dependencies (such as R) are required. For each variant, a generalized linear model (GLM) is fitted with optional covariates: logistic regression for binary outcomes, linear regression for continuous outcomes. Results include effect sizes, confidence intervals, p-values, and Bonferroni-corrected p-values.
+
+A legacy R-based implementation is available as `inquiSTR association-r` for comparison purposes.
 
 ```text
-Usage: inquiSTR association [OPTIONS] --input <INPUT> --phenocovar <PHENOCOVAR> --phenotype <PHENOTYPE> --out <OUT> --str-mode <STR_MODE> --outcometype <OUTCOMETYPE>
+Usage: inquiSTR association [OPTIONS] --input <INPUT> --phenocovar <PHENOCOVAR> --phenotype <PHENOTYPE> --out <OUT> --outcometype <OUTCOMETYPE>
 
 Arguments:
-  -i, --input <INPUT>              Combined STR file from inquiSTR combine
+  -i, --input <INPUT>              Combined STR or kmer frequency file from inquiSTR combine
   -p, --phenocovar <PHENOCOVAR>    Phenotype and covariate file with header, first column is individual ID
       --phenotype <PHENOTYPE>      Column name of phenotype in phenocovar file
   -o, --out <OUT>                  Output file name for association results
-      --str-mode <STR_MODE>        STR mode: MEAN, MAX, or MIN for H1/H2 combination
       --outcometype <OUTCOMETYPE>  Outcome type: binary or continuous
 
 Options:
+      --str-mode <STR_MODE>              STR mode: MEAN, MAX, or MIN for H1/H2 combination (not used for kmer data) [default: MAX]
       --covnames <COVNAMES>              Covariate names, comma separated (optional)
       --missing-cutoff <MISSING_CUTOFF>  Call rate cutoff for variants [default: 0.8]
       --minimal-length <MINIMAL_LENGTH>  Minimum maximum STR length across samples for inclusion
   -t, --threads <THREADS>                Number of threads for parallel processing [default: 1]
-      --chunk-size <CHUNK_SIZE>          Number of variants to process in each chunk [default: 1000]
       --binary-order <BINARY_ORDER>      Binary phenotype order (e.g., Control,Patient) - required for binary outcomes
       --quiet                            Do not print progress messages
-      --plot <PREFIX>                    Generate QQ plot and Manhattan plot with custom filename prefix (optional)
+      --sort                             Sort results by Bonferroni corrected p-value
   -h, --help                             Print help
-```
-
-#### R Environment Setup
-
-The association testing functionality requires R with specific packages (`data.table`, `argparser`, and `qqman` for `--plot`). inquiSTR automatically checks your R environment and provides setup instructions if needed.
-
-**Installation:**
-
-```bash
-# Install R packages (including optional qqman for plotting)
-Rscript -e "install.packages(c('data.table', 'argparser', 'qqman'), repos='https://cran.rstudio.com/')"
-
-# Or install interactively in R
-R
-> install.packages(c('data.table', 'argparser', 'qqman'))
-
-# Minimal installation (without plotting capability)
-Rscript -e "install.packages(c('data.table', 'argparser'), repos='https://cran.rstudio.com/')"
 ```
 
 #### Phenotype File Format
@@ -839,25 +823,6 @@ inquiSTR association \
   --outcometype continuous \
   --covnames age,sex \
   --threads 8
-```
-
-**Advanced filtering with visualization:**
-
-When `--plot` is used, inquiSTR will generate two additional files, a Manhattan plot showing -log10(p-value) across chromosomes and a QQ plot to assess genomic inflation. If no prefix is provided to `--plot`, it defaults to the output filename stem (e.g., `results.tsv` → `results_manhattan.png`)
-
-```bash
-inquiSTR association \
-  --input combined_strs.tsv \
-  --phenocovar phenotypes.tsv \
-  --phenotype trait \
-  --out filtered_association.tsv \
-  --str-mode MAX \
-  --outcometype continuous \
-  --minimal-length 10 \
-  --missing-cutoff 0.95 \
-  --chunk-size 500 \
-  --quiet \
-  --plot myproject_disease
 ```
 
 ## 🤝 Contributing

@@ -47,6 +47,7 @@ noodles-bgzf = "0.46.0"
 regex = "1.12.2"
 reqwest = { version = "0.13.1", features = ["blocking", "json"] }
 gag = "1.0.0"
+statrs = "0.18"
 
 [dev-dependencies]
 ctor = "0.8.0"

@@ -198,6 +198,7 @@ struct BatchUnmappedArgs {
 }
 
 pub mod assoc;
+pub mod assoc_native;
 pub mod bam_pool;
 pub mod bam_utils;
 pub mod batch_process;
@@ -416,9 +417,64 @@ enum Commands {
         #[clap(required = true)]
         region: String,
     },
-    /// Perform association testing for STRs or kmer frequencies using embedded R script
+    /// Perform association testing for STRs or kmer frequencies (native Rust implementation)
     #[clap(arg_required_else_help = true)]
     Association {
+        /// Combined STR or kmer frequency file from inquiSTR combine command
+        #[clap(short, long, value_parser)]
+        input: PathBuf,
+
+        /// Phenotype and covariate file with header, first column is individual ID
+        #[clap(short, long, value_parser)]
+        phenocovar: PathBuf,
+
+        /// Column name of phenotype in phenocovar file
+        #[clap(long, value_parser)]
+        phenotype: String,
+
+        /// Output file name for association results
+        #[clap(short, long, value_parser)]
+        out: PathBuf,
+
+        /// STR mode: MEAN, MAX, or MIN for H1/H2 combination (not used for kmer data)
+        #[clap(long, value_parser, default_value = "MAX")]
+        str_mode: String,
+
+        /// Outcome type: binary or continuous
+        #[clap(long, value_parser)]
+        outcometype: String,
+
+        /// Covariate names, comma separated (optional)
+        #[clap(long, value_parser)]
+        covnames: Option<String>,
+
+        /// Call rate cutoff for variants (default 0.80)
+        #[clap(long, value_parser, default_value_t = 0.80)]
+        missing_cutoff: f64,
+
+        /// Minimum maximum STR length across samples for variant to be included
+        #[clap(long, value_parser)]
+        minimal_length: Option<f64>,
+
+        /// Number of threads for parallel processing
+        #[clap(short, long, value_parser, default_value_t = 1)]
+        threads: usize,
+
+        /// Binary phenotype order, comma separated (e.g., Control,Patient) - required for binary outcomes
+        #[clap(long, value_parser)]
+        binary_order: Option<String>,
+
+        /// Do not print progress messages
+        #[clap(long)]
+        quiet: bool,
+
+        /// Sort results by Bonferroni corrected p-value (requires loading full results into memory)
+        #[clap(long)]
+        sort: bool,
+    },
+    /// Perform association testing using the legacy R-based implementation (for comparison)
+    #[clap(arg_required_else_help = true)]
+    AssociationR {
         /// Combined STR or kmer frequency file from inquiSTR combine command
         #[clap(short, long, value_parser)]
         input: PathBuf,
@@ -819,6 +875,37 @@ fn main() {
             histogram::histogram(combined, region);
         }
         Commands::Association {
+            input,
+            phenocovar,
+            phenotype,
+            out,
+            str_mode,
+            outcometype,
+            covnames,
+            missing_cutoff,
+            minimal_length,
+            threads,
+            binary_order,
+            quiet,
+            sort,
+        } => {
+            assoc_native::run_association(
+                input,
+                phenocovar,
+                phenotype,
+                out,
+                str_mode,
+                outcometype,
+                covnames,
+                missing_cutoff,
+                minimal_length,
+                threads,
+                binary_order,
+                quiet,
+                sort,
+            );
+        }
+        Commands::AssociationR {
             input,
             phenocovar,
             phenotype,
