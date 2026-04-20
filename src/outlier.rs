@@ -58,7 +58,7 @@ fn get_sample_names_from_file(file_path: &Path, is_kmer: bool) -> Vec<String> {
     let mut lines = file_reader.lines();
 
     // Skip metadata lines if present
-    let header_line = crate::utils::skip_metadata_lines(&mut lines);
+    let header_line = crate::utils::skip_metadata_lines(&mut lines, &file_path.to_string_lossy());
     let skip_columns = if is_kmer { 1 } else { 3 }; // kmer files skip 1, STR files skip 3
     header_line
         .split('\t')
@@ -192,10 +192,11 @@ fn outlier_str_analysis(
     subset: Option<Vec<String>>,
     count_output: Option<PathBuf>,
 ) {
+    let combined_path = combined.display().to_string();
     let file = crate::utils::reader(&combined.into_os_string().into_string().unwrap());
     let mut lines = file.lines();
     // Skip metadata lines if present
-    let header_line = crate::utils::skip_metadata_lines(&mut lines);
+    let header_line = crate::utils::skip_metadata_lines(&mut lines, &combined_path);
     println!("chrom\tbegin\tend\toutliers");
 
     // Initialize counter if count output is requested
@@ -268,10 +269,11 @@ fn outlier_kmer_analysis(
     subset: Option<Vec<String>>,
     count_output: Option<PathBuf>,
 ) {
+    let combined_path = combined.display().to_string();
     let file = crate::utils::reader(&combined.into_os_string().into_string().unwrap());
     let mut lines = file.lines();
     // Skip metadata lines if present
-    let header_line = crate::utils::skip_metadata_lines(&mut lines);
+    let header_line = crate::utils::skip_metadata_lines(&mut lines, &combined_path);
     println!("kmer\toutliers");
 
     // Initialize counter if count output is requested

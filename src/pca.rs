@@ -100,7 +100,7 @@ fn parse_combined_kmer_file_with_selection(
     let mut lines = file.lines();
 
     // Read header line - skip metadata if present
-    let header_line = crate::utils::skip_metadata_lines(&mut lines);
+    let header_line = crate::utils::skip_metadata_lines(&mut lines, &combined.to_string_lossy());
     let header_fields: Vec<&str> = header_line.trim().split('\t').collect();
 
     // Validate kmer file header format
@@ -196,7 +196,7 @@ fn parse_kmer_with_feature_selection(
     println!("Pass 1: Analyzing kmers to find most informative features...");
     let file = crate::utils::reader(&combined.to_string_lossy());
     let mut lines = file.lines();
-    let _header = crate::utils::skip_metadata_lines(&mut lines);
+    let _header = crate::utils::skip_metadata_lines(&mut lines, &combined.to_string_lossy());
 
     let mut feature_scores: Vec<(usize, f64)> = Vec::new();
 
@@ -248,7 +248,7 @@ fn parse_kmer_with_feature_selection(
     // PASS 2: Load only selected features
     let file = crate::utils::reader(&combined.to_string_lossy());
     let mut lines = file.lines();
-    let _header = crate::utils::skip_metadata_lines(&mut lines);
+    let _header = crate::utils::skip_metadata_lines(&mut lines, &combined.to_string_lossy());
 
     let mut data_matrix = Array2::<f64>::zeros((num_samples, selected_indices.len()));
     let mut selected_idx_map: std::collections::HashMap<usize, usize> =
@@ -309,7 +309,8 @@ fn parse_combined_file_with_selection(
             // Try to auto-detect from header
             let file = crate::utils::reader(&combined.to_string_lossy());
             let mut lines = file.lines();
-            let header_line = crate::utils::skip_metadata_lines(&mut lines);
+            let header_line =
+                crate::utils::skip_metadata_lines(&mut lines, &combined.to_string_lossy());
             let header_fields: Vec<&str> = header_line.trim().split('\t').collect();
 
             // Check if this looks like a kmer file (first column is "kmer")
@@ -348,7 +349,7 @@ fn parse_combined_str_file_with_selection(
 
     // Read header line - this should contain sample names
     // Skip metadata lines if present
-    let header_line = crate::utils::skip_metadata_lines(&mut lines);
+    let header_line = crate::utils::skip_metadata_lines(&mut lines, &combined.to_string_lossy());
 
     let header_fields: Vec<&str> = header_line.trim().split('\t').collect();
 
@@ -503,7 +504,7 @@ fn sequential_feature_selection(
     let mut lines = file.lines();
 
     // Skip metadata lines and header
-    let _header = crate::utils::skip_metadata_lines(&mut lines);
+    let _header = crate::utils::skip_metadata_lines(&mut lines, &combined.to_string_lossy());
 
     let mut feature_scores: Vec<(usize, f64)> = Vec::new();
 
@@ -673,7 +674,7 @@ fn parallel_feature_selection(
     let mut lines = file.lines();
 
     // Skip metadata lines and header
-    let _header = crate::utils::skip_metadata_lines(&mut lines);
+    let _header = crate::utils::skip_metadata_lines(&mut lines, &combined.to_string_lossy());
 
     let mut all_scores = Vec::new();
     let chunk_size = 10_000; // Process 10k lines at a time
@@ -878,7 +879,7 @@ fn sequential_data_loading(
     let mut lines = file.lines();
 
     // Skip metadata lines and header
-    let _header = crate::utils::skip_metadata_lines(&mut lines);
+    let _header = crate::utils::skip_metadata_lines(&mut lines, &combined.to_string_lossy());
 
     let mut data_matrix = Array2::<f64>::zeros((num_samples, selected_indices.len()));
     let mut selected_idx_map: std::collections::HashMap<usize, usize> =
@@ -941,7 +942,7 @@ fn parallel_data_loading(
     let mut lines = file.lines();
 
     // Skip metadata lines and header
-    let _header = crate::utils::skip_metadata_lines(&mut lines);
+    let _header = crate::utils::skip_metadata_lines(&mut lines, &combined.to_string_lossy());
 
     let mut chunk_buffer = Vec::new();
     let chunk_size = 5_000; // Smaller chunks for data loading
@@ -1047,7 +1048,7 @@ fn estimate_feature_count(combined: &std::path::Path) -> usize {
     let mut lines = file.lines();
 
     // Skip metadata lines and header
-    let _header = crate::utils::skip_metadata_lines(&mut lines);
+    let _header = crate::utils::skip_metadata_lines(&mut lines, &combined.to_string_lossy());
 
     // Count first few hundred lines to estimate total
     let sample_size = 500;

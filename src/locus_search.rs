@@ -57,7 +57,8 @@ pub fn find_locus(config: LocusSearchConfig) -> Option<LocusMatch> {
 
     // Read header to determine expected number of columns
     // Skip metadata lines if present and get actual header/first data line
-    let first_line = crate::utils::skip_metadata_lines(&mut lines);
+    let first_line =
+        crate::utils::skip_metadata_lines(&mut lines, &config.combined_file.to_string_lossy());
     let first_cols = first_line.split('\t').count();
     if first_cols < 4 {
         eprintln!("ERROR: Invalid file format. Expected at least 4 columns, got {}.", first_cols);

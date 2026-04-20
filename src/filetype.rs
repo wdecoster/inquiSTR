@@ -81,7 +81,7 @@ pub fn is_kmer_file(file_path: &Path) -> bool {
     let mut lines = file_reader.lines();
 
     // Skip metadata lines if present
-    let first_line = crate::utils::skip_metadata_lines(&mut lines);
+    let first_line = crate::utils::skip_metadata_lines(&mut lines, &file_path.to_string_lossy());
     let fields: Vec<&str> = first_line.split('\t').collect();
 
     // Check if it's a kmer file format
@@ -130,7 +130,7 @@ pub fn is_combined_str_file(file_path: &Path) -> bool {
     let mut lines = file_reader.lines();
 
     // Skip metadata lines
-    let first_line = crate::utils::skip_metadata_lines(&mut lines);
+    let first_line = crate::utils::skip_metadata_lines(&mut lines, &file_path.to_string_lossy());
 
     // Validate that file has a header
     if !first_line.starts_with("chromosome") {

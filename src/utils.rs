@@ -36,6 +36,17 @@ pub fn extract_sample_name_from_path(path: &str) -> String {
     result
 }
 
+/// Detect if a file starts with gzip magic bytes (0x1f 0x8b)
+fn is_gzip_file(filename: &str) -> bool {
+    if let Ok(mut file) = File::open(filename) {
+        let mut magic = [0u8; 2];
+        if file.read_exact(&mut magic).is_ok() {
+            return magic[0] == 0x1f && magic[1] == 0x8b;
+        }
+    }
+    false
+}
+
 /// Detect if a file is bgzip compressed by checking magic bytes
 fn is_bgzip_file(filename: &str) -> bool {
     if !filename.ends_with(".gz") {
@@ -72,6 +83,15 @@ pub fn reader(filename: &str) -> BufReader<Box<dyn Read>> {
         // Handle regular gzip files
         let file = File::open(path).unwrap_or_else(|e| {
             eprintln!("Error: Failed to open gzip file {}", path.display());
+            eprintln!("Reason: {}", e);
+            eprintln!("\nPlease check that the file exists and you have permission to read it.");
+            std::process::exit(1);
+        });
+        BufReader::new(Box::new(GzDecoder::new(file)) as Box<dyn Read>)
+    } else if is_gzip_file(filename) {
+        // Handle gzip files without .gz extension
+        let file = File::open(path).unwrap_or_else(|e| {
+            eprintln!("Error: Failed to open file {}", path.display());
             eprintln!("Reason: {}", e);
             eprintln!("\nPlease check that the file exists and you have permission to read it.");
             std::process::exit(1);
@@ -120,17 +140,26 @@ pub fn parse_sample_input(input: &str) -> Vec<String> {
 /// This allows for future expansion of metadata types beyond just file_type
 pub fn skip_metadata_lines(
     lines: &mut dyn Iterator<Item = Result<String, std::io::Error>>,
+    filename: &str,
 ) -> String {
     loop {
-        let line = lines
-            .next()
-            .expect("File is empty or contains only metadata")
-            .expect("Error reading line");
-
-        if !line.starts_with('#') {
-            return line;
+        match lines.next() {
+            Some(Ok(line)) => {
+                if !line.starts_with('#') {
+                    return line;
+                }
+                // Otherwise keep looping to skip metadata lines
+            }
+            Some(Err(e)) => {
+                eprintln!("Error: Failed to read file '{}': {}", filename, e);
+                eprintln!("The file may be truncated or corrupt.");
+                std::process::exit(1);
+            }
+            None => {
+                eprintln!("Error: File '{}' is empty or contains only metadata lines.", filename);
+                std::process::exit(1);
+            }
         }
-        // Otherwise keep looping to skip metadata lines
     }
 }
 

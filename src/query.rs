@@ -27,7 +27,7 @@ pub fn query(combined: PathBuf, region: String) {
     let file = crate::utils::reader(&combined.to_string_lossy());
     let mut lines = file.lines();
     // Skip metadata lines if present
-    let header_line = crate::utils::skip_metadata_lines(&mut lines);
+    let header_line = crate::utils::skip_metadata_lines(&mut lines, &combined.to_string_lossy());
     let samples = extract_sample_names(&header_line);
     debug!("Samples: {:?}", samples);
 

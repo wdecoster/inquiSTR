@@ -3,7 +3,7 @@ use rayon::prelude::*;
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fs::File;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -21,11 +21,22 @@ fn reader(filename: &str) -> Box<dyn BufRead> {
         Ok(file) => file,
     };
 
-    if path.extension() == Some(OsStr::new("gz")) {
+    if path.extension() == Some(OsStr::new("gz")) || is_gzip_file(filename) {
         Box::new(BufReader::with_capacity(128 * 1024, read::GzDecoder::new(file)))
     } else {
         Box::new(BufReader::with_capacity(128 * 1024, file))
     }
+}
+
+/// Detect if a file starts with gzip magic bytes (0x1f 0x8b)
+fn is_gzip_file(filename: &str) -> bool {
+    if let Ok(mut file) = File::open(filename) {
+        let mut magic = [0u8; 2];
+        if file.read_exact(&mut magic).is_ok() {
+            return magic[0] == 0x1f && magic[1] == 0x8b;
+        }
+    }
+    false
 }
 
 pub fn combine(calls: Vec<PathBuf>, threads: usize) {
@@ -378,7 +389,11 @@ fn merge_combined_files(combined_files: Vec<PathBuf>, individual_files: Vec<Path
     let mut combined_data: HashMap<String, String> = HashMap::new();
 
     for (line_num, line_result) in combined_reader.enumerate() {
-        let line = line_result.unwrap_or_else(|e| panic!("Error reading combined file: {}", e));
+        let line = line_result.unwrap_or_else(|e| {
+            eprintln!("Error: Failed to read combined file: {}", e);
+            eprintln!("The file may be truncated or corrupt.");
+            std::process::exit(1);
+        });
         let fields: Vec<&str> = line.split('\t').collect();
         if fields.len() < 5 {
             panic!("Invalid combined file data line {}: {}", line_num, line);
@@ -479,7 +494,13 @@ fn merge_combined_files(combined_files: Vec<PathBuf>, individual_files: Vec<Path
                     all_done = false;
                 }
                 Some(Err(e)) => {
-                    panic!("Error reading file {}: {}", individual_files[file_idx].display(), e)
+                    eprintln!(
+                        "Error: Failed to read file '{}': {}",
+                        individual_files[file_idx].display(),
+                        e
+                    );
+                    eprintln!("The file may be truncated or corrupt.");
+                    std::process::exit(1);
                 }
                 None => {}
             }
@@ -574,8 +595,18 @@ fn read_and_validate_kmer_headers(calls: &[PathBuf]) -> Vec<String> {
                             return line; // Return first non-metadata line (header)
                         }
                     }
-                    Some(Err(e)) => panic!("Error reading from {}: {}", file.display(), e),
-                    None => panic!("File {} is empty or contains only metadata", file.display()),
+                    Some(Err(e)) => {
+                        eprintln!("Error: Failed to read file '{}': {}", file.display(), e);
+                        eprintln!("The file may be truncated or corrupt.");
+                        std::process::exit(1);
+                    }
+                    None => {
+                        eprintln!(
+                            "Error: File '{}' is empty or contains only metadata.",
+                            file.display()
+                        );
+                        std::process::exit(1);
+                    }
                 }
             }
         })
@@ -653,7 +684,11 @@ fn process_kmer_data(calls: &[PathBuf]) {
                     data_lines.push(Some(line));
                     all_done = false;
                 }
-                Some(Err(e)) => panic!("Error reading file {}: {}", calls[file_idx].display(), e),
+                Some(Err(e)) => {
+                    eprintln!("Error: Failed to read file '{}': {}", calls[file_idx].display(), e);
+                    eprintln!("The file may be truncated or corrupt.");
+                    std::process::exit(1);
+                }
                 None => {
                     data_lines.push(None);
                 }
@@ -745,8 +780,18 @@ fn read_and_validate_headers(calls: &[PathBuf]) -> Vec<String> {
                             return line; // Return first non-metadata line (header or data)
                         }
                     }
-                    Some(Err(e)) => panic!("Error reading from {}: {}", file.display(), e),
-                    None => panic!("File {} is empty or contains only metadata", file.display()),
+                    Some(Err(e)) => {
+                        eprintln!("Error: Failed to read file '{}': {}", file.display(), e);
+                        eprintln!("The file may be truncated or corrupt.");
+                        std::process::exit(1);
+                    }
+                    None => {
+                        eprintln!(
+                            "Error: File '{}' is empty or contains only metadata.",
+                            file.display()
+                        );
+                        std::process::exit(1);
+                    }
                 }
             }
         })
@@ -917,7 +962,11 @@ fn process_data_batched(calls: &[PathBuf], batch_size: usize) {
                         all_done = false;
                     }
                     None => {}
-                    Some(Err(e)) => panic!("Error reading file: {}", e),
+                    Some(Err(e)) => {
+                        eprintln!("Error: Failed to read file: {}", e);
+                        eprintln!("The file may be truncated or corrupt.");
+                        std::process::exit(1);
+                    }
                 }
             }
 

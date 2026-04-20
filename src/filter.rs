@@ -165,7 +165,7 @@ fn verify_header(file_path: &Path) -> io::Result<()> {
     let mut lines = reader.lines();
 
     // Skip metadata lines starting with #
-    let first_line = crate::utils::skip_metadata_lines(&mut lines);
+    let first_line = crate::utils::skip_metadata_lines(&mut lines, &file_path.to_string_lossy());
 
     if !first_line.starts_with("chromosome") {
         return Err(io::Error::new(
@@ -192,7 +192,7 @@ fn is_combined_file(file_path: &Path) -> io::Result<bool> {
     let mut lines = reader.lines();
 
     // Skip metadata lines starting with #
-    let first_line = crate::utils::skip_metadata_lines(&mut lines);
+    let first_line = crate::utils::skip_metadata_lines(&mut lines, &file_path.to_string_lossy());
 
     // Count number of columns
     // Single sample: chr, start, end, info, H1, H2 = 6 columns

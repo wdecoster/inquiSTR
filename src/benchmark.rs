@@ -124,7 +124,7 @@ fn parse_inquistr_file(
     let mut line_num = 0;
 
     // Skip metadata lines and read header
-    let header_line = crate::utils::skip_metadata_lines(&mut lines);
+    let header_line = crate::utils::skip_metadata_lines(&mut lines, &file_path.to_string_lossy());
     line_num += 1;
 
     // Validate header format
@@ -201,7 +201,7 @@ fn parse_inquistr_as_truth(
     let mut filtered_count = 0;
 
     // Skip metadata lines and read header
-    let header_line = crate::utils::skip_metadata_lines(&mut lines);
+    let header_line = crate::utils::skip_metadata_lines(&mut lines, &file_path.to_string_lossy());
 
     let header_fields: Vec<&str> = header_line.split('\t').collect();
     match crate::filetype::validate_str_header(&header_fields) {

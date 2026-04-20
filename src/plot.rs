@@ -38,7 +38,7 @@ pub fn plot(
     let file = crate::utils::reader(&combined.to_string_lossy());
     let mut lines = std::io::BufRead::lines(file);
     // Skip metadata lines if present
-    let header_line = crate::utils::skip_metadata_lines(&mut lines);
+    let header_line = crate::utils::skip_metadata_lines(&mut lines, &combined.to_string_lossy());
     let samples: Vec<String> = extract_clean_sample_names(&header_line);
 
     let samples_of_interest = crate::sample_info::parse_phenotypes(&sample_metadata, &condition)
