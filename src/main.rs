@@ -198,7 +198,6 @@ struct BatchUnmappedArgs {
 }
 
 pub mod assoc;
-pub mod assoc_native;
 pub mod bam_pool;
 pub mod bam_utils;
 pub mod batch_process;
@@ -472,73 +471,7 @@ enum Commands {
         #[clap(long)]
         sort: bool,
     },
-    /// Perform association testing using the legacy R-based implementation (for comparison)
-    #[clap(arg_required_else_help = true)]
-    AssociationR {
-        /// Combined STR or kmer frequency file from inquiSTR combine command
-        #[clap(short, long, value_parser)]
-        input: PathBuf,
 
-        /// Phenotype and covariate file with header, first column is individual ID
-        #[clap(short, long, value_parser)]
-        phenocovar: PathBuf,
-
-        /// Column name of phenotype in phenocovar file
-        #[clap(long, value_parser)]
-        phenotype: String,
-
-        /// Output file name for association results
-        #[clap(short, long, value_parser)]
-        out: PathBuf,
-
-        /// STR mode: MEAN, MAX, or MIN for H1/H2 combination (not used for kmer data)
-        #[clap(long, value_parser, default_value = "MAX")]
-        str_mode: String,
-
-        /// Outcome type: binary or continuous
-        #[clap(long, value_parser)]
-        outcometype: String,
-
-        /// Covariate names, comma separated (optional)
-        #[clap(long, value_parser)]
-        covnames: Option<String>,
-
-        /// Call rate cutoff for variants (default 0.80)
-        #[clap(long, value_parser, default_value_t = 0.80)]
-        missing_cutoff: f64,
-
-        /// Minimum maximum STR length across samples for variant to be included
-        #[clap(long, value_parser)]
-        minimal_length: Option<f64>,
-
-        /// Number of threads for parallel processing
-        #[clap(short, long, value_parser, default_value_t = 1)]
-        threads: usize,
-
-        /// Number of variants to process in each chunk (default 1000)
-        #[clap(long, value_parser, default_value_t = 1000)]
-        chunk_size: usize,
-
-        /// Binary phenotype order, comma separated (e.g., Control,Patient) - required for binary outcomes
-        #[clap(long, value_parser)]
-        binary_order: Option<String>,
-
-        /// Do not print progress messages
-        #[clap(long)]
-        quiet: bool,
-
-        /// Generate QQ plot and Manhattan plot with custom prefix (e.g., --plot myresults). If no prefix given, uses output filename stem.
-        #[clap(long, value_parser)]
-        plot: Option<String>,
-
-        /// Sort results by Bonferroni corrected p-value (requires loading full results into memory)
-        #[clap(long)]
-        sort: bool,
-
-        /// Automatically confirm all prompts (non-interactive mode for workflows)
-        #[clap(short, long)]
-        yes: bool,
-    },
     /// Show a histogram with multiple groups for a specific repeat
     Plot {
         /// combined file of calls
@@ -889,40 +822,6 @@ fn main() {
             quiet,
             sort,
         } => {
-            assoc_native::run_association(
-                input,
-                phenocovar,
-                phenotype,
-                out,
-                str_mode,
-                outcometype,
-                covnames,
-                missing_cutoff,
-                minimal_length,
-                threads,
-                binary_order,
-                quiet,
-                sort,
-            );
-        }
-        Commands::AssociationR {
-            input,
-            phenocovar,
-            phenotype,
-            out,
-            str_mode,
-            outcometype,
-            covnames,
-            missing_cutoff,
-            minimal_length,
-            threads,
-            chunk_size,
-            binary_order,
-            quiet,
-            plot,
-            sort,
-            yes,
-        } => {
             assoc::run_association(
                 input,
                 phenocovar,
@@ -934,14 +833,12 @@ fn main() {
                 missing_cutoff,
                 minimal_length,
                 threads,
-                chunk_size,
                 binary_order,
                 quiet,
-                plot,
                 sort,
-                yes,
             );
         }
+
         Commands::Plot { combined, sample_metadata, condition, region, output } => {
             plot::plot(combined, sample_metadata, condition, region, output)
         }
