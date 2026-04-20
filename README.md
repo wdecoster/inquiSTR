@@ -36,9 +36,9 @@ For detailed options, presets and additional commands, see the full documentatio
   - [inquiSTR unmapped - Kmer Frequency Analysis](#inquistr-unmapped---kmer-frequency-analysis)
   - [inquiSTR benchmark - Validate STR Calls](#inquistr-benchmark---validate-str-calls)
   - [inquiSTR pca - Principal Component Analysis](#inquistr-pca---principal-component-analysis)
-  - [inquiSTR relate - Compute Sample Relatedness](#inquistr-relate---compute-sample-relatedness)
   - [inquiSTR association - Statistical Association Testing](#inquistr-association---statistical-association-testing)
   - [inquiSTR optimize-call - Parameter Optimization](#inquistr-optimize-call---parameter-optimization)
+  - [Experimental: inquiSTR relate - Compute Sample Relatedness](#experimental-inquistr-relate---compute-sample-relatedness)
 - [Output File Formats](docs/OUTPUT_FORMATS.md)
 - [Call Algorithm](docs/CALL_ALGORITHM.md)
 - [Contributing](#-contributing)
@@ -684,58 +684,6 @@ sample1    0.123456   -0.234567    0.345678   ...
 sample2   -0.456789    0.567890   -0.678901   ...
 ```
 
-### `inquiSTR relate` - Compute Sample Relatedness
-
-Compute relatedness (kinship coefficient) between all pairs of samples using STR genotype data (from [`inquiSTR combine`](#inquistr-combine---multi-sample-analysis)). This command identifies sample relationships such as duplicates, parent-child, siblings, and more distant relatives by calculating the proportion of shared alleles across all STR loci, enabling users to validate pedigrees or identify cryptic relatedness in a cohort.
-
-```text
-Usage: inquiSTR relate [OPTIONS] --output <OUTPUT> <COMBINED>
-
-Arguments:
-  <COMBINED>  Combined file of STR calls from inquiSTR combine
-
-Options:
-  -o, --output <OUTPUT>    Output file for relatedness matrix
-  -t, --threads <THREADS>  Number of threads to use for parallel processing [default: 1]
-      --min-spacing <BPS>  Minimum distance between loci (bp) to include in relatedness computation, for LD thinning [default: 100000]. Suffixes k/M allowed (100k, 1M).
-      --tolerance <BP>     Tolerance for allele length matching in IBS (bp) [default: 1].
-  -h, --help               Print help
-```
-
-**Method (experimental):**
-
-The kinship coefficient is computed using the KING-robust estimator (Manichaikul et al., 2010), which is robust to population structure. Unlike frequency-based methods, it normalizes by per-individual heterozygosity rather than population allele frequencies:
-
-- Kinship = (N_het_IBS2 - 2 * N_IBS0) / (N_het_i + N_het_j)
-
-where N_het_IBS2 is the number of loci where both samples are heterozygous and share both alleles (IBS=2), N_IBS0 is the number of loci with zero shared alleles, and N_het_i/N_het_j are the per-sample heterozygous locus counts. Because STR allele uncertainty is greater than SNPs, users should treat kinship estimates as approximate and apply additional validation (pedigree data, independent genotype assays) for decision-making.
-
-- `--min-spacing` removes closely spaced loci to reduce LD-driven inflation, so kinship is more stable across genome-wide STRs.
-- `--tolerance` allows allele values to match within +/- BP (default 1), which mitigates PCR/alignment rounding noise in STR allele calls.
-
-**Expected Kinship Values:**
-
-- **~0.5**: Identical twins / duplicate samples
-- **~0.25**: Parent-child / full siblings
-- **~0.125**: Half-siblings / grandparent-grandchild
-- **~0.0625**: First cousins
-- **~0.0**: Unrelated individuals (or slightly negative)
-
-**Output Format:**
-
-TSV file with columns:
-
-- `sample1`, `sample2`: Sample pair names
-- `kinship`: Kinship coefficient (~0 for unrelated, ~0.25 for parent-child), sorted descending
-- `n_loci`: Number of informative loci used
-- `ibs0`, `ibs1`, `ibs2`: Counts of loci with 0, 1, or 2 shared alleles
-
-**Example:**
-
-```bash
-inquiSTR relate combined.tsv --output relatedness.tsv
-```
-
 ### `inquiSTR association` - Statistical Association Testing
 
 Perform statistical association testing for STRs or kmer frequencies from a combined file (from [`inquiSTR combine`](#inquistr-combine---multi-sample-analysis)). For each variant, a generalized linear model (GLM) is fitted with optional covariates: logistic regression for binary outcomes, linear regression for continuous outcomes. Results include effect sizes, confidence intervals, p-values, and Bonferroni-corrected p-values.
@@ -820,6 +768,48 @@ inquiSTR association \
   --outcometype continuous \
   --covnames age,sex \
   --threads 8
+```
+
+### Experimental: `inquiSTR relate` - Compute Sample Relatedness
+
+Experimental method to compute relatedness (kinship coefficient) between all pairs of samples using STR genotype data (from [`inquiSTR combine`](#inquistr-combine---multi-sample-analysis)). This command identifies sample relationships such as duplicates, parent-child, siblings, and more distant relatives by calculating the proportion of shared alleles across all STR loci, enabling users to validate pedigrees or identify cryptic relatedness in a cohort.
+
+```text
+Usage: inquiSTR relate [OPTIONS] --output <OUTPUT> <COMBINED>
+
+Arguments:
+  <COMBINED>  Combined file of STR calls from inquiSTR combine
+
+Options:
+  -o, --output <OUTPUT>    Output file for relatedness matrix
+  -t, --threads <THREADS>  Number of threads to use for parallel processing [default: 1]
+      --min-spacing <BPS>  Minimum distance between loci (bp) to include in relatedness computation, for LD thinning [default: 100000]. Suffixes k/M allowed (100k, 1M).
+      --tolerance <BP>     Tolerance for allele length matching in IBS (bp) [default: 1].
+  -h, --help               Print help
+```
+
+**Method:**
+
+The kinship coefficient is estimated using a method-of-moments IBS approach with per-pair expected IBS to provide robustness to population structure. For each sample pair, the expected proportion of IBS=0 (E0) is derived from the individual homozygosity rates of the two samples, rather than from cohort-wide allele frequencies. This adapts the baseline to the genetic background of each pair, avoiding inflation when samples come from different populations.
+
+- `--min-spacing` removes closely spaced loci to reduce LD-driven inflation, so kinship is more stable across genome-wide STRs.
+- `--tolerance` allows allele values to match within +/- BP (default 1), which mitigates PCR/alignment rounding noise in STR allele calls.
+
+Because STR allele uncertainty is greater than for SNPs, users should treat kinship estimates as approximate and apply additional validation (pedigree data, independent genotype assays) for decision-making.
+
+**Output Format:**
+
+TSV file with columns:
+
+- `sample1`, `sample2`: Sample pair names
+- `kinship`: Kinship coefficient (~0 for unrelated, ~0.25 for parent-child), sorted descending
+- `n_loci`: Number of informative loci used
+- `ibs0`, `ibs1`, `ibs2`: Counts of loci with 0, 1, or 2 shared alleles
+
+**Example:**
+
+```bash
+inquiSTR relate combined.tsv --output relatedness.tsv
 ```
 
 ## 🤝 Contributing
