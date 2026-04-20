@@ -37,7 +37,7 @@ histo_fp = "0.2.1"
 indicatif = { version = "0.18.4", features = ["rayon"] }
 kuva = "0.1"
 tempfile = "3.27.0"
-rand = "0.10.0"
+rand = "0.10.1"
 ndarray = "0.17.2"
 nalgebra = "0.34"
 dbscan = "0.3.1"
