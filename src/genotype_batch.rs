@@ -194,15 +194,16 @@ fn calculate_str_call_for_region(
                 if !is_accidental_2d(record)
                     && *len > minlen
                     && start < reference_position
-                    && reference_position < end
-                => {
-                    call += i64::from(*len);
-                    clipped = true;
-                }
+                    && reference_position < end =>
+            {
+                call += i64::from(*len);
+                clipped = true;
+            }
             rust_htslib::bam::record::Cigar::Ins(len)
-                if *len > minlen && start < reference_position && reference_position < end => {
-                    call += i64::from(*len);
-                }
+                if *len > minlen && start < reference_position && reference_position < end =>
+            {
+                call += i64::from(*len);
+            }
             rust_htslib::bam::record::Cigar::RefSkip(len) => reference_position += *len,
             _ => (),
         }
