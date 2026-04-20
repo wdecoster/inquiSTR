@@ -106,7 +106,6 @@ Commands:
   pca          Perform Principal Component Analysis on combined STR data
   relate       Compute relatedness between samples
   association  Perform statistical association testing for STRs
-  association-r Perform association testing using the legacy R-based implementation
   optimize-call Optimize batch_size and thread count for your system and dataset
   unmapped     Count kmer frequencies in unmapped reads
   benchmark    Benchmark inquiSTR calls against truth VCF, BED, or another inquiSTR call file
@@ -739,9 +738,7 @@ inquiSTR relate combined.tsv --output relatedness.tsv
 
 ### `inquiSTR association` - Statistical Association Testing
 
-Perform statistical association testing for STRs or kmer frequencies from a combined file (from [`inquiSTR combine`](#inquistr-combine---multi-sample-analysis)). This is the native Rust implementation — no external dependencies (such as R) are required. For each variant, a generalized linear model (GLM) is fitted with optional covariates: logistic regression for binary outcomes, linear regression for continuous outcomes. Results include effect sizes, confidence intervals, p-values, and Bonferroni-corrected p-values.
-
-A legacy R-based implementation is available as `inquiSTR association-r` for comparison purposes.
+Perform statistical association testing for STRs or kmer frequencies from a combined file (from [`inquiSTR combine`](#inquistr-combine---multi-sample-analysis)). For each variant, a generalized linear model (GLM) is fitted with optional covariates: logistic regression for binary outcomes, linear regression for continuous outcomes. Results include effect sizes, confidence intervals, p-values, and Bonferroni-corrected p-values.
 
 ```text
 Usage: inquiSTR association [OPTIONS] --input <INPUT> --phenocovar <PHENOCOVAR> --phenotype <PHENOTYPE> --out <OUT> --outcometype <OUTCOMETYPE>

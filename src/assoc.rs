@@ -1,27 +1,8 @@
-//! Association testing module
-//!
-//! This module provides an interface to perform STR association testing by wrapping
-//! the R script STR_regression.R. It handles R environment detection, dependency checking,
-//! and execution of the statistical analysis.
+use rayon::prelude::*;
+use std::io::{BufRead, BufWriter, Write};
+use std::path::PathBuf;
 
-use log::{error, info, warn};
-use std::env;
-use std::fs;
-use std::io::{self, Write};
-use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-
-// Embed the R script directly in the binary
-const STR_REGRESSION_SCRIPT: &str = include_str!("../scripts/STR_regression.R");
-
-// Required R packages (qqman only needed for --plot)
-const REQUIRED_R_PACKAGES: &[&str] = &["data.table", "argparser", "parallel"];
-
-// Portable R installation constants
-const MINIFORGE_URL: &str = "https://github.com/conda-forge/miniforge/releases/download/24.11.0-0/Miniforge3-24.11.0-0-Linux-x86_64.sh";
-const R_VERSION: &str = "4.4.1";
-
-/// Main function to run STR association testing
+/// Run native Rust association testing for STR or kmer frequency data.
 #[allow(clippy::too_many_arguments)]
 pub fn run_association(
     input: PathBuf,
@@ -34,963 +15,1154 @@ pub fn run_association(
     missing_cutoff: f64,
     minimal_length: Option<f64>,
     threads: usize,
-    chunk_size: usize,
     binary_order: Option<String>,
     quiet: bool,
-    plot: Option<String>,
     sort: bool,
-    yes: bool,
 ) {
-    if !quiet {
-        info!("Starting STR association testing");
-    }
-
-    // Validate input arguments
-    if let Err(e) = validate_arguments(&input, &phenocovar, &outcometype, &binary_order) {
-        error!("Argument validation failed: {}", e);
-        std::process::exit(1);
-    }
-
-    // Check R environment
-    if let Err(e) = check_r_environment(quiet, yes) {
-        error!("R environment check failed: {}", e);
-        print_r_setup_instructions();
-        print_error_help_message();
-        std::process::exit(1);
-    }
-
-    // Create temporary R script file
-    let temp_script = match create_temp_r_script() {
-        Ok(path) => path,
-        Err(e) => {
-            error!("Failed to create temporary R script: {}", e);
-            std::process::exit(1);
-        }
-    };
-
-    // Execute R script
-    let result = execute_r_script(
-        &temp_script,
-        input,
-        phenocovar,
-        phenotype,
-        out,
-        str_mode,
-        outcometype,
-        covnames,
-        missing_cutoff,
-        minimal_length,
-        threads,
-        chunk_size,
-        binary_order,
-        quiet,
-        plot.as_deref(),
-        sort,
-    );
-
-    // Clean up temporary file
-    if let Err(e) = fs::remove_file(&temp_script) {
-        warn!("Failed to remove temporary R script: {}", e);
-    }
-
-    match result {
-        Ok(()) => {
-            if !quiet {
-                info!("Association testing completed successfully");
-            }
-        }
-        Err(e) => {
-            error!("Association testing failed: {}", e);
-            print_error_help_message();
-            std::process::exit(1);
-        }
-    }
-}
-
-/// Print helpful error message directing users to report issues
-fn print_error_help_message() {
-    eprintln!("\n{}", "=".repeat(60));
-    eprintln!("  ASSOCIATION TESTING ERROR");
-    eprintln!("{}", "=".repeat(60));
-    eprintln!("\nIf you're experiencing issues with association testing:");
-    eprintln!("\n1. Check the error message above for specific details");
-    eprintln!("2. Verify your phenotype file format matches the documentation");
-    eprintln!("3. Ensure your R environment is properly configured");
-    eprintln!("\nIf the problem persists, please open an issue on GitHub:");
-    eprintln!("  https://github.com/wdecoster/inquiSTR/issues/new");
-    eprintln!("\nInclude in your report:");
-    eprintln!("  - The full error message above");
-    eprintln!("  - Your inquiSTR version: {}", env!("CARGO_PKG_VERSION"));
-    eprintln!("  - Your R version (run: R --version)");
-    eprintln!("  - Your operating system");
-    eprintln!("  - The command you ran (you can redact sensitive file paths)");
-    eprintln!("{}", "=".repeat(60));
-}
-
-/// Validate command-line arguments
-fn validate_arguments(
-    input: &Path,
-    phenocovar: &Path,
-    outcometype: &str,
-    binary_order: &Option<String>,
-) -> Result<(), String> {
-    // Check input files exist
+    // Validate arguments
     if !input.exists() {
-        return Err(format!("Input file does not exist: {}", input.display()));
+        eprintln!("ERROR: Input file does not exist: {}", input.display());
+        std::process::exit(1);
     }
-
     if !phenocovar.exists() {
-        return Err(format!("Phenotype file does not exist: {}", phenocovar.display()));
+        eprintln!("ERROR: Phenotype file does not exist: {}", phenocovar.display());
+        std::process::exit(1);
     }
-
-    // Note: STR mode validation is handled by the R script based on auto-detected file type
-    // The R script will skip STR mode checks for kmer files and validate for STR files
-
-    // Validate outcome type
-    if !["binary", "continuous"].contains(&outcometype) {
-        return Err(format!("Outcome type must be binary or continuous, got: {}", outcometype));
+    if !(0.0..=1.0).contains(&missing_cutoff) {
+        eprintln!("ERROR: missing_cutoff must be between 0 and 1");
+        std::process::exit(1);
     }
-
-    // Check binary order for binary outcomes
+    if outcometype != "binary" && outcometype != "continuous" {
+        eprintln!("ERROR: outcometype must be 'binary' or 'continuous'");
+        std::process::exit(1);
+    }
     if outcometype == "binary" && binary_order.is_none() {
-        return Err("Binary order is required for binary outcomes. Use --binary-order".to_string());
+        eprintln!("ERROR: --binary-order is required for binary outcomes");
+        std::process::exit(1);
     }
 
-    Ok(())
-}
+    // Detect input type
+    let input_type = detect_input_type(&input);
 
-/// Check if R is installed and required packages are available
-/// Uses a fallback cascade: system R -> conda R -> cached portable R -> offer installation
-fn check_r_environment(quiet: bool, yes: bool) -> Result<(), String> {
+    if input_type == InputType::Str && !["MEAN", "MAX", "MIN"].contains(&str_mode.as_str()) {
+        eprintln!("ERROR: --str-mode must be MEAN, MAX, or MIN for STR data");
+        std::process::exit(1);
+    }
+
+    // Parse binary levels
+    let binary_levels: Option<Vec<String>> = binary_order.as_ref().map(|bo| {
+        bo.split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect()
+    });
+
+    // Prepare phenotype data
+    let pheno =
+        prepare_phenotype_data(&phenocovar, &phenotype, &covnames, binary_levels.as_deref(), quiet);
+
     if !quiet {
-        info!("Checking R environment...");
+        eprintln!("Loaded {} samples with phenotype data", pheno.sample_ids.len());
     }
 
-    // Step 1: Check for system R
-    if let Ok(version) = check_system_r() {
-        if !quiet {
-            info!("System R found: {}", version);
-        }
-        // Check for required packages and offer to install if missing
-        ensure_r_packages(quiet, yes)?;
-        return Ok(());
+    // Parse header and extract sample names
+    let file = crate::utils::reader(&input.to_string_lossy());
+    let mut lines = file.lines();
+    let header_line = crate::utils::skip_metadata_lines(&mut lines, &input.to_string_lossy());
+    let (sample_names, input_type_confirmed) = parse_header(&header_line, &input_type);
+
+    if !quiet {
+        eprintln!("Found {} samples in input file", sample_names.len());
+        eprintln!("Input type: {}", input_type_confirmed);
     }
 
-    // Step 2: Check for system conda with inquiSTR environment
-    match check_system_conda_r() {
-        Ok((r_path, version, _conda_cmd)) => {
-            if !quiet {
-                info!("System conda R found in inquiSTR environment: {}", version);
-                info!("R path: {}", r_path);
-            }
-            return Ok(());
+    // Build sample index mapping: input column position -> pheno row index
+    let sample_mapping: Vec<Option<usize>> = sample_names
+        .iter()
+        .map(|name| pheno.sample_ids.iter().position(|s| s == name))
+        .collect();
+
+    // Count overlapping samples
+    let overlap_count = sample_mapping.iter().filter(|m| m.is_some()).count();
+    if overlap_count == 0 {
+        eprintln!("ERROR: No overlapping samples between input file and phenotype file.");
+        if sample_names.len() <= 10 {
+            eprintln!("  Sample IDs in input file: {:?}", sample_names);
+        } else {
+            eprintln!("  First 10 sample IDs in input file: {:?}", &sample_names[..10]);
+            eprintln!("  ({} total)", sample_names.len());
         }
-        Err(e) if e.contains("found but no 'inquiSTR' environment") => {
-            // Conda exists but no inquiSTR env - offer to create it
-            let conda_cmd = e.split_whitespace().next().unwrap_or("conda");
-            return offer_conda_env_creation(conda_cmd, quiet, yes);
+        if pheno.sample_ids.len() <= 10 {
+            eprintln!("  Sample IDs in phenotype file: {:?}", pheno.sample_ids);
+        } else {
+            eprintln!("  First 10 sample IDs in phenotype file: {:?}", &pheno.sample_ids[..10]);
+            eprintln!("  ({} total)", pheno.sample_ids.len());
         }
-        Err(_) => {
-            // No conda found, continue to next fallback
-        }
+        std::process::exit(1);
+    }
+    if !quiet {
+        eprintln!("{} samples overlap between input and phenotype files", overlap_count);
     }
 
-    // Step 3: Check for cached portable R
-    let cache_dir = get_cache_dir();
-    let conda_prefix = cache_dir.join("miniforge");
-    let r_bin = conda_prefix.join("bin/R");
+    // Pre-compute total phenotyped count (constant across variants)
+    let total_phenotyped = overlap_count;
 
-    if r_bin.exists() {
-        if !quiet {
-            info!("Cached portable R found at: {}", conda_prefix.display());
-        }
-        return Ok(());
+    // Read all variant lines
+    let variant_lines: Vec<String> = lines.map_while(Result::ok).collect();
+    let total_variants = variant_lines.len();
+
+    if !quiet {
+        eprintln!("Processing {} variants...", total_variants);
     }
 
-    // Step 4: No R found - offer to install portable R
-    offer_portable_r_installation(&conda_prefix, quiet, yes)
-}
+    // Set up thread pool
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(threads)
+        .build()
+        .expect("Failed to build thread pool");
 
-/// Ensure R packages are installed, offering to install missing ones
-fn ensure_r_packages(quiet: bool, yes: bool) -> Result<(), String> {
-    let missing_packages = check_r_packages(quiet)?;
+    // Process variants in parallel
+    let results: Vec<Option<VariantResult>> = pool.install(|| {
+        variant_lines
+            .par_iter()
+            .map(|line| {
+                process_variant_line(
+                    line,
+                    &sample_names,
+                    &sample_mapping,
+                    &pheno,
+                    &str_mode,
+                    &outcometype,
+                    missing_cutoff,
+                    minimal_length,
+                    &input_type_confirmed,
+                    total_phenotyped,
+                )
+            })
+            .collect()
+    });
 
-    if missing_packages.is_empty() {
-        return Ok(());
-    }
+    // Collect non-None results
+    let mut valid_results: Vec<VariantResult> = results.into_iter().flatten().collect();
+    let variants_written = valid_results.len();
 
-    // Packages are missing - offer to install
-    eprintln!("\n{}", "=".repeat(60));
-    eprintln!("  Missing R packages: {}", missing_packages.join(", "));
-    eprintln!("{}", "=".repeat(60));
-    eprintln!("\nThe association testing feature requires the following R packages:");
-    for pkg in &missing_packages {
-        eprintln!("  - {}", pkg);
-    }
-
-    let proceed = if yes {
-        eprintln!("\n--yes flag provided, automatically installing packages...");
-        true
-    } else {
-        eprintln!("\nWould you like to install them now? This may take 1-2 minutes.");
-        eprintln!("Type 'y' to install, or any other key to cancel (timeout: 60s): ");
-        match get_user_confirmation_with_timeout(60) {
-            Ok(confirmed) => confirmed,
-            Err(e) => {
-                eprintln!("\nError or timeout: {}", e);
-                eprintln!("Installation cancelled. You can install the packages manually:");
-                eprintln!(
-                    "  Rscript -e \"install.packages(c('{}'), repos='https://cran.rstudio.com/')\"",
-                    missing_packages.join("', '")
-                );
-                eprintln!("Or use --yes flag to auto-confirm in non-interactive environments.");
-                return Err(format!("R package installation cancelled: {}", e));
-            }
-        }
-    };
-
-    if !proceed {
-        eprintln!("\nInstallation cancelled. You can install the packages manually:");
+    if !quiet {
+        let pass_rate = if total_variants > 0 {
+            (variants_written as f64 / total_variants as f64 * 100.0) as u32
+        } else {
+            0
+        };
         eprintln!(
-            "  Rscript -e \"install.packages(c('{}'), repos='https://cran.rstudio.com/')\"",
-            missing_packages.join("', '")
+            "Processed {} variants, {} passed filters ({}% pass rate)",
+            total_variants, variants_written, pass_rate
         );
-        return Err("R package installation cancelled by user".to_string());
     }
 
-    // User confirmed - proceed with installation
-    install_r_packages(&missing_packages)?;
-
-    // Verify installation succeeded
-    let still_missing = check_r_packages(true)?;
-    if !still_missing.is_empty() {
-        return Err(format!(
-            "Installation completed but packages still missing: {}. Please try installing manually.",
-            still_missing.join(", ")
-        ));
+    // Add Bonferroni correction
+    let n_tests = variants_written;
+    for r in &mut valid_results {
+        r.pvalue_bonf = Some((r.pvalue * n_tests as f64).min(1.0));
     }
 
-    eprintln!("\n✓ R packages installed successfully!\n");
-    Ok(())
-}
-
-/// Install R packages automatically
-fn install_r_packages(packages: &[String]) -> Result<(), String> {
-    eprintln!("\nInstalling R packages...");
-    eprintln!("This may take 1-2 minutes depending on your system.");
-
-    let pkg_list = packages.join("', '");
-    let install_cmd = format!(
-        "install.packages(c('{}'), repos='https://cran.rstudio.com/', quiet=FALSE)",
-        pkg_list
-    );
-
-    let output = Command::new("Rscript")
-        .args(["-e", &install_cmd])
-        .output()
-        .map_err(|e| format!("Failed to run R package installation: {}", e))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = String::from_utf8_lossy(&output.stdout);
-
-        eprintln!("\nR package installation failed:");
-        if !stdout.is_empty() {
-            eprintln!("STDOUT: {}", stdout);
-        }
-        if !stderr.is_empty() {
-            eprintln!("STDERR: {}", stderr);
-        }
-
-        return Err(format!(
-            "Failed to install R packages. Exit code: {:?}. \
-             You may need to install them manually or check your R installation.",
-            output.status.code()
-        ));
-    }
-
-    Ok(())
-}
-
-/// Check which required R packages are missing
-fn check_r_packages(quiet: bool) -> Result<Vec<String>, String> {
-    let mut missing_packages = Vec::new();
-
-    for package in REQUIRED_R_PACKAGES {
-        if !quiet {
-            info!("Checking R package: {}", package);
-        }
-
-        let check_cmd = format!(
-            "if (!require('{}', quietly = TRUE)) quit(status = 1) else quit(status = 0)",
-            package
-        );
-
-        let result = Command::new("R")
-            .args(["--slave", "-e", &check_cmd])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
-
-        match result {
-            Ok(status) => {
-                if !status.success() {
-                    missing_packages.push(package.to_string());
-                }
-            }
-            Err(_) => {
-                return Err("Failed to check R packages".to_string());
-            }
-        }
-    }
-
-    Ok(missing_packages)
-}
-
-/// Create a temporary R script file
-fn create_temp_r_script() -> Result<PathBuf, std::io::Error> {
-    let temp_dir = std::env::temp_dir();
-    let temp_file = temp_dir.join("str_regression_temp.R");
-
-    let mut file = fs::File::create(&temp_file)?;
-    file.write_all(STR_REGRESSION_SCRIPT.as_bytes())?;
-
-    Ok(temp_file)
-}
-
-/// Execute the R script with provided arguments
-#[allow(clippy::too_many_arguments)]
-fn execute_r_script(
-    script_path: &Path,
-    input: PathBuf,
-    phenocovar: PathBuf,
-    phenotype: String,
-    out: PathBuf,
-    str_mode: String,
-    outcometype: String,
-    covnames: Option<String>,
-    missing_cutoff: f64,
-    minimal_length: Option<f64>,
-    threads: usize,
-    chunk_size: usize,
-    binary_order: Option<String>,
-    quiet: bool,
-    plot: Option<&str>,
-    sort: bool,
-) -> Result<(), String> {
-    let script_path_str = script_path.to_string_lossy();
-    let input_str = input.to_string_lossy();
-    let phenocovar_str = phenocovar.to_string_lossy();
-    let out_str = out.to_string_lossy();
-    let missing_cutoff_str = missing_cutoff.to_string();
-    let threads_str = threads.to_string();
-    let chunk_size_str = chunk_size.to_string();
-
-    let mut script_args = vec![
-        "--input",
-        input_str.as_ref(),
-        "--phenocovar",
-        phenocovar_str.as_ref(),
-        "--phenotype",
-        &phenotype,
-        "--out",
-        out_str.as_ref(),
-        "--STRmode",
-        &str_mode,
-        "--outcometype",
-        &outcometype,
-        "--missing_cutoff",
-        &missing_cutoff_str,
-        "--threads",
-        &threads_str,
-        "--chunk_size",
-        &chunk_size_str,
-    ];
-
-    // Add optional arguments
-    if let Some(ref covnames_val) = covnames {
-        script_args.extend(&["--covnames", covnames_val]);
-    }
-
-    let minimal_length_str = minimal_length.map(|val| val.to_string());
-    if let Some(ref minimal_length_val) = minimal_length_str {
-        script_args.extend(&["--minimal_length", minimal_length_val]);
-    }
-
-    if let Some(ref binary_order_val) = binary_order {
-        script_args.extend(&["--binaryOrder", binary_order_val]);
-    }
-
-    if quiet {
-        script_args.push("--quiet");
-    }
-
-    let plot_prefix_str;
-    if let Some(plot_prefix) = plot {
-        script_args.push("--plot");
-        plot_prefix_str = plot_prefix.to_string();
-        script_args.push(&plot_prefix_str);
-    }
-
+    // Sort if requested
     if sort {
-        script_args.push("--sort");
+        valid_results.sort_by(|a, b| {
+            a.pvalue
+                .partial_cmp(&b.pvalue)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
     }
 
-    // Determine which R to use based on detection cascade
-    let (r_command, r_args) = get_r_command(script_path_str.as_ref(), &script_args)?;
-
-    info!("Executing R script: {} {:?}", r_command, r_args);
-
-    let output = Command::new(&r_command)
-        .args(&r_args)
-        .output()
-        .map_err(|e| format!("Failed to execute R script: {}", e))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = String::from_utf8_lossy(&output.stdout);
-
-        eprintln!("\n{}", "=".repeat(60));
-        eprintln!("R SCRIPT EXECUTION FAILED");
-        eprintln!("{}", "=".repeat(60));
-
-        if !stderr.is_empty() {
-            eprintln!("\nError details:");
-            eprintln!("{}", stderr);
-        }
-
-        if !stdout.is_empty() {
-            eprintln!("\nOutput before failure:");
-            eprintln!("{}", stdout);
-        }
-
-        eprintln!("\n{}", "=".repeat(60));
-
-        return Err(format!(
-            "R script failed with exit code: {}",
-            output
-                .status
-                .code()
-                .map_or("unknown".to_string(), |c| c.to_string())
-        ));
-    }
-
-    // Always show stderr (warnings, plot messages, etc.) even on success
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    if !stderr.is_empty() && !quiet {
-        eprintln!("{}", stderr);
-    }
+    // Write output
+    write_results(&out, &valid_results, &outcometype, binary_levels.as_deref(), quiet);
 
     if !quiet {
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        if !stdout.is_empty() {
-            println!("{}", stdout);
-        }
+        let bonf_sig = valid_results
+            .iter()
+            .filter(|r| r.pvalue_bonf.unwrap_or(1.0) < 0.05)
+            .count();
+        eprintln!("Bonferroni significant (p < 0.05): {}", bonf_sig);
+        eprintln!("Results written to: {}", out.display());
     }
-
-    Ok(())
 }
 
-/// Get the appropriate R command and arguments based on which R installation is available
-fn get_r_command(script_path: &str, script_args: &[&str]) -> Result<(String, Vec<String>), String> {
-    // Try system R first
-    if Command::new("Rscript").arg("--version").output().is_ok() {
-        let mut args = vec![script_path.to_string()];
-        args.extend(script_args.iter().map(|s| s.to_string()));
-        return Ok(("Rscript".to_string(), args));
-    }
+// ---------------------------------------------------------------------------
+// Input type detection
+// ---------------------------------------------------------------------------
 
-    // Try conda R in inquiSTR environment
-    for conda_cmd in &["conda", "mamba", "micromamba"] {
-        let check = Command::new(conda_cmd)
-            .args(["run", "-n", "inquiSTR", "Rscript", "--version"])
-            .output();
-
-        if let Ok(output) = check
-            && output.status.success()
-        {
-            let mut args = vec![
-                "run".to_string(),
-                "-n".to_string(),
-                "inquiSTR".to_string(),
-                "Rscript".to_string(),
-                script_path.to_string(),
-            ];
-            args.extend(script_args.iter().map(|s| s.to_string()));
-            return Ok((conda_cmd.to_string(), args));
-        }
-    }
-
-    // Try cached portable R
-    let cache_dir = get_cache_dir();
-    let r_script = cache_dir.join("miniforge/bin/Rscript");
-    if r_script.exists() {
-        let mut args = vec![script_path.to_string()];
-        args.extend(script_args.iter().map(|s| s.to_string()));
-        return Ok((r_script.to_string_lossy().to_string(), args));
-    }
-
-    Err("No R installation found. This should not happen after check_r_environment".to_string())
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum InputType {
+    Str,
+    Kmer,
 }
 
-/// Check for system R installation
-fn check_system_r() -> Result<String, String> {
-    let output = Command::new("R")
-        .args(["--version"])
-        .output()
-        .map_err(|_| "R not found in PATH".to_string())?;
-
-    if !output.status.success() {
-        return Err("R command failed".to_string());
+impl std::fmt::Display for InputType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            InputType::Str => write!(f, "STR"),
+            InputType::Kmer => write!(f, "kmer"),
+        }
     }
+}
 
-    let version_output = String::from_utf8_lossy(&output.stdout);
-    let version = version_output
-        .lines()
+fn detect_input_type(path: &std::path::Path) -> InputType {
+    let file = crate::utils::reader(&path.to_string_lossy());
+    for line_result in file.lines() {
+        let line = line_result.expect("Error reading input file");
+        if line.starts_with('#') {
+            if line.contains("file_type=kmer") || line.contains("file_type = kmer") {
+                return InputType::Kmer;
+            }
+            if line.contains("file_type=call") || line.contains("file_type = call") {
+                return InputType::Str;
+            }
+            continue;
+        }
+        // First non-metadata line is the header
+        let first_field = line.split('\t').next().unwrap_or("");
+        return match first_field {
+            "kmer" => InputType::Kmer,
+            "chromosome" => InputType::Str,
+            _ => {
+                eprintln!(
+                    "ERROR: Unrecognized file format. Expected 'kmer' or 'chromosome' as first column, got: {}",
+                    first_field
+                );
+                std::process::exit(1);
+            }
+        };
+    }
+    eprintln!("ERROR: Empty input file");
+    std::process::exit(1);
+}
+
+// ---------------------------------------------------------------------------
+// Header parsing
+// ---------------------------------------------------------------------------
+
+fn parse_header(header_line: &str, _expected_type: &InputType) -> (Vec<String>, InputType) {
+    let fields: Vec<&str> = header_line.trim().split('\t').collect();
+
+    match fields.first().copied() {
+        Some("kmer") => {
+            let sample_names: Vec<String> = fields[1..].iter().map(|s| s.to_string()).collect();
+            (sample_names, InputType::Kmer)
+        }
+        Some("chromosome") => {
+            if fields.len() < 5 {
+                eprintln!("ERROR: STR file must have at least 5 columns");
+                std::process::exit(1);
+            }
+            if fields[1] != "begin" || fields[2] != "end" {
+                eprintln!("ERROR: Expected 'begin' and 'end' as columns 2 and 3");
+                std::process::exit(1);
+            }
+            let sample_cols = &fields[4..];
+            if !sample_cols.len().is_multiple_of(2) {
+                eprintln!("ERROR: Must have even number of sample columns (H1/H2 pairs)");
+                std::process::exit(1);
+            }
+            let n_samples = sample_cols.len() / 2;
+            let mut sample_names = Vec::with_capacity(n_samples);
+            for i in 0..n_samples {
+                let h1_col = sample_cols[i * 2];
+                let h2_col = sample_cols[i * 2 + 1];
+                if !h1_col.ends_with("_H1") || !h2_col.ends_with("_H2") {
+                    eprintln!(
+                        "ERROR: Expected _H1/_H2 suffixed columns, got: {} / {}",
+                        h1_col, h2_col
+                    );
+                    std::process::exit(1);
+                }
+                let name_h1 = h1_col.strip_suffix("_H1").unwrap();
+                let name_h2 = h2_col.strip_suffix("_H2").unwrap();
+                if name_h1 != name_h2 {
+                    eprintln!("ERROR: H1/H2 pair mismatch: {} vs {}", name_h1, name_h2);
+                    std::process::exit(1);
+                }
+                sample_names.push(name_h1.to_string());
+            }
+            (sample_names, InputType::Str)
+        }
+        _ => {
+            eprintln!(
+                "ERROR: Expected 'kmer' or 'chromosome' as first column, got: {}",
+                fields.first().unwrap_or(&"<empty>")
+            );
+            std::process::exit(1);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Phenotype data
+// ---------------------------------------------------------------------------
+
+struct PhenotypeData {
+    /// Sample IDs in order
+    sample_ids: Vec<String>,
+    /// Phenotype values (0/1 for binary, continuous for continuous)
+    phenotype_values: Vec<f64>,
+    /// Covariate matrix: rows = samples, cols = expanded covariates
+    /// Categorical covariates are dummy-encoded (N-1 columns per N levels)
+    covariate_matrix: Vec<Vec<f64>>,
+    /// Expanded covariate column names (e.g. "sex_M", "pop_EUR", "pop_AFR")
+    covariate_names: Vec<String>,
+    /// For binary: the two level names
+    binary_levels: Option<Vec<String>>,
+}
+
+fn prepare_phenotype_data(
+    phenocovar: &std::path::Path,
+    phenotype_col: &str,
+    covnames: &Option<String>,
+    binary_levels: Option<&[String]>,
+    quiet: bool,
+) -> PhenotypeData {
+    let file = crate::utils::reader(&phenocovar.to_string_lossy());
+    let mut lines_iter = file.lines();
+
+    // Read header
+    let header = lines_iter
         .next()
-        .unwrap_or("unknown version")
-        .to_string();
+        .expect("Phenotype file is empty")
+        .expect("Error reading phenotype file");
+    let header_fields: Vec<String> = header
+        .trim()
+        .split('\t')
+        .map(|s| s.trim().to_string())
+        .collect();
 
-    Ok(version)
-}
+    if header_fields.len() < 2 {
+        eprintln!("ERROR: Phenotype file must have at least 2 columns (sample ID + phenotype)");
+        std::process::exit(1);
+    }
 
-/// Check for system conda/mamba with inquiSTR environment
-fn check_system_conda_r() -> Result<(String, String, String), String> {
-    let conda_commands = ["conda", "mamba", "micromamba"];
+    let _sample_id_col_name = &header_fields[0];
+    let pheno_col_idx = header_fields
+        .iter()
+        .position(|h| h == phenotype_col)
+        .unwrap_or_else(|| {
+            eprintln!(
+                "ERROR: Phenotype column '{}' not found in phenotype file. Available columns: {}",
+                phenotype_col,
+                header_fields.join(", ")
+            );
+            std::process::exit(1);
+        });
 
-    for conda_cmd in &conda_commands {
-        // Check if conda command exists
-        let conda_check = Command::new(conda_cmd).arg("--version").output();
+    // Parse covariate names
+    let cov_names: Vec<String> = covnames
+        .as_ref()
+        .map(|c| {
+            c.split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
 
-        if conda_check.is_err() {
+    let cov_indices: Vec<usize> = cov_names
+        .iter()
+        .map(|name| {
+            header_fields.iter().position(|h| h == name).unwrap_or_else(|| {
+                eprintln!(
+                    "ERROR: Covariate column '{}' not found in phenotype file. Available columns: {}",
+                    name,
+                    header_fields.join(", ")
+                );
+                std::process::exit(1);
+            })
+        })
+        .collect();
+
+    let mut sample_ids = Vec::new();
+    let mut pheno_values = Vec::new();
+    let mut raw_covariates: Vec<Vec<String>> = Vec::new(); // rows of raw string values
+
+    for (line_num, line_result) in lines_iter.enumerate() {
+        let line = line_result.expect("Error reading phenotype file");
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let fields: Vec<&str> = trimmed.split('\t').collect();
+        if fields.len() <= pheno_col_idx {
+            eprintln!(
+                "ERROR: Line {} in phenotype file has {} columns, but phenotype column '{}' is at index {}",
+                line_num + 2,
+                fields.len(),
+                phenotype_col,
+                pheno_col_idx + 1
+            );
+            std::process::exit(1);
+        }
+
+        let sample_id = fields[0].trim().to_string();
+        let pheno_str = fields[pheno_col_idx].trim();
+
+        // Skip samples with missing phenotype (NA/NaN/empty) — this is expected
+        if pheno_str.is_empty()
+            || pheno_str.eq_ignore_ascii_case("na")
+            || pheno_str.eq_ignore_ascii_case("nan")
+        {
             continue;
         }
 
-        // Check if inquiSTR environment exists
-        let env_check = Command::new(conda_cmd).args(["env", "list"]).output();
-
-        let has_inquistr_env = if let Ok(output) = env_check {
-            String::from_utf8_lossy(&output.stdout)
-                .lines()
-                .any(|line| line.split_whitespace().next() == Some("inquiSTR"))
-        } else {
-            false
-        };
-
-        if !has_inquistr_env {
-            return Err(format!("{} found but no 'inquiSTR' environment", conda_cmd));
-        }
-
-        // Try to run R from the inquiSTR environment
-        let r_check = Command::new(conda_cmd)
-            .args(["run", "-n", "inquiSTR", "R", "--version"])
-            .output();
-
-        if let Ok(output) = r_check
-            && output.status.success()
-        {
-            let version_info = String::from_utf8_lossy(&output.stdout);
-            let version = version_info.lines().next().unwrap_or("unknown").to_string();
-
-            // Check for required packages
-            let pkg_check = Command::new(conda_cmd)
-                .args(["run", "-n", "inquiSTR", "R", "-e", 
-                       "if (!require('data.table', quietly=TRUE)) quit(status=1); if (!require('argparser', quietly=TRUE)) quit(status=1)"])
-                .output();
-
-            if let Ok(pkg_output) = pkg_check
-                && pkg_output.status.success()
-            {
-                let r_path = format!("{} run -n inquiSTR R", conda_cmd);
-                return Ok((
-                    r_path,
-                    format!("{} (conda env: inquiSTR)", version),
-                    conda_cmd.to_string(),
-                ));
-            }
-        }
-    }
-
-    Err("No conda/mamba/micromamba found in PATH".to_string())
-}
-
-/// Get cache directory for portable R installation
-fn get_cache_dir() -> PathBuf {
-    if let Ok(xdg_cache) = env::var("XDG_CACHE_HOME") {
-        PathBuf::from(xdg_cache).join("inquiSTR")
-    } else if let Some(home) = env::var_os("HOME") {
-        PathBuf::from(home).join(".cache/inquiSTR")
-    } else {
-        PathBuf::from("/tmp/inquiSTR")
-    }
-}
-
-/// Offer to create inquiSTR conda environment in existing conda installation
-fn offer_conda_env_creation(conda_cmd: &str, quiet: bool, yes: bool) -> Result<(), String> {
-    eprintln!("\n{}", "=".repeat(60));
-    eprintln!("  CONDA ENVIRONMENT SETUP");
-    eprintln!("{}", "=".repeat(60));
-    eprintln!("\nFound {} but no 'inquiSTR' environment.", conda_cmd);
-    eprintln!("\nWould you like to create an inquiSTR environment with R and required packages?");
-    eprintln!(
-        "This will install R {} with data.table, argparser, and qqman (for plotting) (~250 MB)",
-        R_VERSION
-    );
-
-    let proceed = if yes {
-        eprintln!("\n--yes flag provided, automatically creating environment...");
-        true
-    } else {
-        eprintln!("\nType 'y' to create environment, or any other key to cancel (timeout: 60s): ");
-        match get_user_confirmation_with_timeout(60) {
-            Ok(confirmed) => confirmed,
-            Err(e) => {
-                eprintln!("\nError or timeout: {}", e);
-                eprintln!("Cancelled. You can create the environment later with:");
+        // For binary: filter to only samples in binary_levels, encode as 0/1
+        if let Some(levels) = binary_levels {
+            if !levels.iter().any(|l| l == pheno_str) {
                 eprintln!(
-                    "  {} create -n inquiSTR -c conda-forge r-base={} r-data.table r-argparser r-qqman",
-                    conda_cmd, R_VERSION
+                    "ERROR: Sample '{}' has phenotype value '{}' which is not in --binary-order '{}'. \
+                     All non-missing phenotype values must match one of the specified binary levels.",
+                    sample_id,
+                    pheno_str,
+                    levels.join(",")
                 );
-                eprintln!("Or use --yes flag to auto-confirm in non-interactive environments.");
-                return Err(format!("Conda environment creation cancelled: {}", e));
+                std::process::exit(1);
             }
+            let pheno_val = if pheno_str == levels[0] { 0.0 } else { 1.0 };
+            pheno_values.push(pheno_val);
+        } else {
+            // Continuous phenotype
+            let pheno_val: f64 = match pheno_str.parse() {
+                Ok(v) => v,
+                Err(_) => {
+                    eprintln!(
+                        "ERROR: Sample '{}' has non-numeric phenotype value '{}' for continuous outcome",
+                        sample_id, pheno_str
+                    );
+                    std::process::exit(1);
+                }
+            };
+            pheno_values.push(pheno_val);
         }
-    };
 
-    if !proceed {
-        eprintln!("\nCancelled. You can create the environment later with:");
-        eprintln!(
-            "  {} create -n inquiSTR -c conda-forge r-base={} r-data.table r-argparser r-qqman",
-            conda_cmd, R_VERSION
-        );
-        return Err("User cancelled conda environment creation".to_string());
+        // Collect raw covariate strings
+        let mut cov_row = Vec::with_capacity(cov_indices.len());
+        for (cov_i, &ci) in cov_indices.iter().enumerate() {
+            if ci >= fields.len() {
+                eprintln!(
+                    "ERROR: Sample '{}' is missing covariate column '{}' (line has {} columns, need column {})",
+                    sample_id,
+                    cov_names[cov_i],
+                    fields.len(),
+                    ci + 1
+                );
+                std::process::exit(1);
+            }
+            let val_str = fields[ci].trim();
+            if val_str.is_empty()
+                || val_str.eq_ignore_ascii_case("na")
+                || val_str.eq_ignore_ascii_case("nan")
+            {
+                eprintln!(
+                    "ERROR: Sample '{}' has missing value for covariate '{}'",
+                    sample_id, cov_names[cov_i]
+                );
+                std::process::exit(1);
+            }
+            cov_row.push(val_str.to_string());
+        }
+
+        sample_ids.push(sample_id);
+        raw_covariates.push(cov_row);
     }
 
-    // Create the environment
-    if !quiet {
-        info!("Creating inquiSTR conda environment...");
-    }
-    eprintln!("\nCreating inquiSTR conda environment...");
-    eprintln!("This may take 60-90 seconds...");
-
-    let create_status = Command::new(conda_cmd)
-        .args([
-            "create",
-            "-n",
-            "inquiSTR",
-            "-y",
-            "-q",
-            "-c",
-            "conda-forge",
-            &format!("r-base={}", R_VERSION),
-            "r-data.table",
-            "r-argparser",
-            "r-qqman",
-        ])
-        .status()
-        .map_err(|e| format!("Failed to create environment: {}", e))?;
-
-    if !create_status.success() {
-        return Err("Environment creation failed".to_string());
+    if sample_ids.is_empty() {
+        // Re-read the file to collect all sample IDs (first column) for diagnostics
+        let diag_file = crate::utils::reader(&phenocovar.to_string_lossy());
+        let mut diag_lines = diag_file.lines();
+        diag_lines.next(); // skip header
+        let all_ids: Vec<String> = diag_lines
+            .map_while(Result::ok)
+            .filter_map(|l| l.split('\t').next().map(|s| s.trim().to_string()))
+            .filter(|s| !s.is_empty())
+            .collect();
+        eprintln!("ERROR: No valid samples found in phenotype file after filtering.");
+        eprintln!("  Possible causes:");
+        eprintln!("    - All phenotype values are missing (NA/NaN/empty)");
+        eprintln!("    - The phenotype file may not be tab-separated");
+        if all_ids.len() <= 10 {
+            eprintln!("  Sample IDs in phenotype file: {:?}", all_ids);
+        } else {
+            eprintln!("  First 10 sample IDs in phenotype file: {:?}", &all_ids[..10]);
+            eprintln!("  ({} total)", all_ids.len());
+        }
+        std::process::exit(1);
     }
 
-    eprintln!("\n✓ inquiSTR conda environment created successfully!");
-    if !quiet {
-        info!("inquiSTR conda environment created");
+    // Validate binary groups
+    if let Some(levels) = binary_levels {
+        let n_group0 = pheno_values.iter().filter(|&&v| v == 0.0).count();
+        let n_group1 = pheno_values.iter().filter(|&&v| v == 1.0).count();
+        if n_group0 < 2 || n_group1 < 2 {
+            eprintln!(
+                "ERROR: Insufficient samples in binary groups. {} has {} samples, {} has {} samples. Need at least 2 per group.",
+                levels[0], n_group0, levels[1], n_group1
+            );
+            std::process::exit(1);
+        }
+        if !quiet {
+            eprintln!(
+                "Sample counts per group: {} = {}, {} = {}",
+                levels[0], n_group0, levels[1], n_group1
+            );
+        }
     }
 
-    Ok(())
+    // Encode covariates: numeric covariates stay as-is, categorical get dummy-encoded
+    let (cov_matrix, expanded_cov_names) = encode_covariates(&raw_covariates, &cov_names, quiet);
+
+    PhenotypeData {
+        sample_ids,
+        phenotype_values: pheno_values,
+        covariate_matrix: cov_matrix,
+        covariate_names: expanded_cov_names,
+        binary_levels: binary_levels.map(|l| l.to_vec()),
+    }
 }
 
-/// Offer to install portable R via miniforge
-fn offer_portable_r_installation(
-    conda_prefix: &Path,
+/// Encode covariates into a numeric matrix.
+/// Numeric covariates are kept as-is. Categorical covariates (non-numeric) are
+/// dummy-encoded using N-1 indicator columns (the first level is the reference).
+fn encode_covariates(
+    raw: &[Vec<String>],
+    cov_names: &[String],
     quiet: bool,
-    yes: bool,
-) -> Result<(), String> {
-    eprintln!("\n{}", "=".repeat(60));
-    eprintln!("  PORTABLE R INSTALLATION");
-    eprintln!("{}", "=".repeat(60));
-    eprintln!("\nNo R installation found.");
-    eprintln!("\ninquiSTR can download a self-contained R environment using conda.");
-    eprintln!("This works across all Linux distributions without system dependencies.");
-    eprintln!("\nDetails:");
-    eprintln!("  - Download size: ~150 MB (miniforge) + ~200 MB (R + packages)");
-    eprintln!("  - Total disk space: ~350 MB");
-    eprintln!("  - Install location: {}", conda_prefix.display());
-    eprintln!("  - No system changes required");
-    eprintln!(
-        "  - Includes R {} with data.table, argparser, and qqman (for plotting)",
-        R_VERSION
-    );
-    eprintln!("  - One-time download, ~2-3 minutes");
+) -> (Vec<Vec<f64>>, Vec<String>) {
+    if cov_names.is_empty() || raw.is_empty() {
+        return (vec![Vec::new(); raw.len()], Vec::new());
+    }
 
-    let proceed = if yes {
-        eprintln!("\n--yes flag provided, automatically installing portable R...");
-        true
-    } else {
-        eprintln!("\nWould you like to download and install portable R now?");
-        eprintln!("Type 'y' to proceed, or any other key to cancel (timeout: 60s): ");
-        match get_user_confirmation_with_timeout(60) {
-            Ok(confirmed) => confirmed,
-            Err(e) => {
-                eprintln!("\nError or timeout: {}", e);
-                eprintln!("Installation cancelled.");
-                print_r_setup_instructions();
-                eprintln!("Or use --yes flag to auto-confirm in non-interactive environments.");
-                return Err(format!("Portable R installation cancelled: {}", e));
+    let n_cov = cov_names.len();
+    let n_samples = raw.len();
+
+    // Determine which covariates are numeric vs categorical
+    let is_numeric: Vec<bool> = (0..n_cov)
+        .map(|j| raw.iter().all(|row| row[j].parse::<f64>().is_ok()))
+        .collect();
+
+    // For categorical covariates, collect sorted unique levels
+    let cat_levels: Vec<Option<Vec<String>>> = (0..n_cov)
+        .map(|j| {
+            if is_numeric[j] {
+                None
+            } else {
+                let mut levels: Vec<String> = raw.iter().map(|row| row[j].clone()).collect();
+                levels.sort();
+                levels.dedup();
+                Some(levels)
             }
+        })
+        .collect();
+
+    // Build expanded column names
+    let mut expanded_names = Vec::new();
+    for j in 0..n_cov {
+        if is_numeric[j] {
+            expanded_names.push(cov_names[j].clone());
+        } else {
+            let levels = cat_levels[j].as_ref().unwrap();
+            if !quiet {
+                eprintln!(
+                    "Covariate '{}' is categorical with {} levels (reference: '{}')",
+                    cov_names[j],
+                    levels.len(),
+                    levels[0]
+                );
+            }
+            // Skip the first level (reference), create a column for each remaining level
+            for level in &levels[1..] {
+                expanded_names.push(format!("{}_{}", cov_names[j], level));
+            }
+        }
+    }
+
+    // Build numeric matrix
+    let mut matrix = Vec::with_capacity(n_samples);
+    for row in raw {
+        let mut numeric_row = Vec::with_capacity(expanded_names.len());
+        for j in 0..n_cov {
+            if is_numeric[j] {
+                numeric_row.push(row[j].parse::<f64>().unwrap());
+            } else {
+                let levels = cat_levels[j].as_ref().unwrap();
+                // One-hot for levels[1..], reference level gets all zeros
+                for level in &levels[1..] {
+                    numeric_row.push(if row[j] == *level { 1.0 } else { 0.0 });
+                }
+            }
+        }
+        matrix.push(numeric_row);
+    }
+
+    (matrix, expanded_names)
+}
+
+// ---------------------------------------------------------------------------
+// Variant result
+// ---------------------------------------------------------------------------
+
+struct VariantResult {
+    variant_id: String,
+    effect: f64, // OR for binary, Beta for continuous
+    effect_l95: f64,
+    effect_u95: f64,
+    std_err: f64,
+    pvalue: f64,
+    n: usize,
+    avg_size: f64,
+    // Binary-specific
+    group_stats: Option<Vec<(usize, f64, f64)>>, // (N, AvgSize, MaxSize) per group
+    // Continuous-specific
+    min_size: Option<f64>,
+    max_size: Option<f64>,
+    // Bonferroni
+    pvalue_bonf: Option<f64>,
+}
+
+// ---------------------------------------------------------------------------
+// Per-variant processing
+// ---------------------------------------------------------------------------
+
+#[allow(clippy::too_many_arguments)]
+fn process_variant_line(
+    line: &str,
+    sample_names: &[String],
+    sample_mapping: &[Option<usize>],
+    pheno: &PhenotypeData,
+    str_mode: &str,
+    outcometype: &str,
+    missing_cutoff: f64,
+    minimal_length: Option<f64>,
+    input_type: &InputType,
+    total_phenotyped: usize,
+) -> Option<VariantResult> {
+    let fields: Vec<&str> = line.trim().split('\t').collect();
+
+    let (variant_id, values) = match input_type {
+        InputType::Kmer => {
+            if fields.len() < 1 + sample_names.len() {
+                return None;
+            }
+            let kmer = fields[0].to_string();
+            let vals: Vec<Option<f64>> = fields[1..1 + sample_names.len()]
+                .iter()
+                .map(|f| parse_field(f))
+                .collect();
+            (kmer, vals)
+        }
+        InputType::Str => {
+            if fields.len() < 4 + 2 * sample_names.len() {
+                return None;
+            }
+            let vid = format!("{}:{}-{}", fields[0], fields[1], fields[2]);
+            let mut vals = Vec::with_capacity(sample_names.len());
+            for i in 0..sample_names.len() {
+                let h1 = parse_field(fields[4 + i * 2]);
+                let h2 = parse_field(fields[4 + i * 2 + 1]);
+                let combined = match (h1, h2) {
+                    (Some(a), Some(b)) => Some(combine_alleles(a, b, str_mode)),
+                    (Some(a), None) | (None, Some(a)) => Some(a),
+                    (None, None) => None,
+                };
+                vals.push(combined);
+            }
+            (vid, vals)
         }
     };
 
-    if !proceed {
-        eprintln!("\nInstallation cancelled.");
-        print_r_setup_instructions();
-        return Err("User cancelled portable R installation".to_string());
-    }
+    // Map variant values to phenotyped samples
+    let mut variant_vals = Vec::new();
+    let mut pheno_vals = Vec::new();
+    let mut cov_rows: Vec<&Vec<f64>> = Vec::new();
 
-    // Install miniforge and R
-    install_portable_r(conda_prefix, quiet)
-}
-
-/// Install portable R via miniforge
-fn install_portable_r(conda_prefix: &Path, quiet: bool) -> Result<(), String> {
-    if !quiet {
-        info!("Installing portable R environment...");
-    }
-
-    let temp_dir = env::temp_dir();
-    let installer_path = temp_dir.join("miniforge-installer.sh");
-
-    // Step 1: Download miniforge
-    eprintln!("\n[1/4] Downloading miniforge installer...");
-    eprintln!("      URL: {}", MINIFORGE_URL);
-
-    let download_status = Command::new("curl")
-        .args([
-            "-L",
-            "-f",
-            "-o",
-            installer_path.to_str().unwrap(),
-            "--progress-bar",
-            MINIFORGE_URL,
-        ])
-        .status();
-
-    if download_status.is_err() || !download_status.unwrap().success() {
-        eprintln!("      curl failed, trying wget...");
-        let wget_status = Command::new("wget")
-            .args([
-                "-O",
-                installer_path.to_str().unwrap(),
-                "--show-progress",
-                MINIFORGE_URL,
-            ])
-            .status()
-            .map_err(|_| "Failed to download: curl and wget both unavailable".to_string())?;
-
-        if !wget_status.success() {
-            return Err("Download failed".to_string());
+    for (sample_idx, mapping) in sample_mapping.iter().enumerate() {
+        if let Some(pheno_idx) = mapping
+            && let Some(val) = values[sample_idx]
+        {
+            variant_vals.push(val);
+            pheno_vals.push(pheno.phenotype_values[*pheno_idx]);
+            if !pheno.covariate_matrix.is_empty() {
+                cov_rows.push(&pheno.covariate_matrix[*pheno_idx]);
+            }
         }
     }
 
-    eprintln!(
-        "      ✓ Downloaded ({:.1} MB)",
-        fs::metadata(&installer_path).unwrap().len() as f64 / 1_000_000.0
-    );
+    let n = variant_vals.len();
 
-    // Step 2: Install miniforge
-    eprintln!("\n[2/4] Installing miniforge to {}...", conda_prefix.display());
-    eprintln!("      This may take 30-60 seconds...");
-
-    let install_status = Command::new("bash")
-        .args([
-            installer_path.to_str().unwrap(),
-            "-b",
-            "-p",
-            conda_prefix.to_str().unwrap(),
-        ])
-        .status()
-        .map_err(|e| format!("Failed to run miniforge installer: {}", e))?;
-
-    if !install_status.success() {
-        return Err("Miniforge installation failed".to_string());
+    // Check call rate
+    if total_phenotyped == 0 || (n as f64 / total_phenotyped as f64) < missing_cutoff {
+        return None;
     }
 
-    eprintln!("      ✓ Miniforge installed");
-
-    // Step 3: Install R and packages
-    eprintln!("\n[3/4] Installing R {} and packages...", R_VERSION);
-    eprintln!("      This may take 60-90 seconds...");
-
-    let conda_bin = conda_prefix.join("bin/conda");
-    let install_r_status = Command::new(conda_bin.to_str().unwrap())
-        .args([
-            "install",
-            "-y",
-            "-q",
-            "-c",
-            "conda-forge",
-            &format!("r-base={}", R_VERSION),
-            "r-data.table",
-            "r-argparser",
-            "r-qqman",
-        ])
-        .env("CONDA_PREFIX", conda_prefix)
-        .status()
-        .map_err(|e| format!("Failed to install R packages: {}", e))?;
-
-    if !install_r_status.success() {
-        return Err("R package installation failed".to_string());
+    // Check variance
+    let first = variant_vals[0];
+    if variant_vals
+        .iter()
+        .all(|&v| (v - first).abs() < f64::EPSILON)
+    {
+        return None;
     }
 
-    eprintln!("      ✓ R and packages installed");
-
-    // Step 4: Verify installation
-    eprintln!("\n[4/4] Verifying installation...");
-
-    let r_bin = conda_prefix.join("bin/R");
-    if !r_bin.exists() {
-        return Err(format!("R binary not found at: {}", r_bin.display()));
-    }
-
-    let test_status = Command::new(r_bin.to_str().unwrap())
-        .args(["--slave", "-e", "cat('OK')"])
-        .output()
-        .map_err(|e| format!("Failed to test R: {}", e))?;
-
-    if !test_status.status.success() {
-        return Err("R execution test failed".to_string());
-    }
-
-    eprintln!("      ✓ R is working correctly");
-
-    // Clean up installer
-    let _ = fs::remove_file(&installer_path);
-
-    eprintln!("\n✓ Portable R installation complete!");
-    eprintln!("  Location: {}", conda_prefix.display());
-    eprintln!("  R binary: {}", r_bin.display());
-
-    if !quiet {
-        info!("Portable R installation complete");
-    }
-
-    Ok(())
-}
-
-/// Print instructions for setting up R environment
-fn print_r_setup_instructions() {
-    eprintln!("\n{}", "=".repeat(60));
-    eprintln!("  R ENVIRONMENT SETUP INSTRUCTIONS");
-    eprintln!("{}", "=".repeat(60));
-    eprintln!("\nTo use the association testing feature, you need:");
-    eprintln!("\n1. R installed and available in your PATH");
-    eprintln!("   - Ubuntu/Debian: sudo apt-get install r-base");
-    eprintln!("   - CentOS/RHEL: sudo yum install R");
-    eprintln!("   - macOS with Homebrew: brew install r");
-    eprintln!("   - Windows: Download from https://cran.r-project.org/");
-
-    eprintln!("\n2. Required R packages installed:");
-    eprintln!("   Start R and run:");
-    eprintln!("   install.packages(c('data.table', 'argparser'))");
-    eprintln!("   # Note: 'parallel' is part of base R");
-    eprintln!("   # Optional: install.packages('qqman') for --plot functionality");
-
-    eprintln!("\n3. Alternative: Install using command line:");
-    eprintln!(
-        "   Rscript -e \"install.packages(c('data.table', 'argparser'), repos='https://cran.rstudio.com/')\""
-    );
-    eprintln!(
-        "   # Optional for plotting: Rscript -e \"install.packages('qqman', repos='https://cran.rstudio.com/')\""
-    );
-
-    eprintln!("\nOnce R is properly set up, you can run:");
-    eprintln!("   inquiSTR association --help");
-    eprintln!("\nFor more details, see: https://github.com/wdecoster/inquiSTR#association-testing");
-    eprintln!("{}", "=".repeat(60));
-}
-
-/// Get user confirmation with timeout for non-interactive environments
-/// Returns Ok(true) if user confirms, Ok(false) if user declines, Err if timeout or error
-fn get_user_confirmation_with_timeout(timeout_secs: u64) -> Result<bool, String> {
-    use std::sync::mpsc::channel;
-    use std::thread;
-    use std::time::Duration;
-
-    let (tx, rx) = channel();
-
-    // Spawn a thread to read user input
-    thread::spawn(move || {
-        let mut response = String::new();
-        if io::stdin().read_line(&mut response).is_ok() {
-            let _ = tx.send(response.trim().to_lowercase());
+    // Check minimal length filter
+    if let Some(min_len) = minimal_length {
+        let max_val = variant_vals
+            .iter()
+            .cloned()
+            .fold(f64::NEG_INFINITY, f64::max);
+        if max_val <= min_len {
+            return None;
         }
+    }
+
+    // Build design matrix: intercept + variant_value + covariates
+    let n_cov = pheno.covariate_names.len();
+    let p = 2 + n_cov; // intercept + variant + covariates
+    let mut x = vec![0.0; n * p];
+    for i in 0..n {
+        x[i * p] = 1.0; // intercept
+        x[i * p + 1] = variant_vals[i]; // variant value
+        for j in 0..n_cov {
+            x[i * p + 2 + j] = cov_rows[i][j];
+        }
+    }
+
+    // Fit model
+    let fit_result = if outcometype == "binary" {
+        fit_logistic(&x, &pheno_vals, n, p)
+    } else {
+        fit_gaussian(&x, &pheno_vals, n, p)
+    };
+
+    let (beta, se, pval) = fit_result?;
+
+    // Extract the variant coefficient (index 1)
+    let variant_beta = beta[1];
+    let variant_se = se[1];
+    let variant_pval = pval[1];
+
+    // Calculate effect and CI
+    let avg_size = variant_vals.iter().sum::<f64>() / n as f64;
+
+    if outcometype == "binary" {
+        let or = variant_beta.exp();
+        let or_l95 = (variant_beta - 1.96 * variant_se).exp();
+        let or_u95 = (variant_beta + 1.96 * variant_se).exp();
+
+        // Group statistics
+        let group_stats = pheno.binary_levels.as_ref().map(|_levels| {
+            let mut stats = Vec::new();
+            for level_val in [0.0, 1.0] {
+                let group_variant_vals: Vec<f64> = pheno_vals
+                    .iter()
+                    .zip(variant_vals.iter())
+                    .filter(|&(&p, _)| (p - level_val).abs() < f64::EPSILON)
+                    .map(|(_, &v)| v)
+                    .collect();
+                let group_n = group_variant_vals.len();
+                let (group_avg, group_max) = if group_n > 0 {
+                    (
+                        group_variant_vals.iter().sum::<f64>() / group_n as f64,
+                        group_variant_vals
+                            .iter()
+                            .cloned()
+                            .fold(f64::NEG_INFINITY, f64::max),
+                    )
+                } else {
+                    (f64::NAN, f64::NAN)
+                };
+                stats.push((group_n, group_avg, group_max));
+            }
+            stats
+        });
+
+        Some(VariantResult {
+            variant_id,
+            effect: or,
+            effect_l95: or_l95,
+            effect_u95: or_u95,
+            std_err: variant_se,
+            pvalue: variant_pval,
+            n,
+            avg_size,
+            group_stats,
+            min_size: None,
+            max_size: None,
+            pvalue_bonf: None,
+        })
+    } else {
+        let beta_l95 = variant_beta - 1.96 * variant_se;
+        let beta_u95 = variant_beta + 1.96 * variant_se;
+        let min_size = variant_vals.iter().cloned().fold(f64::INFINITY, f64::min);
+        let max_size = variant_vals
+            .iter()
+            .cloned()
+            .fold(f64::NEG_INFINITY, f64::max);
+
+        Some(VariantResult {
+            variant_id,
+            effect: variant_beta,
+            effect_l95: beta_l95,
+            effect_u95: beta_u95,
+            std_err: variant_se,
+            pvalue: variant_pval,
+            n,
+            avg_size,
+            group_stats: None,
+            min_size: Some(min_size),
+            max_size: Some(max_size),
+            pvalue_bonf: None,
+        })
+    }
+}
+
+fn parse_field(s: &str) -> Option<f64> {
+    let s = s.trim();
+    if s.is_empty() || s.eq_ignore_ascii_case("nan") || s.eq_ignore_ascii_case("na") {
+        None
+    } else {
+        s.parse().ok()
+    }
+}
+
+fn combine_alleles(h1: f64, h2: f64, mode: &str) -> f64 {
+    match mode {
+        "MEAN" => (h1 + h2) / 2.0,
+        "MAX" => h1.max(h2),
+        "MIN" => h1.min(h2),
+        _ => h1.max(h2),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Linear algebra helpers (using nalgebra)
+// ---------------------------------------------------------------------------
+
+use nalgebra::{DMatrix, DVector};
+
+/// Solve ordinary least squares: β = (X'X)^{-1} X'y
+/// Returns (coefficients, standard errors, p-values) or None on failure.
+/// Uses a flat row-major slice to avoid per-variant DMatrix allocation for small systems.
+fn fit_gaussian(
+    x_flat: &[f64],
+    y: &[f64],
+    n: usize,
+    p: usize,
+) -> Option<(Vec<f64>, Vec<f64>, Vec<f64>)> {
+    if n <= p {
+        return None;
+    }
+
+    // For small p (typical: 2-10), use direct fixed-size math to avoid DMatrix overhead
+    // X'X is p×p, X'y is p×1
+    let mut xtx = vec![0.0; p * p];
+    let mut xty = vec![0.0; p];
+
+    for i in 0..n {
+        let row = &x_flat[i * p..(i + 1) * p];
+        for j in 0..p {
+            xty[j] += row[j] * y[i];
+            for k in j..p {
+                let val = row[j] * row[k];
+                xtx[j * p + k] += val;
+                if k != j {
+                    xtx[k * p + j] += val;
+                }
+            }
+        }
+    }
+
+    // Use nalgebra only for the p×p inversion (p is small)
+    let xtx_mat = DMatrix::from_row_slice(p, p, &xtx);
+    let xtx_inv = xtx_mat.try_inverse()?;
+    let xty_vec = DVector::from_column_slice(&xty);
+    let beta = &xtx_inv * &xty_vec;
+
+    // Compute RSS without forming full n-vectors
+    let mut rss = 0.0;
+    for i in 0..n {
+        let row = &x_flat[i * p..(i + 1) * p];
+        let mut y_hat_i = 0.0;
+        for j in 0..p {
+            y_hat_i += row[j] * beta[j];
+        }
+        let r = y[i] - y_hat_i;
+        rss += r * r;
+    }
+
+    let df = (n - p) as f64;
+    let sigma2 = rss / df;
+    let cov = &xtx_inv * sigma2;
+
+    let mut betas = Vec::with_capacity(p);
+    let mut ses = Vec::with_capacity(p);
+    let mut pvals = Vec::with_capacity(p);
+
+    for j in 0..p {
+        let b = beta[j];
+        let se = cov[(j, j)].sqrt();
+        let t_stat = if se > 0.0 { b / se } else { 0.0 };
+        let pval = if se > 0.0 {
+            2.0 * t_cdf_upper(t_stat.abs(), df)
+        } else {
+            1.0
+        };
+        betas.push(b);
+        ses.push(se);
+        pvals.push(pval);
+    }
+
+    Some((betas, ses, pvals))
+}
+
+/// Fit logistic regression via IRLS (iteratively reweighted least squares).
+/// Returns (coefficients, standard errors, p-values) or None on failure.
+/// Avoids constructing n×n diagonal weight matrices by using element-wise operations.
+fn fit_logistic(
+    x_flat: &[f64],
+    y: &[f64],
+    n: usize,
+    p: usize,
+) -> Option<(Vec<f64>, Vec<f64>, Vec<f64>)> {
+    if n <= p {
+        return None;
+    }
+
+    // Initialize beta to zeros
+    let mut beta = vec![0.0; p];
+
+    let max_iter = 25;
+    let tol = 1e-8;
+
+    // Scratch buffers reused across iterations
+    let mut eta = vec![0.0; n];
+    let mut mu = vec![0.0; n];
+    let mut w = vec![0.0; n];
+    let mut z = vec![0.0; n];
+    let mut xtwx = vec![0.0; p * p];
+    let mut xtwz = vec![0.0; p];
+
+    for _iter in 0..max_iter {
+        // η = X β, μ = sigmoid(η), w = μ(1-μ)
+        for i in 0..n {
+            let row = &x_flat[i * p..(i + 1) * p];
+            let mut e = 0.0;
+            for j in 0..p {
+                e += row[j] * beta[j];
+            }
+            eta[i] = e;
+            mu[i] = sigmoid(e);
+            w[i] = mu[i] * (1.0 - mu[i]);
+        }
+
+        // Clamp near-zero weights to avoid division by zero (quasi-separation)
+        // Instead of dropping the locus, this produces large coefficients (Inf OR),
+        // matching R's glm() behavior.
+        for wi in w.iter_mut() {
+            if *wi < 1e-10 {
+                *wi = 1e-10;
+            }
+        }
+
+        // Working response: z = η + (y - μ) / w
+        for i in 0..n {
+            z[i] = eta[i] + (y[i] - mu[i]) / w[i];
+        }
+
+        // X'WX and X'Wz — no n×n matrix needed
+        xtwx.fill(0.0);
+        xtwz.fill(0.0);
+        for i in 0..n {
+            let row = &x_flat[i * p..(i + 1) * p];
+            let wi = w[i];
+            for j in 0..p {
+                let wj = row[j] * wi;
+                xtwz[j] += wj * z[i];
+                for k in j..p {
+                    let val = wj * row[k];
+                    xtwx[j * p + k] += val;
+                    if k != j {
+                        xtwx[k * p + j] += val;
+                    }
+                }
+            }
+        }
+
+        let xtwx_mat = DMatrix::from_row_slice(p, p, &xtwx);
+        let xtwx_inv = xtwx_mat.try_inverse()?;
+        let xtwz_vec = DVector::from_column_slice(&xtwz);
+        let beta_new = &xtwx_inv * &xtwz_vec;
+
+        // Check convergence
+        let mut diff_sq = 0.0;
+        for j in 0..p {
+            let d = beta_new[j] - beta[j];
+            diff_sq += d * d;
+        }
+        for j in 0..p {
+            beta[j] = beta_new[j];
+        }
+
+        if diff_sq.sqrt() < tol {
+            break;
+        }
+    }
+
+    // Final variance: recompute weights at converged beta, invert X'WX
+    for i in 0..n {
+        let row = &x_flat[i * p..(i + 1) * p];
+        let mut e = 0.0;
+        for j in 0..p {
+            e += row[j] * beta[j];
+        }
+        let m = sigmoid(e);
+        w[i] = m * (1.0 - m);
+    }
+
+    for wi in w.iter_mut() {
+        if *wi < 1e-10 {
+            *wi = 1e-10;
+        }
+    }
+
+    xtwx.fill(0.0);
+    for i in 0..n {
+        let row = &x_flat[i * p..(i + 1) * p];
+        let wi = w[i];
+        for j in 0..p {
+            let wj = row[j] * wi;
+            for k in j..p {
+                let val = wj * row[k];
+                xtwx[j * p + k] += val;
+                if k != j {
+                    xtwx[k * p + j] += val;
+                }
+            }
+        }
+    }
+
+    let xtwx_mat = DMatrix::from_row_slice(p, p, &xtwx);
+    let cov = xtwx_mat.try_inverse()?;
+
+    let mut betas = Vec::with_capacity(p);
+    let mut ses = Vec::with_capacity(p);
+    let mut pvals = Vec::with_capacity(p);
+
+    for j in 0..p {
+        let b = beta[j];
+        let se = cov[(j, j)].sqrt();
+        let z_stat = if se > 0.0 { b / se } else { 0.0 };
+        let pval = if se > 0.0 {
+            2.0 * normal_cdf_upper(z_stat.abs())
+        } else {
+            1.0
+        };
+        betas.push(b);
+        ses.push(se);
+        pvals.push(pval);
+    }
+
+    Some((betas, ses, pvals))
+}
+
+fn sigmoid(x: f64) -> f64 {
+    1.0 / (1.0 + (-x).exp())
+}
+
+// ---------------------------------------------------------------------------
+// Statistical distribution functions
+// ---------------------------------------------------------------------------
+
+use statrs::distribution::{ContinuousCDF, Normal, StudentsT};
+
+/// Upper-tail probability of the standard normal: P(Z > z)
+fn normal_cdf_upper(z: f64) -> f64 {
+    let n = Normal::new(0.0, 1.0).unwrap();
+    1.0 - n.cdf(z)
+}
+
+/// Upper-tail probability of Student's t distribution: P(T > t)
+fn t_cdf_upper(t: f64, df: f64) -> f64 {
+    let dist = StudentsT::new(0.0, 1.0, df).unwrap();
+    1.0 - dist.cdf(t)
+}
+
+// ---------------------------------------------------------------------------
+// Output writing
+// ---------------------------------------------------------------------------
+
+fn write_results(
+    out: &std::path::Path,
+    results: &[VariantResult],
+    outcometype: &str,
+    binary_levels: Option<&[String]>,
+    _quiet: bool,
+) {
+    let file = std::fs::File::create(out).unwrap_or_else(|e| {
+        eprintln!("ERROR: Could not create output file {}: {}", out.display(), e);
+        std::process::exit(1);
     });
+    let mut writer = BufWriter::new(file);
 
-    // Wait for input with timeout
-    match rx.recv_timeout(Duration::from_secs(timeout_secs)) {
-        Ok(response) => Ok(response == "y"),
-        Err(_) => Err("Timeout waiting for user input after 60 seconds".to_string()),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_validate_arguments_valid() {
-        // Create temporary test files
-        let temp_dir = std::env::temp_dir();
-        let input_file = temp_dir.join("test_input.txt");
-        let phenocovar_file = temp_dir.join("test_pheno.txt");
-
-        // Create the files
-        std::fs::write(&input_file, "test").unwrap();
-        std::fs::write(&phenocovar_file, "test").unwrap();
-
-        let result = validate_arguments(&input_file, &phenocovar_file, "continuous", &None);
-
-        assert!(result.is_ok());
-
-        // Clean up
-        std::fs::remove_file(&input_file).unwrap();
-        std::fs::remove_file(&phenocovar_file).unwrap();
+    // Write header
+    if outcometype == "binary" {
+        let mut header = "VariantID\tOR\tOR_L95\tOR_U95\tOR_stdErr\tPvalue\tN\tAvgSize".to_string();
+        if let Some(levels) = binary_levels {
+            for level in levels {
+                header.push_str(&format!("\t{}_N\t{}_AvgSize\t{}_MaxSize", level, level, level));
+            }
+        }
+        header.push_str("\tPvalue_bonf");
+        writeln!(writer, "{}", header).unwrap();
+    } else {
+        writeln!(
+            writer,
+            "VariantID\tBeta\tBeta_L95\tBeta_U95\tBeta_stdErr\tPvalue\tN\tAvgSize\tMinSize\tMaxSize\tPvalue_bonf"
+        )
+        .unwrap();
     }
 
-    #[test]
-    fn test_validate_arguments_binary_missing_order() {
-        let temp_dir = std::env::temp_dir();
-        let input_file = temp_dir.join("test_input3.txt");
-        let phenocovar_file = temp_dir.join("test_pheno3.txt");
-
-        std::fs::write(&input_file, "test").unwrap();
-        std::fs::write(&phenocovar_file, "test").unwrap();
-
-        let result = validate_arguments(&input_file, &phenocovar_file, "binary", &None);
-
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("Binary order is required"));
-
-        std::fs::remove_file(&input_file).unwrap();
-        std::fs::remove_file(&phenocovar_file).unwrap();
+    for r in results {
+        if outcometype == "binary" {
+            let mut line = format!(
+                "{}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{}\t{}\t{:.3}",
+                r.variant_id,
+                r.effect,
+                r.effect_l95,
+                r.effect_u95,
+                r.std_err,
+                r.pvalue,
+                r.n,
+                r.avg_size,
+            );
+            if let Some(ref gs) = r.group_stats {
+                for (gn, gavg, gmax) in gs {
+                    line.push_str(&format!("\t{}\t{:.3}\t{:.3}", gn, gavg, gmax));
+                }
+            }
+            line.push_str(&format!("\t{}", r.pvalue_bonf.unwrap_or(f64::NAN)));
+            writeln!(writer, "{}", line).unwrap();
+        } else {
+            writeln!(
+                writer,
+                "{}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{}\t{}\t{:.3}\t{:.3}\t{:.3}\t{}",
+                r.variant_id,
+                r.effect,
+                r.effect_l95,
+                r.effect_u95,
+                r.std_err,
+                r.pvalue,
+                r.n,
+                r.avg_size,
+                r.min_size.unwrap_or(f64::NAN),
+                r.max_size.unwrap_or(f64::NAN),
+                r.pvalue_bonf.unwrap_or(f64::NAN),
+            )
+            .unwrap();
+        }
     }
 
-    #[test]
-    fn test_create_temp_r_script() {
-        let result = create_temp_r_script();
-        assert!(result.is_ok());
-
-        let temp_file = result.unwrap();
-        assert!(temp_file.exists());
-
-        // Check content
-        let content = std::fs::read_to_string(&temp_file).unwrap();
-        assert!(content.contains("#!/usr/bin/env Rscript"));
-        assert!(content.contains("STR_regression"));
-
-        // Clean up
-        std::fs::remove_file(&temp_file).unwrap();
-    }
+    writer.flush().unwrap();
 }
