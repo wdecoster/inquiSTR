@@ -68,7 +68,7 @@ pub fn run_association(
     // Parse header and extract sample names
     let file = crate::utils::reader(&input.to_string_lossy());
     let mut lines = file.lines();
-    let header_line = crate::utils::skip_metadata_lines(&mut lines);
+    let header_line = crate::utils::skip_metadata_lines(&mut lines, &input.to_string_lossy());
     let (sample_names, input_type_confirmed) = parse_header(&header_line, &input_type);
 
     if !quiet {
@@ -85,12 +85,27 @@ pub fn run_association(
     // Count overlapping samples
     let overlap_count = sample_mapping.iter().filter(|m| m.is_some()).count();
     if overlap_count == 0 {
-        eprintln!("ERROR: No overlapping samples between input file and phenotype file");
+        eprintln!("ERROR: No overlapping samples between input file and phenotype file.");
+        if sample_names.len() <= 10 {
+            eprintln!("  Sample IDs in input file: {:?}", sample_names);
+        } else {
+            eprintln!("  First 10 sample IDs in input file: {:?}", &sample_names[..10]);
+            eprintln!("  ({} total)", sample_names.len());
+        }
+        if pheno.sample_ids.len() <= 10 {
+            eprintln!("  Sample IDs in phenotype file: {:?}", pheno.sample_ids);
+        } else {
+            eprintln!("  First 10 sample IDs in phenotype file: {:?}", &pheno.sample_ids[..10]);
+            eprintln!("  ({} total)", pheno.sample_ids.len());
+        }
         std::process::exit(1);
     }
     if !quiet {
         eprintln!("{} samples overlap between input and phenotype files", overlap_count);
     }
+
+    // Pre-compute total phenotyped count (constant across variants)
+    let total_phenotyped = overlap_count;
 
     // Read all variant lines
     let variant_lines: Vec<String> = lines.map_while(Result::ok).collect();
@@ -121,6 +136,7 @@ pub fn run_association(
                     missing_cutoff,
                     minimal_length,
                     &input_type_confirmed,
+                    total_phenotyped,
                 )
             })
             .collect()
@@ -287,10 +303,10 @@ struct PhenotypeData {
     sample_ids: Vec<String>,
     /// Phenotype values (0/1 for binary, continuous for continuous)
     phenotype_values: Vec<f64>,
-    /// Covariate matrix: rows = samples, cols = covariates
-    /// Empty if no covariates
+    /// Covariate matrix: rows = samples, cols = expanded covariates
+    /// Categorical covariates are dummy-encoded (N-1 columns per N levels)
     covariate_matrix: Vec<Vec<f64>>,
-    /// Covariate names
+    /// Expanded covariate column names (e.g. "sex_M", "pop_EUR", "pop_AFR")
     covariate_names: Vec<String>,
     /// For binary: the two level names
     binary_levels: Option<Vec<String>>,
@@ -362,19 +378,30 @@ fn prepare_phenotype_data(
 
     let mut sample_ids = Vec::new();
     let mut pheno_values = Vec::new();
-    let mut cov_matrix: Vec<Vec<f64>> = Vec::new();
+    let mut raw_covariates: Vec<Vec<String>> = Vec::new(); // rows of raw string values
 
-    for line_result in lines_iter {
+    for (line_num, line_result) in lines_iter.enumerate() {
         let line = line_result.expect("Error reading phenotype file");
-        let fields: Vec<&str> = line.trim().split('\t').collect();
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let fields: Vec<&str> = trimmed.split('\t').collect();
         if fields.len() <= pheno_col_idx {
-            continue; // skip malformed lines
+            eprintln!(
+                "ERROR: Line {} in phenotype file has {} columns, but phenotype column '{}' is at index {}",
+                line_num + 2,
+                fields.len(),
+                phenotype_col,
+                pheno_col_idx + 1
+            );
+            std::process::exit(1);
         }
 
         let sample_id = fields[0].trim().to_string();
         let pheno_str = fields[pheno_col_idx].trim();
 
-        // Skip missing phenotype
+        // Skip samples with missing phenotype (NA/NaN/empty) — this is expected
         if pheno_str.is_empty()
             || pheno_str.eq_ignore_ascii_case("na")
             || pheno_str.eq_ignore_ascii_case("nan")
@@ -385,7 +412,14 @@ fn prepare_phenotype_data(
         // For binary: filter to only samples in binary_levels, encode as 0/1
         if let Some(levels) = binary_levels {
             if !levels.iter().any(|l| l == pheno_str) {
-                continue;
+                eprintln!(
+                    "ERROR: Sample '{}' has phenotype value '{}' which is not in --binary-order '{}'. \
+                     All non-missing phenotype values must match one of the specified binary levels.",
+                    sample_id,
+                    pheno_str,
+                    levels.join(",")
+                );
+                std::process::exit(1);
             }
             let pheno_val = if pheno_str == levels[0] { 0.0 } else { 1.0 };
             pheno_values.push(pheno_val);
@@ -393,39 +427,68 @@ fn prepare_phenotype_data(
             // Continuous phenotype
             let pheno_val: f64 = match pheno_str.parse() {
                 Ok(v) => v,
-                Err(_) => continue, // skip non-numeric
+                Err(_) => {
+                    eprintln!(
+                        "ERROR: Sample '{}' has non-numeric phenotype value '{}' for continuous outcome",
+                        sample_id, pheno_str
+                    );
+                    std::process::exit(1);
+                }
             };
             pheno_values.push(pheno_val);
         }
 
-        // Parse covariates
+        // Collect raw covariate strings
         let mut cov_row = Vec::with_capacity(cov_indices.len());
-        let mut skip = false;
-        for &ci in &cov_indices {
+        for (cov_i, &ci) in cov_indices.iter().enumerate() {
             if ci >= fields.len() {
-                skip = true;
-                break;
+                eprintln!(
+                    "ERROR: Sample '{}' is missing covariate column '{}' (line has {} columns, need column {})",
+                    sample_id,
+                    cov_names[cov_i],
+                    fields.len(),
+                    ci + 1
+                );
+                std::process::exit(1);
             }
             let val_str = fields[ci].trim();
-            match val_str.parse::<f64>() {
-                Ok(v) => cov_row.push(v),
-                Err(_) => {
-                    skip = true;
-                    break;
-                }
+            if val_str.is_empty()
+                || val_str.eq_ignore_ascii_case("na")
+                || val_str.eq_ignore_ascii_case("nan")
+            {
+                eprintln!(
+                    "ERROR: Sample '{}' has missing value for covariate '{}'",
+                    sample_id, cov_names[cov_i]
+                );
+                std::process::exit(1);
             }
-        }
-        if skip {
-            pheno_values.pop();
-            continue;
+            cov_row.push(val_str.to_string());
         }
 
         sample_ids.push(sample_id);
-        cov_matrix.push(cov_row);
+        raw_covariates.push(cov_row);
     }
 
     if sample_ids.is_empty() {
-        eprintln!("ERROR: No valid samples found in phenotype file");
+        // Re-read the file to collect all sample IDs (first column) for diagnostics
+        let diag_file = crate::utils::reader(&phenocovar.to_string_lossy());
+        let mut diag_lines = diag_file.lines();
+        diag_lines.next(); // skip header
+        let all_ids: Vec<String> = diag_lines
+            .map_while(Result::ok)
+            .filter_map(|l| l.split('\t').next().map(|s| s.trim().to_string()))
+            .filter(|s| !s.is_empty())
+            .collect();
+        eprintln!("ERROR: No valid samples found in phenotype file after filtering.");
+        eprintln!("  Possible causes:");
+        eprintln!("    - All phenotype values are missing (NA/NaN/empty)");
+        eprintln!("    - The phenotype file may not be tab-separated");
+        if all_ids.len() <= 10 {
+            eprintln!("  Sample IDs in phenotype file: {:?}", all_ids);
+        } else {
+            eprintln!("  First 10 sample IDs in phenotype file: {:?}", &all_ids[..10]);
+            eprintln!("  ({} total)", all_ids.len());
+        }
         std::process::exit(1);
     }
 
@@ -448,13 +511,93 @@ fn prepare_phenotype_data(
         }
     }
 
+    // Encode covariates: numeric covariates stay as-is, categorical get dummy-encoded
+    let (cov_matrix, expanded_cov_names) = encode_covariates(&raw_covariates, &cov_names, quiet);
+
     PhenotypeData {
         sample_ids,
         phenotype_values: pheno_values,
         covariate_matrix: cov_matrix,
-        covariate_names: cov_names,
+        covariate_names: expanded_cov_names,
         binary_levels: binary_levels.map(|l| l.to_vec()),
     }
+}
+
+/// Encode covariates into a numeric matrix.
+/// Numeric covariates are kept as-is. Categorical covariates (non-numeric) are
+/// dummy-encoded using N-1 indicator columns (the first level is the reference).
+fn encode_covariates(
+    raw: &[Vec<String>],
+    cov_names: &[String],
+    quiet: bool,
+) -> (Vec<Vec<f64>>, Vec<String>) {
+    if cov_names.is_empty() || raw.is_empty() {
+        return (vec![Vec::new(); raw.len()], Vec::new());
+    }
+
+    let n_cov = cov_names.len();
+    let n_samples = raw.len();
+
+    // Determine which covariates are numeric vs categorical
+    let is_numeric: Vec<bool> = (0..n_cov)
+        .map(|j| raw.iter().all(|row| row[j].parse::<f64>().is_ok()))
+        .collect();
+
+    // For categorical covariates, collect sorted unique levels
+    let cat_levels: Vec<Option<Vec<String>>> = (0..n_cov)
+        .map(|j| {
+            if is_numeric[j] {
+                None
+            } else {
+                let mut levels: Vec<String> = raw.iter().map(|row| row[j].clone()).collect();
+                levels.sort();
+                levels.dedup();
+                Some(levels)
+            }
+        })
+        .collect();
+
+    // Build expanded column names
+    let mut expanded_names = Vec::new();
+    for j in 0..n_cov {
+        if is_numeric[j] {
+            expanded_names.push(cov_names[j].clone());
+        } else {
+            let levels = cat_levels[j].as_ref().unwrap();
+            if !quiet {
+                eprintln!(
+                    "Covariate '{}' is categorical with {} levels (reference: '{}')",
+                    cov_names[j],
+                    levels.len(),
+                    levels[0]
+                );
+            }
+            // Skip the first level (reference), create a column for each remaining level
+            for level in &levels[1..] {
+                expanded_names.push(format!("{}_{}", cov_names[j], level));
+            }
+        }
+    }
+
+    // Build numeric matrix
+    let mut matrix = Vec::with_capacity(n_samples);
+    for row in raw {
+        let mut numeric_row = Vec::with_capacity(expanded_names.len());
+        for j in 0..n_cov {
+            if is_numeric[j] {
+                numeric_row.push(row[j].parse::<f64>().unwrap());
+            } else {
+                let levels = cat_levels[j].as_ref().unwrap();
+                // One-hot for levels[1..], reference level gets all zeros
+                for level in &levels[1..] {
+                    numeric_row.push(if row[j] == *level { 1.0 } else { 0.0 });
+                }
+            }
+        }
+        matrix.push(numeric_row);
+    }
+
+    (matrix, expanded_names)
 }
 
 // ---------------------------------------------------------------------------
@@ -471,7 +614,7 @@ struct VariantResult {
     n: usize,
     avg_size: f64,
     // Binary-specific
-    group_stats: Option<Vec<(usize, f64)>>, // (N, AvgSize) per group
+    group_stats: Option<Vec<(usize, f64, f64)>>, // (N, AvgSize, MaxSize) per group
     // Continuous-specific
     min_size: Option<f64>,
     max_size: Option<f64>,
@@ -494,6 +637,7 @@ fn process_variant_line(
     missing_cutoff: f64,
     minimal_length: Option<f64>,
     input_type: &InputType,
+    total_phenotyped: usize,
 ) -> Option<VariantResult> {
     let fields: Vec<&str> = line.trim().split('\t').collect();
 
@@ -547,7 +691,6 @@ fn process_variant_line(
     }
 
     let n = variant_vals.len();
-    let total_phenotyped = sample_mapping.iter().filter(|m| m.is_some()).count();
 
     // Check call rate
     if total_phenotyped == 0 || (n as f64 / total_phenotyped as f64) < missing_cutoff {
@@ -619,12 +762,18 @@ fn process_variant_line(
                     .map(|(_, &v)| v)
                     .collect();
                 let group_n = group_variant_vals.len();
-                let group_avg = if group_n > 0 {
-                    group_variant_vals.iter().sum::<f64>() / group_n as f64
+                let (group_avg, group_max) = if group_n > 0 {
+                    (
+                        group_variant_vals.iter().sum::<f64>() / group_n as f64,
+                        group_variant_vals
+                            .iter()
+                            .cloned()
+                            .fold(f64::NEG_INFINITY, f64::max),
+                    )
                 } else {
-                    f64::NAN
+                    (f64::NAN, f64::NAN)
                 };
-                stats.push((group_n, group_avg));
+                stats.push((group_n, group_avg, group_max));
             }
             stats
         });
@@ -695,6 +844,7 @@ use nalgebra::{DMatrix, DVector};
 
 /// Solve ordinary least squares: β = (X'X)^{-1} X'y
 /// Returns (coefficients, standard errors, p-values) or None on failure.
+/// Uses a flat row-major slice to avoid per-variant DMatrix allocation for small systems.
 fn fit_gaussian(
     x_flat: &[f64],
     y: &[f64],
@@ -702,25 +852,48 @@ fn fit_gaussian(
     p: usize,
 ) -> Option<(Vec<f64>, Vec<f64>, Vec<f64>)> {
     if n <= p {
-        return None; // not enough observations
+        return None;
     }
 
-    let x = DMatrix::from_row_slice(n, p, x_flat);
-    let y_vec = DVector::from_column_slice(y);
+    // For small p (typical: 2-10), use direct fixed-size math to avoid DMatrix overhead
+    // X'X is p×p, X'y is p×1
+    let mut xtx = vec![0.0; p * p];
+    let mut xty = vec![0.0; p];
 
-    let xtx = x.transpose() * &x;
-    let xtx_inv = xtx.try_inverse()?;
-    let xty = x.transpose() * &y_vec;
-    let beta = &xtx_inv * xty;
+    for i in 0..n {
+        let row = &x_flat[i * p..(i + 1) * p];
+        for j in 0..p {
+            xty[j] += row[j] * y[i];
+            for k in j..p {
+                let val = row[j] * row[k];
+                xtx[j * p + k] += val;
+                if k != j {
+                    xtx[k * p + j] += val;
+                }
+            }
+        }
+    }
 
-    // Residuals
-    let y_hat = &x * &beta;
-    let residuals = &y_vec - &y_hat;
-    let rss = residuals.dot(&residuals);
+    // Use nalgebra only for the p×p inversion (p is small)
+    let xtx_mat = DMatrix::from_row_slice(p, p, &xtx);
+    let xtx_inv = xtx_mat.try_inverse()?;
+    let xty_vec = DVector::from_column_slice(&xty);
+    let beta = &xtx_inv * &xty_vec;
+
+    // Compute RSS without forming full n-vectors
+    let mut rss = 0.0;
+    for i in 0..n {
+        let row = &x_flat[i * p..(i + 1) * p];
+        let mut y_hat_i = 0.0;
+        for j in 0..p {
+            y_hat_i += row[j] * beta[j];
+        }
+        let r = y[i] - y_hat_i;
+        rss += r * r;
+    }
+
     let df = (n - p) as f64;
     let sigma2 = rss / df;
-
-    // Covariance matrix of coefficients
     let cov = &xtx_inv * sigma2;
 
     let mut betas = Vec::with_capacity(p);
@@ -746,6 +919,7 @@ fn fit_gaussian(
 
 /// Fit logistic regression via IRLS (iteratively reweighted least squares).
 /// Returns (coefficients, standard errors, p-values) or None on failure.
+/// Avoids constructing n×n diagonal weight matrices by using element-wise operations.
 fn fit_logistic(
     x_flat: &[f64],
     y: &[f64],
@@ -756,62 +930,121 @@ fn fit_logistic(
         return None;
     }
 
-    let x = DMatrix::from_row_slice(n, p, x_flat);
-    let y_vec = DVector::from_column_slice(y);
-
     // Initialize beta to zeros
-    let mut beta = DVector::zeros(p);
+    let mut beta = vec![0.0; p];
 
     let max_iter = 25;
     let tol = 1e-8;
 
+    // Scratch buffers reused across iterations
+    let mut eta = vec![0.0; n];
+    let mut mu = vec![0.0; n];
+    let mut w = vec![0.0; n];
+    let mut z = vec![0.0; n];
+    let mut xtwx = vec![0.0; p * p];
+    let mut xtwz = vec![0.0; p];
+
     for _iter in 0..max_iter {
-        // η = X β
-        let eta = &x * &beta;
-
-        // μ = sigmoid(η)
-        let mu: DVector<f64> = eta.map(sigmoid);
-
-        // Weights: W = μ * (1 - μ)
-        let w: DVector<f64> = mu.component_mul(&mu.map(|m| 1.0 - m));
-
-        // Check for zero weights (separation)
-        if w.iter().any(|&wi| wi < 1e-10) {
-            return None; // complete or quasi-complete separation
+        // η = X β, μ = sigmoid(η), w = μ(1-μ)
+        for i in 0..n {
+            let row = &x_flat[i * p..(i + 1) * p];
+            let mut e = 0.0;
+            for j in 0..p {
+                e += row[j] * beta[j];
+            }
+            eta[i] = e;
+            mu[i] = sigmoid(e);
+            w[i] = mu[i] * (1.0 - mu[i]);
         }
 
-        // Working response: z = η + (y - μ) / W
-        let z: DVector<f64> =
-            DVector::from_iterator(n, (0..n).map(|i| eta[i] + (y_vec[i] - mu[i]) / w[i]));
+        // Clamp near-zero weights to avoid division by zero (quasi-separation)
+        // Instead of dropping the locus, this produces large coefficients (Inf OR),
+        // matching R's glm() behavior.
+        for wi in w.iter_mut() {
+            if *wi < 1e-10 {
+                *wi = 1e-10;
+            }
+        }
 
-        // Weighted least squares: β_new = (X'WX)^{-1} X'Wz
-        let w_diag = DMatrix::from_diagonal(&w);
-        let xtwx = x.transpose() * &w_diag * &x;
-        let xtwx_inv = xtwx.try_inverse()?;
-        let xtwz = x.transpose() * &w_diag * &z;
-        let beta_new = &xtwx_inv * xtwz;
+        // Working response: z = η + (y - μ) / w
+        for i in 0..n {
+            z[i] = eta[i] + (y[i] - mu[i]) / w[i];
+        }
+
+        // X'WX and X'Wz — no n×n matrix needed
+        xtwx.fill(0.0);
+        xtwz.fill(0.0);
+        for i in 0..n {
+            let row = &x_flat[i * p..(i + 1) * p];
+            let wi = w[i];
+            for j in 0..p {
+                let wj = row[j] * wi;
+                xtwz[j] += wj * z[i];
+                for k in j..p {
+                    let val = wj * row[k];
+                    xtwx[j * p + k] += val;
+                    if k != j {
+                        xtwx[k * p + j] += val;
+                    }
+                }
+            }
+        }
+
+        let xtwx_mat = DMatrix::from_row_slice(p, p, &xtwx);
+        let xtwx_inv = xtwx_mat.try_inverse()?;
+        let xtwz_vec = DVector::from_column_slice(&xtwz);
+        let beta_new = &xtwx_inv * &xtwz_vec;
 
         // Check convergence
-        let diff = (&beta_new - &beta).norm();
-        beta = beta_new;
+        let mut diff_sq = 0.0;
+        for j in 0..p {
+            let d = beta_new[j] - beta[j];
+            diff_sq += d * d;
+        }
+        for j in 0..p {
+            beta[j] = beta_new[j];
+        }
 
-        if diff < tol {
+        if diff_sq.sqrt() < tol {
             break;
         }
     }
 
-    // Final variance estimate: Var(β) = (X'WX)^{-1}
-    let eta = &x * &beta;
-    let mu: DVector<f64> = eta.map(sigmoid);
-    let w: DVector<f64> = mu.component_mul(&mu.map(|m| 1.0 - m));
-
-    if w.iter().any(|&wi| wi < 1e-10) {
-        return None;
+    // Final variance: recompute weights at converged beta, invert X'WX
+    for i in 0..n {
+        let row = &x_flat[i * p..(i + 1) * p];
+        let mut e = 0.0;
+        for j in 0..p {
+            e += row[j] * beta[j];
+        }
+        let m = sigmoid(e);
+        w[i] = m * (1.0 - m);
     }
 
-    let w_diag = DMatrix::from_diagonal(&w);
-    let xtwx = x.transpose() * &w_diag * &x;
-    let cov = xtwx.try_inverse()?;
+    for wi in w.iter_mut() {
+        if *wi < 1e-10 {
+            *wi = 1e-10;
+        }
+    }
+
+    xtwx.fill(0.0);
+    for i in 0..n {
+        let row = &x_flat[i * p..(i + 1) * p];
+        let wi = w[i];
+        for j in 0..p {
+            let wj = row[j] * wi;
+            for k in j..p {
+                let val = wj * row[k];
+                xtwx[j * p + k] += val;
+                if k != j {
+                    xtwx[k * p + j] += val;
+                }
+            }
+        }
+    }
+
+    let xtwx_mat = DMatrix::from_row_slice(p, p, &xtwx);
+    let cov = xtwx_mat.try_inverse()?;
 
     let mut betas = Vec::with_capacity(p);
     let mut ses = Vec::with_capacity(p);
@@ -878,7 +1111,7 @@ fn write_results(
         let mut header = "VariantID\tOR\tOR_L95\tOR_U95\tOR_stdErr\tPvalue\tN\tAvgSize".to_string();
         if let Some(levels) = binary_levels {
             for level in levels {
-                header.push_str(&format!("\t{}_N\t{}_AvgSize", level, level));
+                header.push_str(&format!("\t{}_N\t{}_AvgSize\t{}_MaxSize", level, level, level));
             }
         }
         header.push_str("\tPvalue_bonf");
@@ -905,8 +1138,8 @@ fn write_results(
                 r.avg_size,
             );
             if let Some(ref gs) = r.group_stats {
-                for (gn, gavg) in gs {
-                    line.push_str(&format!("\t{}\t{:.3}", gn, gavg));
+                for (gn, gavg, gmax) in gs {
+                    line.push_str(&format!("\t{}\t{:.3}\t{:.3}", gn, gavg, gmax));
                 }
             }
             line.push_str(&format!("\t{}", r.pvalue_bonf.unwrap_or(f64::NAN)));
