@@ -75,13 +75,20 @@ fn verify_sorted<R: BufRead>(reader: &mut R, file_name: &str, skip_header: bool)
     let mut prev_chrom: Option<String> = None;
     let mut prev_start: Option<u32> = None;
     let mut line_num = 0;
+    let mut header_skipped = !skip_header;
 
     for line in reader.lines() {
         let line = line?;
         line_num += 1;
 
-        // Skip header line if requested
-        if line_num == 1 && skip_header {
+        // Ignore metadata/comment and empty lines.
+        if line.starts_with('#') || line.trim().is_empty() {
+            continue;
+        }
+
+        // Skip the first non-metadata line if requested (column header for TSV input files).
+        if !header_skipped {
+            header_skipped = true;
             continue;
         }
 
@@ -469,8 +476,10 @@ pub fn filter(
     if bed.is_some() {
         eprintln!("Verifying input file is sorted...");
         let mut reader = crate::utils::reader(&input.to_string_lossy());
-        verify_sorted(&mut reader, &input.to_string_lossy(), true)
-            .expect("Input file is not sorted by chromosome and position");
+        if let Err(e) = verify_sorted(&mut reader, &input.to_string_lossy(), true) {
+            eprintln!("ERROR: Input file is not sorted by chromosome and position: {}", e);
+            std::process::exit(1);
+        }
         eprintln!("✓ Input file is sorted");
     }
 
@@ -483,8 +492,10 @@ pub fn filter(
 
         eprintln!("Verifying BED file is sorted...");
         let mut bed_reader = crate::utils::reader(&bed_path.to_string_lossy());
-        verify_sorted(&mut bed_reader, &bed_path.to_string_lossy(), false)
-            .expect("BED file is not sorted by chromosome and position");
+        if let Err(e) = verify_sorted(&mut bed_reader, &bed_path.to_string_lossy(), false) {
+            eprintln!("ERROR: BED file is not sorted by chromosome and position: {}", e);
+            std::process::exit(1);
+        }
         eprintln!("✓ BED file is sorted");
 
         eprintln!("Loading BED intervals...");
