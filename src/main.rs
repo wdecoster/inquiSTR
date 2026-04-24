@@ -479,16 +479,24 @@ enum Commands {
         combined: PathBuf,
 
         /// file with sample IDs, phenotypes, and covariates (TSV format)
-        #[clap(value_parser, required = true)]
-        sample_metadata: PathBuf,
+        #[clap(short = 's', long = "sampleinfo", value_parser, requires = "condition")]
+        sampleinfo: Option<PathBuf>,
 
         /// test column and groups to plot e.g. group:PAT,CON with <group> the name of the column containing <PAT> and <CON>
-        #[clap(short, long, value_parser)]
-        condition: String,
+        #[clap(short, long, value_parser, requires = "sampleinfo")]
+        condition: Option<String>,
 
         /// region to query
-        #[clap(required = true)]
+        #[clap(short, long, value_parser, required = true)]
         region: String,
+
+        /// Minimum allele length to include in the plot
+        #[clap(long, value_parser)]
+        min: Option<f64>,
+
+        /// Maximum allele length to include in the plot
+        #[clap(long, value_parser)]
+        max: Option<f64>,
 
         /// SVG output file name (open in browser for interactivity)
         #[clap(short, long, value_parser, default_value_t=String::from("groupplot.svg"))]
@@ -839,8 +847,8 @@ fn main() {
             );
         }
 
-        Commands::Plot { combined, sample_metadata, condition, region, output } => {
-            plot::plot(combined, sample_metadata, condition, region, output)
+        Commands::Plot { combined, sampleinfo, condition, region, min, max, output } => {
+            plot::plot(combined, sampleinfo, condition, region, min, max, output)
         }
         Commands::Pca { combined, output, components, threads, aggregation, scores } => {
             if !combined.exists() {

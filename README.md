@@ -524,24 +524,32 @@ inquiSTR histogram combined.tsv chr4:3074877-3074933
 Show a histogram with multiple groups for a specific repeat (from [`inquiSTR combine`](#inquistr-combine---multi-sample-analysis)), useful for comparing cohorts.
 
 ```text
-Usage: inquiSTR plot [OPTIONS] <COMBINED> <METADATA> <REGION>
+Usage: inquiSTR plot [OPTIONS] --region <REGION> <COMBINED>
 
 Arguments:
   <COMBINED>  combined file of calls
-  <METADATA>  file with sample_id, phenotype and covariates
-  <REGION>    region to query
 
 Options:
-  -c, --condition <CONDITION>  test column and groups to plot e.g. group:PAT,CON
-  -o, --output <OUTPUT>        SVG output file name (open in browser for interactivity) [default: groupplot.svg]
-  -h, --help                   Print help
+  -s, --sampleinfo <SAMPLEINFO>  file with sample IDs, phenotypes, and covariates (TSV format)
+  -c, --condition <CONDITION>    test column and groups to plot e.g. group:PAT,CON
+  -r, --region <REGION>          region to query
+      --min <MIN>                Minimum allele length to include in the plot
+      --max <MAX>                Maximum allele length to include in the plot
+  -o, --output <OUTPUT>          SVG output file name (open in browser for interactivity) [default: groupplot.svg]
+  -h, --help                     Print help
 ```
 
 **Examples:**
 
 ```bash
+# Plot all samples
+inquiSTR plot combined.tsv --region chr1:1000-2000 --output all_samples.svg
+
 # Compare patient vs control groups
-inquiSTR plot combined.tsv metadata.tsv chr1:1000-2000 --condition "group:PAT,CON" --output patient_control.svg
+inquiSTR plot combined.tsv --region chr1:1000-2000 --sampleinfo metadata.tsv --condition "group:PAT,CON" --output patient_control.svg
+
+# Apply allele length filtering
+inquiSTR plot combined.tsv --region chr1:1000-2000 --min 50 --max 500 --output filtered.svg
 ```
 
 ### `inquiSTR unmapped` - Kmer Frequency Analysis
