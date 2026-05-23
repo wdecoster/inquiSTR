@@ -470,6 +470,10 @@ enum Commands {
         /// Sort results by Bonferroni corrected p-value (requires loading full results into memory)
         #[clap(long)]
         sort: bool,
+
+        /// Output file for Manhattan plot (SVG format, requires STR data with genomic coordinates)
+        #[clap(long, value_parser)]
+        plot: Option<PathBuf>,
     },
 
     /// Show a histogram with multiple groups for a specific repeat
@@ -829,6 +833,7 @@ fn main() {
             binary_order,
             quiet,
             sort,
+            plot,
         } => {
             assoc::run_association(
                 input,
@@ -844,6 +849,7 @@ fn main() {
                 binary_order,
                 quiet,
                 sort,
+                plot,
             );
         }
 

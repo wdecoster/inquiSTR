@@ -18,6 +18,7 @@ pub fn run_association(
     binary_order: Option<String>,
     quiet: bool,
     sort: bool,
+    plot: Option<PathBuf>,
 ) {
     // Validate arguments
     if !input.exists() {
@@ -183,6 +184,11 @@ pub fn run_association(
             .count();
         eprintln!("Bonferroni significant (p < 0.05): {}", bonf_sig);
         eprintln!("Results written to: {}", out.display());
+    }
+
+    // Generate Manhattan plot if requested
+    if let Some(plot_path) = plot {
+        write_manhattan_plot(&valid_results, &plot_path, quiet);
     }
 }
 
@@ -1165,4 +1171,60 @@ fn write_results(
     }
 
     writer.flush().unwrap();
+}
+
+// ---------------------------------------------------------------------------
+// Manhattan plot
+// ---------------------------------------------------------------------------
+
+fn parse_str_coords(variant_id: &str) -> Option<(String, f64)> {
+    let colon = variant_id.find(':')?;
+    let chrom = variant_id[..colon].to_string();
+    let rest = &variant_id[colon + 1..];
+    let dash = rest.find('-')?;
+    let begin: f64 = rest[..dash].parse().ok()?;
+    Some((chrom, begin))
+}
+
+fn write_manhattan_plot(results: &[VariantResult], plot_path: &std::path::Path, quiet: bool) {
+    use kuva::prelude::*;
+
+    let data: Vec<(String, f64, f64)> = results
+        .iter()
+        .filter_map(|r| {
+            let (chrom, pos) = parse_str_coords(&r.variant_id)?;
+            Some((chrom, pos, r.pvalue))
+        })
+        .collect();
+
+    if data.is_empty() {
+        eprintln!(
+            "WARNING: Cannot generate Manhattan plot: no genomic coordinates found in variant IDs \
+             (Manhattan plots require STR data, not kmer data)."
+        );
+        return;
+    }
+
+    let n_tests = results.len();
+    let bonf_threshold = -(0.05_f64 / n_tests as f64).log10();
+
+    let mp = ManhattanPlot::new()
+        .with_data_bp(data, GenomeBuild::Hg38)
+        .with_genome_wide(bonf_threshold)
+        .with_legend("Association thresholds");
+
+    let plots = vec![Plot::Manhattan(mp)];
+    let layout = Layout::auto_from_plots(&plots)
+        .with_title("inquiSTR STR Association")
+        .with_x_label("Chromosome")
+        .with_y_label("−log₁₀(p-value)");
+
+    let svg = render_to_svg(plots, layout);
+    std::fs::write(plot_path, svg).unwrap_or_else(|e| {
+        eprintln!("ERROR: Could not write Manhattan plot to {}: {}", plot_path.display(), e);
+    });
+
+    if !quiet {
+        eprintln!("Manhattan plot written to: {}", plot_path.display());
+    }
 }
