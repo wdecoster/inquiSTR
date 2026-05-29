@@ -33,18 +33,35 @@ pub fn plot(
         std::process::exit(1);
     }
 
-    // Validate that input is a combined file, not individual
-    if let Some(file_type) = crate::filetype::read_file_type_metadata(&combined)
-        && !matches!(
-            file_type,
-            crate::filetype::FileType::CombinedCall | crate::filetype::FileType::CombinedKmer
-        )
-    {
-        eprintln!("ERROR: Plot requires a combined file (combined_call or combined_kmer).");
-        eprintln!("The provided file appears to be: {:?}", file_type);
-        eprintln!("\nPlease use 'inquiSTR combine' to merge individual sample files first.");
-        std::process::exit(1);
-    }
+    // Validate that input is a combined file, not individual; capture type for axis label
+    let is_kmer = match crate::filetype::read_file_type_metadata(&combined) {
+        Some(file_type) => {
+            if !matches!(
+                file_type,
+                crate::filetype::FileType::CombinedCall | crate::filetype::FileType::CombinedKmer
+            ) {
+                eprintln!("ERROR: Plot requires a combined file (combined_call or combined_kmer).");
+                eprintln!("The provided file appears to be: {:?}", file_type);
+                eprintln!(
+                    "\nPlease use 'inquiSTR combine' to merge individual sample files first."
+                );
+                std::process::exit(1);
+            }
+            matches!(file_type, crate::filetype::FileType::CombinedKmer)
+        }
+        None => false,
+    };
+
+    let x_label = if is_kmer {
+        "kmer frequency"
+    } else {
+        "repeat length (bp)"
+    };
+    let y_label = if is_kmer {
+        "count"
+    } else {
+        "number of haplotypes"
+    };
 
     // Match any locus overlapping the requested region.
     let combined_for_header = combined.clone();
@@ -75,6 +92,9 @@ pub fn plot(
         }
 
         for (sample, length) in samples.iter().zip(locus_match.values) {
+            if length.is_nan() {
+                continue;
+            }
             if min.is_some_and(|v| length < v) || max.is_some_and(|v| length > v) {
                 continue;
             }
@@ -89,15 +109,16 @@ pub fn plot(
         let filtered: Vec<f64> = locus_match
             .values
             .into_iter()
+            .filter(|length| !length.is_nan())
             .filter(|length| !min.is_some_and(|v| *length < v) && !max.is_some_and(|v| *length > v))
             .collect();
         lengths_for_plot.insert(String::from("all"), filtered);
     }
 
-    plot_hist(lengths_for_plot, output);
+    plot_hist(lengths_for_plot, x_label, y_label, output);
 }
 
-fn plot_hist(lengths_map: HashMap<String, Vec<f64>>, output: String) {
+fn plot_hist(lengths_map: HashMap<String, Vec<f64>>, x_label: &str, y_label: &str, output: String) {
     if lengths_map.is_empty() || lengths_map.values().all(|lengths| lengths.is_empty()) {
         eprintln!("ERROR: No values available to plot for the requested inputs.");
         std::process::exit(1);
@@ -150,10 +171,11 @@ fn plot_hist(lengths_map: HashMap<String, Vec<f64>>, output: String) {
     }
 
     let layout = Layout::auto_from_plots(&plots)
+        .with_x_label(x_label)
+        .with_y_label(y_label)
         .with_legend_position(LegendPosition::InsideTopRight)
         .with_legend_title("Groups")
-        .with_legend_entries(legend_entries)
-        .with_interactive();
+        .with_legend_entries(legend_entries);
 
     let svg = render_to_svg(plots, layout);
     std::fs::write(&output, svg).expect("Failed to write SVG plot");

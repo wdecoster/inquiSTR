@@ -64,11 +64,13 @@ pub fn query(combined: PathBuf, region: String) {
 
             // Sort samples by their STR length (descending, NaN values last)
             let mut zipped: Vec<(String, Vec<f64>)> = lengths.into_iter().collect();
-            zipped.sort_by_key(|(_, val)| {
-                if !val[0].is_nan() {
-                    -val[0] as i64
-                } else {
-                    i64::MAX
+            zipped.sort_by(|(_, a), (_, b)| {
+                let (a, b) = (a[0], b[0]);
+                match (a.is_nan(), b.is_nan()) {
+                    (true, true) => std::cmp::Ordering::Equal,
+                    (true, false) => std::cmp::Ordering::Greater, // NaN sorts last
+                    (false, true) => std::cmp::Ordering::Less,
+                    (false, false) => b.total_cmp(&a), // descending by value
                 }
             });
 
