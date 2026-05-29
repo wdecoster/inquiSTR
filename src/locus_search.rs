@@ -247,7 +247,11 @@ mod tests {
         f
     }
 
-    fn config(path: &std::path::Path, region: &str, strategy: OverlapStrategy) -> LocusSearchConfig {
+    fn config(
+        path: &std::path::Path,
+        region: &str,
+        strategy: OverlapStrategy,
+    ) -> LocusSearchConfig {
         LocusSearchConfig {
             combined_file: path.to_path_buf(),
             target_region: region.to_string(),
