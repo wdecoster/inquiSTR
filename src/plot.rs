@@ -1,5 +1,5 @@
 use crate::locus_search::{
-    LocusSearchConfig, OverlapStrategy, extract_clean_sample_names, find_locus,
+    LocusSearchConfig, OverlapStrategy, extract_clean_sample_names, select_overlapping_locus,
 };
 use kuva::plot::legend::{LegendEntry, LegendPosition, LegendShape};
 use kuva::prelude::*;
@@ -46,7 +46,7 @@ pub fn plot(
         std::process::exit(1);
     }
 
-    // Match any locus overlapping the requested region (the first one found).
+    // Match any locus overlapping the requested region.
     let combined_for_header = combined.clone();
     let config = LocusSearchConfig {
         combined_file: combined,
@@ -54,16 +54,7 @@ pub fn plot(
         overlap_strategy: OverlapStrategy::Overlap,
     };
 
-    let locus_match = find_locus(config).unwrap_or_else(|| {
-        eprintln!(
-            "ERROR: No locus overlapping region '{}' was found in {}.\n\
-             Check the coordinates (expected chrom:begin-end) and that a locus in this interval \
-             is present in the combined file.",
-            region,
-            combined_for_header.display()
-        );
-        std::process::exit(1);
-    });
+    let locus_match = select_overlapping_locus(config);
 
     let mut lengths_for_plot: HashMap<String, Vec<f64>> = HashMap::new();
 

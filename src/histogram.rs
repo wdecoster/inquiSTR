@@ -1,4 +1,4 @@
-use crate::locus_search::{LocusSearchConfig, OverlapStrategy, find_locus};
+use crate::locus_search::{LocusSearchConfig, OverlapStrategy, select_overlapping_locus};
 use histo_fp::Histogram;
 use std::path::PathBuf;
 
@@ -35,35 +35,24 @@ pub fn histogram(combined: PathBuf, region: String) {
         "STR length (bp)"
     };
 
-    // Match any locus overlapping the requested region (the first one found).
-    let combined_path = combined.clone();
+    // Match any locus overlapping the requested region.
     let config = LocusSearchConfig {
         combined_file: combined,
-        target_region: region.clone(),
+        target_region: region,
         overlap_strategy: OverlapStrategy::Overlap,
     };
 
-    if let Some(locus_match) = find_locus(config) {
-        let mut histogram = Histogram::with_buckets(100, Some(2));
+    let locus_match = select_overlapping_locus(config);
 
-        for value in locus_match.values {
-            if !value.is_nan() {
-                histogram.add(value);
-            }
+    let mut histogram = Histogram::with_buckets(100, Some(2));
+    for value in locus_match.values {
+        if !value.is_nan() {
+            histogram.add(value);
         }
-
-        println!("# Locus: {}:{}-{}", locus_match.chromosome, locus_match.start, locus_match.end);
-        println!("# x-axis: {x_label}");
-        println!("# y-axis: count");
-        println!("{histogram}");
-    } else {
-        eprintln!(
-            "ERROR: No locus overlapping region '{}' was found in {}.\n\
-             Check the coordinates (expected chrom:begin-end) and that a locus in this interval \
-             is present in the combined file.",
-            region,
-            combined_path.display()
-        );
-        std::process::exit(1);
     }
+
+    println!("# Locus: {}:{}-{}", locus_match.chromosome, locus_match.start, locus_match.end);
+    println!("# x-axis: {x_label}");
+    println!("# y-axis: count");
+    println!("{histogram}");
 }

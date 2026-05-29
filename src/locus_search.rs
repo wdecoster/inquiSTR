@@ -40,9 +40,11 @@ pub struct LocusSearchConfig {
     pub overlap_strategy: OverlapStrategy,
 }
 
-/// Search for a specific locus in a combined inquiSTR file
-/// Returns the first matching locus, or None if not found
-pub fn find_locus(config: LocusSearchConfig) -> Option<LocusMatch> {
+/// Scan a combined inquiSTR file for loci matching the target region.
+///
+/// When `stop_at_first` is true the scan returns as soon as the first match is
+/// found (cheap lookups); otherwise it returns every matching locus.
+fn scan_loci(config: LocusSearchConfig, stop_at_first: bool) -> Vec<LocusMatch> {
     if !config.combined_file.exists() {
         eprintln!("ERROR: Combined file does not exist: {}", config.combined_file.display());
         std::process::exit(1);
@@ -55,28 +57,47 @@ pub fn find_locus(config: LocusSearchConfig) -> Option<LocusMatch> {
     let mut lines = file.lines();
     let reg_chrom = format!("{target_chrom}\t");
 
-    // Read header to determine expected number of columns
-    // Skip metadata lines if present and get actual header/first data line
+    // Read header / first data line to determine the expected column count.
+    // Skip metadata lines (those starting with '#') if present.
     let first_line =
         crate::utils::skip_metadata_lines(&mut lines, &config.combined_file.to_string_lossy());
-    let first_cols = first_line.split('\t').count();
-    if first_cols < 4 {
-        eprintln!("ERROR: Invalid file format. Expected at least 4 columns, got {}.", first_cols);
+    let expected_columns = first_line.split('\t').count();
+    if expected_columns < 4 {
+        eprintln!(
+            "ERROR: Invalid file format. Expected at least 4 columns, got {}.",
+            expected_columns
+        );
         eprintln!("First line: '{}'", first_line);
         std::process::exit(1);
     }
 
-    // If this line matches our target chromosome, process it
-    if first_line.starts_with(&reg_chrom) {
-        let splitline: Vec<&str> = first_line.split('\t').collect();
+    let mut results = Vec::new();
+
+    // Treat the first data line and the remaining lines uniformly.
+    let all_lines = std::iter::once(first_line).chain(lines.map(|l| l.unwrap()));
+    for (idx, line) in all_lines.enumerate() {
+        // Skip lines that don't start with our target chromosome.
+        if !line.starts_with(&reg_chrom) {
+            continue;
+        }
+
+        let splitline: Vec<&str> = line.split('\t').collect();
+        if splitline.len() != expected_columns {
+            eprintln!("ERROR: Malformed line {} in combined file.", idx + 1);
+            eprintln!("Expected {} columns, got {}", expected_columns, splitline.len());
+            eprintln!("Line content: '{}'", line);
+            std::process::exit(1);
+        }
+
         let begin: u32 = splitline[1].parse().expect("Failed parsing interval start");
         let end: u32 = splitline[2].parse().expect("Failed parsing interval end");
 
-        // Check overlap based on strategy
         let matches = match config.overlap_strategy {
+            // True genomic overlap.
             OverlapStrategy::Overlap => {
                 std::cmp::max(target_start, begin) < std::cmp::min(target_end, end)
             }
+            // Target region must fully contain the found region.
             OverlapStrategy::Containment => target_start <= begin && end <= target_end,
         };
 
@@ -87,67 +108,73 @@ pub fn find_locus(config: LocusSearchConfig) -> Option<LocusMatch> {
                 .map(|number| number.parse::<f64>().expect("Failed parsing lengths"))
                 .collect();
 
-            return Some(LocusMatch {
-                chromosome: target_chrom.clone(),
-                start: begin,
-                end,
-                values,
-                raw_line: first_line,
-            });
-        }
-    }
-
-    let expected_columns = first_cols;
-
-    for (line_num, line_result) in lines.enumerate() {
-        let line = line_result.unwrap();
-
-        // Skip lines that don't start with our target chromosome
-        if !line.starts_with(&reg_chrom) {
-            continue;
-        }
-
-        let splitline: Vec<&str> = line.split('\t').collect();
-        if splitline.len() != expected_columns {
-            eprintln!("ERROR: Malformed line {} in combined file.", line_num + 2);
-            eprintln!("Expected {} columns, got {}", expected_columns, splitline.len());
-            eprintln!("Line content: '{}'", line);
-            std::process::exit(1);
-        }
-
-        let begin: u32 = splitline[1].parse().expect("Failed parsing interval start");
-        let end: u32 = splitline[2].parse().expect("Failed parsing interval end");
-
-        // Check overlap based on strategy
-        let matches = match config.overlap_strategy {
-            OverlapStrategy::Overlap => {
-                // True genomic overlap
-                std::cmp::max(target_start, begin) < std::cmp::min(target_end, end)
-            }
-            OverlapStrategy::Containment => {
-                // Target region must contain the found region
-                target_start <= begin && end <= target_end
-            }
-        };
-
-        if matches {
-            let values: Vec<f64> = splitline
-                .iter()
-                .skip(crate::filetype::STR_FIXED_COLUMNS) // Skip chr, start, end, info
-                .map(|number| number.parse::<f64>().expect("Failed parsing lengths"))
-                .collect();
-
-            return Some(LocusMatch {
+            results.push(LocusMatch {
                 chromosome: target_chrom.clone(),
                 start: begin,
                 end,
                 values,
                 raw_line: line,
             });
+
+            if stop_at_first {
+                break;
+            }
         }
     }
 
-    None
+    results
+}
+
+/// Search for a specific locus in a combined inquiSTR file.
+/// Returns the first matching locus, or None if not found.
+pub fn find_locus(config: LocusSearchConfig) -> Option<LocusMatch> {
+    scan_loci(config, true).into_iter().next()
+}
+
+/// Return every locus in the combined file matching the target region.
+/// Unlike [`find_locus`], this does not stop at the first match, so callers
+/// can detect when a region spans more than one locus.
+pub fn find_overlapping_loci(config: LocusSearchConfig) -> Vec<LocusMatch> {
+    scan_loci(config, false)
+}
+
+/// Resolve the single locus overlapping the requested region for an
+/// interactive (single-region) command such as `plot` or `histogram`.
+///
+/// Exits with a clear message if no locus overlaps the region, and prints a
+/// warning (then uses the first locus) if the region spans more than one.
+pub fn select_overlapping_locus(config: LocusSearchConfig) -> LocusMatch {
+    let region = config.target_region.clone();
+    let combined_file = config.combined_file.clone();
+    let mut matches = find_overlapping_loci(config);
+
+    match matches.len() {
+        0 => {
+            eprintln!(
+                "ERROR: No locus overlapping region '{}' was found in {}.\n\
+                 Check the coordinates (expected chrom:begin-end) and that a locus in this \
+                 interval is present in the combined file.",
+                region,
+                combined_file.display()
+            );
+            std::process::exit(1);
+        }
+        1 => matches.swap_remove(0),
+        n => {
+            let coords: Vec<String> = matches
+                .iter()
+                .map(|m| format!("{}:{}-{}", m.chromosome, m.start, m.end))
+                .collect();
+            eprintln!(
+                "WARNING: region '{}' overlaps {} loci ({}). Using the first; narrow the \
+                 region to select a specific locus.",
+                region,
+                n,
+                coords.join(", ")
+            );
+            matches.swap_remove(0)
+        }
+    }
 }
 
 /// Search for multiple loci in a combined inquiSTR file
@@ -209,9 +236,75 @@ pub fn extract_clean_sample_names(header_line: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
+
+    /// Write a combined-file body to a temporary `.tsv` and return the handle
+    /// (kept alive by the caller so the file isn't deleted while in use).
+    fn temp_combined(body: &str) -> tempfile::NamedTempFile {
+        let mut f = tempfile::Builder::new().suffix(".tsv").tempfile().unwrap();
+        f.write_all(body.as_bytes()).unwrap();
+        f.flush().unwrap();
+        f
+    }
+
+    fn config(path: &std::path::Path, region: &str, strategy: OverlapStrategy) -> LocusSearchConfig {
+        LocusSearchConfig {
+            combined_file: path.to_path_buf(),
+            target_region: region.to_string(),
+            overlap_strategy: strategy,
+        }
+    }
+
+    #[test]
+    fn test_find_overlapping_loci_single_multiple_none() {
+        let body = "chromosome\tbegin\tend\tinfo\ts1_H1\ts1_H2\n\
+                    chr1\t100\t200\t.\t10\t12\n\
+                    chr1\t400\t500\t.\t20\t22\n\
+                    chr1\t900\t1000\t.\t30\t32\n";
+        let f = temp_combined(body);
+        let path = f.path();
+
+        // Region overlapping two loci.
+        let multi = find_overlapping_loci(config(path, "chr1:150-450", OverlapStrategy::Overlap));
+        assert_eq!(multi.len(), 2);
+        assert_eq!((multi[0].start, multi[0].end), (100, 200));
+        assert_eq!((multi[1].start, multi[1].end), (400, 500));
+
+        // find_locus returns only the first overlapping locus.
+        let first = find_locus(config(path, "chr1:150-450", OverlapStrategy::Overlap)).unwrap();
+        assert_eq!((first.start, first.end), (100, 200));
+        assert_eq!(first.values, vec![10.0, 12.0]);
+
+        // Region overlapping exactly one locus.
+        let one = find_overlapping_loci(config(path, "chr1:120-130", OverlapStrategy::Overlap));
+        assert_eq!(one.len(), 1);
+
+        // Region overlapping no locus.
+        let none = find_overlapping_loci(config(path, "chr1:600-700", OverlapStrategy::Overlap));
+        assert!(none.is_empty());
+
+        // Different chromosome.
+        let other = find_overlapping_loci(config(path, "chr2:100-200", OverlapStrategy::Overlap));
+        assert!(other.is_empty());
+    }
+
+    #[test]
+    fn test_containment_vs_overlap_strategy() {
+        let body = "chromosome\tbegin\tend\tinfo\ts1\nchr1\t100\t200\t.\t10\n";
+        let f = temp_combined(body);
+        let path = f.path();
+
+        // Partial overlap: Containment misses, Overlap hits.
+        assert!(find_locus(config(path, "chr1:150-250", OverlapStrategy::Containment)).is_none());
+        assert!(find_locus(config(path, "chr1:150-250", OverlapStrategy::Overlap)).is_some());
+
+        // Region fully containing the locus: both strategies hit.
+        assert!(find_locus(config(path, "chr1:50-250", OverlapStrategy::Containment)).is_some());
+        assert!(find_locus(config(path, "chr1:50-250", OverlapStrategy::Overlap)).is_some());
+    }
+
     #[test]
     fn test_find_locus_overlap_strategy() {
-        // This test would require actual test data
         // For now, just test that the enum variants work
         let _overlap = OverlapStrategy::Overlap;
         let _containment = OverlapStrategy::Containment;
