@@ -34,18 +34,25 @@ pub fn parse_phenotypes(
     let meta_file = crate::utils::reader(sample_metadata.to_str().unwrap());
     let mut lines = meta_file.lines();
     let header = lines.next().unwrap().unwrap();
-    let pheno_column_index = header
-        .split('\t')
-        .enumerate()
-        .filter(|(_, col)| col == &pheno_column)
-        .map(|(index, _)| index)
-        .next()
+    let columns: Vec<&str> = header.split('\t').collect();
+    let pheno_column_index = columns
+        .iter()
+        .position(|col| *col == pheno_column)
         .ok_or_else(|| {
+            // A common slip is mixing '-' and '_' in the column name; suggest a
+            // column that matches once both are normalised.
+            let normalize = |s: &str| s.replace('-', "_");
+            let suggestion = columns
+                .iter()
+                .find(|col| normalize(col) == normalize(pheno_column))
+                .map(|col| format!(" Did you mean '{col}'?"))
+                .unwrap_or_default();
             format!(
-                "Could not find column '{}' in sample metadata file: {}. Available columns: {}",
+                "Could not find column '{}' in sample metadata file: {}.{}\nAvailable columns: {}",
                 pheno_column,
                 sample_metadata.display(),
-                header
+                suggestion,
+                columns.join(", ")
             )
         })?;
     let mut samples_of_interest: Vec<Individual> = vec![];

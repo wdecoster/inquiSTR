@@ -35,11 +35,12 @@ pub fn histogram(combined: PathBuf, region: String) {
         "STR length (bp)"
     };
 
-    // Use the new locus search utility with containment strategy (original behavior)
+    // Match any locus overlapping the requested region (the first one found).
+    let combined_path = combined.clone();
     let config = LocusSearchConfig {
         combined_file: combined,
-        target_region: region,
-        overlap_strategy: OverlapStrategy::Containment,
+        target_region: region.clone(),
+        overlap_strategy: OverlapStrategy::Overlap,
     };
 
     if let Some(locus_match) = find_locus(config) {
@@ -56,6 +57,13 @@ pub fn histogram(combined: PathBuf, region: String) {
         println!("# y-axis: count");
         println!("{histogram}");
     } else {
-        eprintln!("No matching interval found");
+        eprintln!(
+            "ERROR: No locus overlapping region '{}' was found in {}.\n\
+             Check the coordinates (expected chrom:begin-end) and that a locus in this interval \
+             is present in the combined file.",
+            region,
+            combined_path.display()
+        );
+        std::process::exit(1);
     }
 }

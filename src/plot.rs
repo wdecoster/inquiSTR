@@ -46,15 +46,24 @@ pub fn plot(
         std::process::exit(1);
     }
 
-    // Use the new locus search utility with containment strategy (original behavior)
+    // Match any locus overlapping the requested region (the first one found).
     let combined_for_header = combined.clone();
     let config = LocusSearchConfig {
         combined_file: combined,
-        target_region: region,
-        overlap_strategy: OverlapStrategy::Containment,
+        target_region: region.clone(),
+        overlap_strategy: OverlapStrategy::Overlap,
     };
 
-    let locus_match = find_locus(config).expect("Specified interval not found!");
+    let locus_match = find_locus(config).unwrap_or_else(|| {
+        eprintln!(
+            "ERROR: No locus overlapping region '{}' was found in {}.\n\
+             Check the coordinates (expected chrom:begin-end) and that a locus in this interval \
+             is present in the combined file.",
+            region,
+            combined_for_header.display()
+        );
+        std::process::exit(1);
+    });
 
     let mut lengths_for_plot: HashMap<String, Vec<f64>> = HashMap::new();
 
