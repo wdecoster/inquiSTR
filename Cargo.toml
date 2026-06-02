@@ -35,7 +35,9 @@ rayon = "1.11.0"
 flate2 = "1.1.8"
 histo_fp = "0.2.1"
 indicatif = { version = "0.18.4", features = ["rayon"] }
-kuva = "0.2"
+# Fork with opt-in thinning of overlapping Manhattan chromosome labels.
+# Revert to the crates.io release once the feature is merged upstream (Psy-Fer/kuva).
+kuva = { git = "https://github.com/wdecoster/kuva.git", branch = "manhattan-label-collision-avoidance" }
 tempfile = "3.27.0"
 rand = "0.10.1"
 ndarray = "0.17.2"

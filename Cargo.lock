@@ -1493,8 +1493,7 @@ dependencies = [
 [[package]]
 name = "kuva"
 version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "91e99d9ad687ca5c652ca192eee362606e91a494692fa0c383b810fc5eb5a7a9"
+source = "git+https://github.com/wdecoster/kuva.git?branch=manhattan-label-collision-avoidance#b2ace887cad15d61e13b5f437387b41c587cdef7"
 dependencies = [
  "chrono",
  "colorous",

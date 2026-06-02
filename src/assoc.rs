@@ -1211,13 +1211,25 @@ fn write_manhattan_plot(results: &[VariantResult], plot_path: &std::path::Path, 
     let mp = ManhattanPlot::new()
         .with_data_bp(data, GenomeBuild::Hg38)
         .with_genome_wide(bonf_threshold)
-        .with_legend("Association thresholds");
+        .with_legend("Association thresholds")
+        // Drop chromosome labels that would collide (e.g. the narrow 17-22 bands),
+        // which the larger publication tick font would otherwise overlap.
+        .with_thin_overlapping_labels();
 
     let plots = vec![Plot::Manhattan(mp)];
     let layout = Layout::auto_from_plots(&plots)
         .with_title("inquiSTR STR Association")
         .with_x_label("Chromosome")
-        .with_y_label("−log₁₀(p-value)");
+        .with_y_label("−log₁₀(p-value)")
+        // Larger fonts for publication-ready figures (kuva defaults are 18/14/12/12).
+        // Margins auto-adapt to the bigger text, so nothing is clipped.
+        .with_title_size(28)
+        .with_label_size(22)
+        .with_tick_size(18)
+        .with_body_size(18)
+        // kuva auto-sizes the legend box at ~8 px/char (tuned for the ~13px default font), so
+        // the larger 18px legend text overflows. Widen the box explicitly to fit "Genome-wide".
+        .with_legend_width(185.0);
 
     let svg = render_to_svg(plots, layout);
     std::fs::write(plot_path, svg).unwrap_or_else(|e| {

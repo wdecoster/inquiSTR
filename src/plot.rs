@@ -173,6 +173,12 @@ fn plot_hist(lengths_map: HashMap<String, Vec<f64>>, x_label: &str, y_label: &st
     let layout = Layout::auto_from_plots(&plots)
         .with_x_label(x_label)
         .with_y_label(y_label)
+        // Larger fonts for publication-ready figures (kuva defaults are 18/14/12/12).
+        // Margins auto-adapt to the bigger text, so nothing is clipped.
+        .with_title_size(28)
+        .with_label_size(22)
+        .with_tick_size(18)
+        .with_body_size(18)
         .with_legend_position(LegendPosition::InsideTopRight)
         .with_legend_title("Groups")
         .with_legend_entries(legend_entries);
