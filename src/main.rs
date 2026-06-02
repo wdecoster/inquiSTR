@@ -987,7 +987,7 @@ fn main() {
 }
 
 #[cfg(test)]
-#[ctor::ctor]
+#[ctor::ctor(unsafe)]
 fn init() {
     env_logger::init();
 }
