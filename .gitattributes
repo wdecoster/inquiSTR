@@ -1,0 +1,4 @@
+# Keep large test fixtures out of the release tarball (e.g. GitHub archives,
+# used by the bioconda recipe). They stay in the repo for local testing.
+test-data/ export-ignore
+test.bed export-ignore
