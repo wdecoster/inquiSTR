@@ -1,11 +1,22 @@
 //! Convert VCF files to inquiSTR format
 //!
-//! This module provides functionality to convert VCF files (typically from TRGT or similar
-//! STR genotyping tools) to inquiSTR's TSV format. It handles:
-//! - Single sample VCF → individual call file
-//! - Multiple sample VCFs or multiple single-sample VCFs → combined file
-//! - Allele length calculation relative to reference
-//! - Proper handling of missing genotypes
+//! This module converts STR-genotyper VCFs (TRGT or LongTR) to inquiSTR's TSV format.
+//! It is **format-aware**: rather than reconstructing allele lengths from REF/ALT string
+//! arithmetic (which is fragile across anchoring/coordinate conventions), it uses each
+//! tool's native length field and repeat coordinates:
+//!
+//! - **TRGT**: locus coordinates are `POS`..`END` (TRGT writes the 0-based catalog start
+//!   directly into `POS`, matching inquiSTR `call`), and per-haplotype lengths come from the
+//!   `AL` FORMAT field (absolute allele length), reported relative to the interval width
+//!   `END - POS` to match inquiSTR's reference-relative output.
+//! - **LongTR**: locus coordinates are `INFO/START`..`INFO/END` (the repetitive portion of
+//!   the reference allele). LongTR's `POS` is **not** the repeat start — it is shifted by
+//!   flanking context — so `START` must be used for the match coordinate. Per-haplotype
+//!   lengths come straight from the `GB` FORMAT field (bp difference from reference), which
+//!   already matches inquiSTR's convention.
+//!
+//! It handles single-sample VCFs (→ individual call file), multiple samples / multiple VCFs
+//! (→ combined file), and missing genotypes (→ NA).
 
 use crate::errors::InquiSTRError;
 use crate::filetype::FileType;
@@ -13,91 +24,150 @@ use std::collections::HashMap;
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
 
-/// Represents a single STR variant from a VCF file
-#[derive(Debug, Clone)]
-struct VcfVariant {
-    chromosome: String,
-    pos: u32,
-    end: u32,
-    id: String,
-    ref_len: usize,
-    alt_seqs: Vec<String>,
-    samples: Vec<Genotype>,
+/// Which genotyper produced the VCF. Determines coordinate and length handling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VcfSource {
+    Trgt,
+    LongTr,
 }
 
-/// Represents a genotype for a single sample
-#[derive(Debug, Clone)]
-struct Genotype {
-    sample_name: String,
-    allele1_idx: Option<i32>,
-    allele2_idx: Option<i32>,
-}
-
-impl Genotype {
-    /// Calculate allele lengths relative to reference
-    fn get_allele_lengths(&self, variant: &VcfVariant) -> (String, String) {
-        let ref_len = variant.ref_len as i32;
-
-        let allele1_len = match self.allele1_idx {
-            None | Some(-1) => "NA".to_string(),
-            Some(0) => "0".to_string(), // Reference allele
-            Some(idx) => {
-                let alt_idx = (idx - 1) as usize;
-                if alt_idx < variant.alt_seqs.len() {
-                    let alt_len = variant.alt_seqs[alt_idx].len() as i32;
-                    (alt_len - ref_len).to_string()
-                } else {
-                    "NA".to_string()
-                }
-            }
-        };
-
-        let allele2_len = match self.allele2_idx {
-            None | Some(-1) => "NA".to_string(),
-            Some(0) => "0".to_string(), // Reference allele
-            Some(idx) => {
-                let alt_idx = (idx - 1) as usize;
-                if alt_idx < variant.alt_seqs.len() {
-                    let alt_len = variant.alt_seqs[alt_idx].len() as i32;
-                    (alt_len - ref_len).to_string()
-                } else {
-                    "NA".to_string()
-                }
-            }
-        };
-
-        (allele1_len, allele2_len)
+impl VcfSource {
+    fn label(self) -> &'static str {
+        match self {
+            VcfSource::Trgt => "TRGT",
+            VcfSource::LongTr => "LongTR",
+        }
     }
 }
 
-/// Parse a VCF file and extract STR variants
-fn parse_vcf(
-    vcf_path: &Path,
-    off_by_one: bool,
-) -> Result<(Vec<String>, Vec<VcfVariant>), InquiSTRError> {
+/// A single STR locus with per-sample genotype lengths already expressed as
+/// signed bp differences from the reference (or "NA").
+#[derive(Debug, Clone)]
+struct VcfVariant {
+    chromosome: String,
+    begin: u32,
+    end: u32,
+    id: String,
+    samples: Vec<SampleCall>,
+}
+
+/// A genotype for a single sample at a single locus, as two inquiSTR length strings.
+#[derive(Debug, Clone)]
+struct SampleCall {
+    sample_name: String,
+    h1: String,
+    h2: String,
+}
+
+/// Look up a `KEY=value` entry in a VCF INFO field, returning `value`.
+fn info_value<'a>(info: &'a str, key_eq: &str) -> Option<&'a str> {
+    info.split(';').find_map(|kv| kv.strip_prefix(key_eq))
+}
+
+/// Detect the genotyper from the VCF meta-header (`##` lines).
+fn detect_source(header_lines: &[String]) -> Option<VcfSource> {
+    let has = |needle: &str| header_lines.iter().any(|l| l.contains(needle));
+    // TRGT: AL FORMAT field plus MOTIFS/STRUC INFO fields.
+    if has("ID=AL,") && (has("ID=MOTIFS,") || has("ID=STRUC,")) {
+        return Some(VcfSource::Trgt);
+    }
+    // LongTR (HipSTR-derived): GB FORMAT field plus START INFO field.
+    if has("ID=GB,") && has("ID=START,") {
+        return Some(VcfSource::LongTr);
+    }
+    None
+}
+
+/// Compute the two inquiSTR haplotype length strings for one sample field.
+///
+/// `width` is the locus interval width (`end - begin`), used only for TRGT to turn the
+/// absolute `AL` length into a reference-relative one. Returns ("NA", "NA") for missing data.
+fn haplotype_lengths(
+    source: VcfSource,
+    sample_fields: &[&str],
+    gt_idx: usize,
+    len_idx: Option<usize>,
+    width: u32,
+) -> (String, String) {
+    let gt = sample_fields.get(gt_idx).copied().unwrap_or(".");
+    let sep = if gt.contains('|') { '|' } else { '/' };
+    let gt_alleles: Vec<&str> = gt.split(sep).collect();
+
+    // Length values are in genotype (haplotype) order. TRGT separates AL with ','; LongTR
+    // separates GB with the phase character. Split on any of them to handle both.
+    let len_field = len_idx
+        .and_then(|i| sample_fields.get(i))
+        .copied()
+        .unwrap_or(".");
+    let len_vals: Vec<&str> = len_field.split([',', '|', '/']).collect();
+
+    let value_at = |k: usize| -> String {
+        // A missing GT allele means a missing haplotype.
+        if gt_alleles.get(k).map(|a| *a == ".").unwrap_or(true) {
+            return "NA".to_string();
+        }
+        let raw = match len_vals.get(k) {
+            Some(v) if *v != "." && !v.is_empty() => *v,
+            _ => return "NA".to_string(),
+        };
+        let parsed: i64 = match raw.parse() {
+            Ok(v) => v,
+            Err(_) => return "NA".to_string(),
+        };
+        match source {
+            // AL is the absolute allele length; report relative to the interval width.
+            VcfSource::Trgt => (parsed - width as i64).to_string(),
+            // GB is already the bp difference from reference.
+            VcfSource::LongTr => parsed.to_string(),
+        }
+    };
+
+    (value_at(0), value_at(1))
+}
+
+/// Parse a VCF file and extract STR variants with per-sample inquiSTR lengths.
+/// Returns the sample names, the variants, and the detected genotyper.
+fn parse_vcf(vcf_path: &Path) -> Result<(Vec<String>, Vec<VcfVariant>, VcfSource), InquiSTRError> {
     let reader = crate::utils::reader(&vcf_path.to_string_lossy());
     let mut sample_names: Vec<String> = Vec::new();
     let mut variants: Vec<VcfVariant> = Vec::new();
+    let mut header_lines: Vec<String> = Vec::new();
+    let mut source: Option<VcfSource> = None;
 
     for line in reader.lines() {
         let line = line.map_err(|e| InquiSTRError {
             message: format!("Failed to read VCF file {}: {}", vcf_path.display(), e),
         })?;
 
-        // Parse header to get sample names
+        // Collect meta-header for format detection.
+        if line.starts_with("##") {
+            header_lines.push(line);
+            continue;
+        }
+
+        // Column header: detect the genotyper and read sample names.
         if line.starts_with("#CHROM") {
+            source = Some(detect_source(&header_lines).ok_or_else(|| InquiSTRError {
+                message: format!(
+                    "Unrecognized VCF format in {}: expected TRGT (AL + MOTIFS/STRUC) or \
+                     LongTR (GB + START) header fields.",
+                    vcf_path.display()
+                ),
+            })?);
             let fields: Vec<&str> = line.split('\t').collect();
-            // Sample names start from column 9 (0-indexed)
             if fields.len() > 9 {
                 sample_names = fields[9..].iter().map(|s| s.to_string()).collect();
             }
             continue;
         }
 
-        // Skip other header lines
         if line.starts_with('#') {
             continue;
         }
+
+        let source = source.ok_or_else(|| InquiSTRError {
+            message: format!("VCF {} has data lines before the #CHROM header", vcf_path.display()),
+        })?;
 
         let fields: Vec<&str> = line.split('\t').collect();
         if fields.len() < 10 {
@@ -108,67 +178,62 @@ fn parse_vcf(
         let pos: u32 = fields[1].parse().map_err(|_| InquiSTRError {
             message: format!("Invalid position in VCF: {}", fields[1]),
         })?;
+        let info = fields[7];
+        let ref_len = fields[3].len() as u32;
+
+        // Locus coordinates: use the field that matches the catalog / inquiSTR `call`.
+        let (begin, end) = match source {
+            VcfSource::Trgt => {
+                // TRGT writes the 0-based catalog start directly into POS.
+                let end = info_value(info, "END=")
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(pos + ref_len);
+                (pos, end)
+            }
+            VcfSource::LongTr => {
+                // LongTR POS is shifted by flanking context; START is the repeat start.
+                let begin = info_value(info, "START=")
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(pos);
+                let end = info_value(info, "END=")
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(begin + ref_len);
+                (begin, end)
+            }
+        };
+
         let id = if fields[2] == "." {
-            format!("{}:{}", chromosome, pos)
+            format!("{}:{}", chromosome, begin)
         } else {
             fields[2].to_string()
         };
-        let ref_seq = fields[3].to_string();
-        let alt_field = fields[4];
 
-        // Parse ALT alleles
-        let alt_seqs: Vec<String> = alt_field.split(',').map(|s| s.to_string()).collect();
-
-        // Get END from INFO field if present
-        let info = fields[7];
-        let end = if let Some(end_str) = info.split(';').find(|s| s.starts_with("END=")) {
-            end_str
-                .trim_start_matches("END=")
-                .parse()
-                .unwrap_or(pos + ref_seq.len() as u32)
-        } else {
-            pos + ref_seq.len() as u32
+        // Locate GT and the source-specific length field in FORMAT.
+        let format_fields: Vec<&str> = fields[8].split(':').collect();
+        let gt_idx = match format_fields.iter().position(|&s| s == "GT") {
+            Some(i) => i,
+            None => continue, // No genotype information
         };
+        let len_tag = match source {
+            VcfSource::Trgt => "AL",
+            VcfSource::LongTr => "GB",
+        };
+        let len_idx = format_fields.iter().position(|&s| s == len_tag);
 
-        // Parse FORMAT field to find GT index
-        let format = fields[8];
-        let format_fields: Vec<&str> = format.split(':').collect();
-        let gt_idx = format_fields.iter().position(|&s| s == "GT");
-
-        if gt_idx.is_none() {
-            continue; // Skip if no genotype information
-        }
-        let gt_idx = gt_idx.unwrap();
-
-        // Parse genotypes for each sample
-        let mut genotypes = Vec::new();
+        let width = end.saturating_sub(begin);
+        let mut samples = Vec::with_capacity(fields.len().saturating_sub(9));
         for (i, sample_field) in fields[9..].iter().enumerate() {
             let sample_name = if i < sample_names.len() {
                 sample_names[i].clone()
             } else {
                 format!("Sample{}", i + 1)
             };
-
-            let sample_fields: Vec<&str> = sample_field.split(':').collect();
-            if gt_idx >= sample_fields.len() {
-                continue;
-            }
-
-            let gt = sample_fields[gt_idx];
-            let (allele1_idx, allele2_idx) = parse_genotype(gt);
-
-            genotypes.push(Genotype { sample_name, allele1_idx, allele2_idx });
+            let sf: Vec<&str> = sample_field.split(':').collect();
+            let (h1, h2) = haplotype_lengths(source, &sf, gt_idx, len_idx, width);
+            samples.push(SampleCall { sample_name, h1, h2 });
         }
 
-        variants.push(VcfVariant {
-            chromosome,
-            pos: if off_by_one { pos } else { pos - 1 },
-            end,
-            id,
-            ref_len: ref_seq.len(),
-            alt_seqs,
-            samples: genotypes,
-        });
+        variants.push(VcfVariant { chromosome, begin, end, id, samples });
     }
 
     if sample_names.is_empty() {
@@ -177,34 +242,15 @@ fn parse_vcf(
         });
     }
 
-    Ok((sample_names, variants))
-}
+    let source = source.ok_or_else(|| InquiSTRError {
+        message: format!("VCF {} has no #CHROM header line", vcf_path.display()),
+    })?;
 
-/// Parse a genotype string (e.g., "0/1", "1|2", "./.")
-fn parse_genotype(gt: &str) -> (Option<i32>, Option<i32>) {
-    let separator = if gt.contains('|') { '|' } else { '/' };
-    let alleles: Vec<&str> = gt.split(separator).collect();
-
-    if alleles.len() != 2 {
-        return (None, None);
-    }
-
-    let allele1 = if alleles[0] == "." {
-        None
-    } else {
-        alleles[0].parse::<i32>().ok()
-    };
-    let allele2 = if alleles[1] == "." {
-        None
-    } else {
-        alleles[1].parse::<i32>().ok()
-    };
-
-    (allele1, allele2)
+    Ok((sample_names, variants, source))
 }
 
 /// Convert VCF files to inquiSTR format
-pub fn convert_vcf(vcf_files: Vec<PathBuf>, off_by_one: bool) -> Result<(), InquiSTRError> {
+pub fn convert_vcf(vcf_files: Vec<PathBuf>) -> Result<(), InquiSTRError> {
     if vcf_files.is_empty() {
         return Err(InquiSTRError { message: "No VCF files provided".to_string() });
     }
@@ -213,10 +259,13 @@ pub fn convert_vcf(vcf_files: Vec<PathBuf>, off_by_one: bool) -> Result<(), Inqu
     let mut all_samples: Vec<String> = Vec::new();
     let mut all_variants_by_locus: HashMap<String, Vec<VcfVariant>> = HashMap::new();
     let mut sample_counts: HashMap<String, usize> = HashMap::new();
+    let mut sources: Vec<VcfSource> = Vec::new();
 
     for vcf_path in &vcf_files {
         eprintln!("Processing VCF file: {}", vcf_path.display());
-        let (sample_names, mut variants) = parse_vcf(vcf_path, off_by_one)?;
+        let (sample_names, mut variants, source) = parse_vcf(vcf_path)?;
+        eprintln!("  detected genotyper: {}", source.label());
+        sources.push(source);
 
         // Handle duplicate sample names by appending a suffix
         for sample in &sample_names {
@@ -239,7 +288,7 @@ pub fn convert_vcf(vcf_files: Vec<PathBuf>, off_by_one: bool) -> Result<(), Inqu
             // Update sample names in variants
             for variant in &mut variants {
                 for genotype in &mut variant.samples {
-                    if &genotype.sample_name == sample {
+                    if genotype.sample_name == *sample {
                         genotype.sample_name = final_sample_name.clone();
                     }
                 }
@@ -250,7 +299,7 @@ pub fn convert_vcf(vcf_files: Vec<PathBuf>, off_by_one: bool) -> Result<(), Inqu
 
         // Group variants by locus
         for variant in variants {
-            let locus_key = format!("{}:{}:{}", variant.chromosome, variant.pos, variant.end);
+            let locus_key = format!("{}:{}:{}", variant.chromosome, variant.begin, variant.end);
             all_variants_by_locus
                 .entry(locus_key)
                 .or_default()
@@ -276,7 +325,8 @@ pub fn convert_vcf(vcf_files: Vec<PathBuf>, off_by_one: bool) -> Result<(), Inqu
     );
     println!("# source=inquiSTR convert");
     for (i, vcf_path) in vcf_files.iter().enumerate() {
-        println!("# input_vcf_{}={}", i + 1, vcf_path.display());
+        let from = sources.get(i).map(|s| s.label()).unwrap_or("unknown");
+        println!("# input_vcf_{}={} (converted_from={})", i + 1, vcf_path.display(), from);
     }
     if !all_samples.is_empty() {
         println!("# samples={}", all_samples.join(","));
@@ -293,11 +343,12 @@ pub fn convert_vcf(vcf_files: Vec<PathBuf>, off_by_one: bool) -> Result<(), Inqu
     let mut locus_keys: Vec<String> = all_variants_by_locus.keys().cloned().collect();
     locus_keys.sort_by(|a, b| {
         let parse_locus = |s: &str| -> (String, u32, u32) {
-            let parts: Vec<&str> = s.split(':').collect();
+            let parts: Vec<&str> = s.rsplitn(3, ':').collect();
+            // rsplitn yields parts reversed: [end, begin, chrom]
             (
-                parts[0].to_string(),
-                parts[1].parse().unwrap_or(0),
-                parts[2].parse().unwrap_or(0),
+                parts.get(2).copied().unwrap_or("").to_string(),
+                parts.get(1).and_then(|v| v.parse().ok()).unwrap_or(0),
+                parts.first().and_then(|v| v.parse().ok()).unwrap_or(0),
             )
         };
         let (chr_a, pos_a, end_a) = parse_locus(a);
@@ -318,25 +369,25 @@ pub fn convert_vcf(vcf_files: Vec<PathBuf>, off_by_one: bool) -> Result<(), Inqu
         let first_variant = &variants[0];
         print!(
             "{}\t{}\t{}\t{}",
-            first_variant.chromosome, first_variant.pos, first_variant.end, first_variant.id
+            first_variant.chromosome, first_variant.begin, first_variant.end, first_variant.id
         );
 
         // Merge genotypes from all variants at this locus
         let mut genotypes_by_sample: HashMap<String, (String, String)> = HashMap::new();
         for variant in variants {
             for genotype in &variant.samples {
-                let (h1, h2) = genotype.get_allele_lengths(variant);
-                genotypes_by_sample.insert(genotype.sample_name.clone(), (h1, h2));
+                genotypes_by_sample.insert(
+                    genotype.sample_name.clone(),
+                    (genotype.h1.clone(), genotype.h2.clone()),
+                );
             }
         }
 
-        // Write genotypes in sample order
-        // Missing variants (locus not present in a sample's VCF) are filled with NA
+        // Write genotypes in sample order; loci absent from a sample's VCF are NA.
         for sample in &all_samples {
             if let Some((h1, h2)) = genotypes_by_sample.get(sample) {
                 print!("\t{}\t{}", h1, h2);
             } else {
-                // Sample doesn't have this locus (variant not in their VCF)
                 print!("\tNA\tNA");
             }
         }
@@ -357,44 +408,73 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_parse_genotype() {
-        assert_eq!(parse_genotype("0/0"), (Some(0), Some(0)));
-        assert_eq!(parse_genotype("0/1"), (Some(0), Some(1)));
-        assert_eq!(parse_genotype("1|2"), (Some(1), Some(2)));
-        assert_eq!(parse_genotype("./."), (None, None));
-        assert_eq!(parse_genotype(".|1"), (None, Some(1)));
+    fn test_info_value() {
+        let info = "START=16682;END=16774;MOTIF=TGGTGGGGG;PERIOD=9";
+        assert_eq!(info_value(info, "START="), Some("16682"));
+        assert_eq!(info_value(info, "END="), Some("16774"));
+        assert_eq!(info_value(info, "AC="), None);
     }
 
     #[test]
-    fn test_get_allele_lengths() {
-        let variant = VcfVariant {
-            chromosome: "chr1".to_string(),
-            pos: 1000,
-            end: 1050,
-            id: "test".to_string(),
-            ref_len: 50,
-            alt_seqs: vec!["ACGTACGT".to_string(), "ACGTACGTACGT".to_string()],
-            samples: vec![],
-        };
+    fn test_detect_source() {
+        let trgt = vec![
+            "##INFO=<ID=MOTIFS,Number=.,Type=String,Description=\"..\">".to_string(),
+            "##FORMAT=<ID=AL,Number=.,Type=Integer,Description=\"Length of each allele\">"
+                .to_string(),
+        ];
+        assert_eq!(detect_source(&trgt), Some(VcfSource::Trgt));
 
-        let gt = Genotype {
-            sample_name: "Sample1".to_string(),
-            allele1_idx: Some(0), // Reference
-            allele2_idx: Some(1), // First ALT
-        };
+        let longtr = vec![
+            "##INFO=<ID=START,Number=1,Type=Integer,Description=\"..\">".to_string(),
+            "##FORMAT=<ID=GB,Number=1,Type=String,Description=\"..\">".to_string(),
+        ];
+        assert_eq!(detect_source(&longtr), Some(VcfSource::LongTr));
 
-        let (h1, h2) = gt.get_allele_lengths(&variant);
-        assert_eq!(h1, "0");
-        assert_eq!(h2, "-42"); // 8 - 50 = -42
+        let plain = vec!["##FORMAT=<ID=GT,Number=1,Type=String>".to_string()];
+        assert_eq!(detect_source(&plain), None);
+    }
 
-        let gt_missing = Genotype {
-            sample_name: "Sample2".to_string(),
-            allele1_idx: None,
-            allele2_idx: Some(2), // Second ALT
-        };
+    #[test]
+    fn test_trgt_lengths_relative_to_width() {
+        // chr1:20798-20893 -> width 95. AL=95,95 (ref) => 0,0. AL=143,165 => -... relative.
+        // FORMAT GT:AL -> indices gt=0, al=1
+        let sf = ["0/0", "95,95"];
+        assert_eq!(
+            haplotype_lengths(VcfSource::Trgt, &sf, 0, Some(1), 95),
+            ("0".to_string(), "0".to_string())
+        );
+        let sf = ["1/2", "143,165"];
+        assert_eq!(
+            haplotype_lengths(VcfSource::Trgt, &sf, 0, Some(1), 165),
+            ("-22".to_string(), "0".to_string())
+        );
+        // Fully missing
+        let sf = ["."];
+        assert_eq!(
+            haplotype_lengths(VcfSource::Trgt, &sf, 0, Some(1), 95),
+            ("NA".to_string(), "NA".to_string())
+        );
+    }
 
-        let (h1, h2) = gt_missing.get_allele_lengths(&variant);
-        assert_eq!(h1, "NA");
-        assert_eq!(h2, "-38"); // 12 - 50 = -38
+    #[test]
+    fn test_longtr_lengths_from_gb() {
+        // GB is the bp diff directly; width is irrelevant for LongTR.
+        // FORMAT GT:GB -> indices gt=0, gb=1
+        let sf = ["0|1", "0|-86"];
+        assert_eq!(
+            haplotype_lengths(VcfSource::LongTr, &sf, 0, Some(1), 86),
+            ("0".to_string(), "-86".to_string())
+        );
+        let sf = ["1|2", "-77|-10"];
+        assert_eq!(
+            haplotype_lengths(VcfSource::LongTr, &sf, 0, Some(1), 77),
+            ("-77".to_string(), "-10".to_string())
+        );
+        // Half missing
+        let sf = [".|1", ".|5"];
+        assert_eq!(
+            haplotype_lengths(VcfSource::LongTr, &sf, 0, Some(1), 50),
+            ("NA".to_string(), "5".to_string())
+        );
     }
 }
