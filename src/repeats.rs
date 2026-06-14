@@ -306,113 +306,159 @@ impl TargetLoader {
 
         let cache_file = cache_dir.join(cache_filename);
 
-        // Check if cached file exists and is recent (less than 7 days old)
-        let needs_download = if cache_file.exists() {
-            match std::fs::metadata(&cache_file) {
-                Ok(metadata) => {
-                    if let Ok(modified) = metadata.modified() {
-                        let age = std::time::SystemTime::now()
-                            .duration_since(modified)
-                            .unwrap_or(std::time::Duration::from_secs(0));
-                        age > std::time::Duration::from_secs(7 * 24 * 60 * 60) // 7 days
-                    } else {
-                        true // Can't get modification time, re-download
-                    }
-                }
-                Err(_) => true, // Can't get metadata, re-download
-            }
-        } else {
-            true // File doesn't exist, download
-        };
+        // A cached catalog younger than 7 days is used as-is.
+        if Self::is_cache_fresh(&cache_file) {
+            return Self::read_cached(&cache_file, cache_filename, chrom_lengths, max_locus);
+        }
 
-        // Download if needed, using atomic write to prevent race conditions
-        // between concurrent inquiSTR instances
-        if needs_download {
-            let lock_file = cache_dir.join(format!("{}.lock", cache_filename));
+        // The catalog is missing or stale and must be (re)downloaded. Concurrent
+        // inquiSTR instances coordinate through a lock file so that exactly one
+        // process downloads at a time while the others block until it finishes;
+        // everyone then reads the same, fully written and validated catalog.
+        // The download itself writes to a temp file and is atomically renamed
+        // into place (see download_to_cache), so a reader never observes a
+        // partially written or unvalidated cache file.
+        let lock_file = cache_dir.join(format!("{}.lock", cache_filename));
+        // Upper bound on a single download, used only to recover from a holder
+        // that crashed without releasing its lock. The lock's mtime is not
+        // refreshed during a download, so keep this comfortably larger than any
+        // realistic download time to avoid stealing an active lock.
+        const STALE_LOCK: std::time::Duration = std::time::Duration::from_secs(15 * 60);
+        let mut announced_wait = false;
 
-            // Try to acquire a lock file (non-blocking)
-            // If another process is already downloading, skip and use the existing cache
-            let lock_acquired = if let Ok(f) = std::fs::OpenOptions::new()
+        loop {
+            match std::fs::OpenOptions::new()
                 .write(true)
                 .create_new(true)
                 .open(&lock_file)
             {
-                drop(f);
-                true
-            } else {
-                // Another process is downloading - use existing cache if available
-                if cache_file.exists() {
-                    eprintln!(
-                        "Another process is downloading the {} catalog, using cached version",
-                        preset_name
-                    );
-                    false
-                } else {
-                    // No cache and another process has the lock - wait for it
-                    eprintln!(
-                        "Waiting for another process to finish downloading the {} catalog...",
-                        preset_name
-                    );
-                    for _ in 0..60 {
-                        std::thread::sleep(std::time::Duration::from_secs(1));
-                        if cache_file.exists() && !lock_file.exists() {
-                            break;
-                        }
-                    }
-                    // Clean up stale lock if it's still there after 60s
-                    if lock_file.exists() {
+                // We acquired the lock: this process performs the download.
+                Ok(mut lock) => {
+                    use std::io::Write;
+                    let _ = writeln!(lock, "{}", std::process::id());
+                    drop(lock);
+
+                    // Another process may have finished the download while we were
+                    // contending for the lock; re-check before fetching again.
+                    if Self::is_cache_fresh(&cache_file) {
                         let _ = std::fs::remove_file(&lock_file);
+                        break;
                     }
-                    false
-                }
-            };
 
-            if lock_acquired {
-                eprintln!("Downloading {} catalog...", preset_name);
-                let download_result = Self::download_to_cache(url, &cache_file, &cache_dir);
-                // Always remove the lock file when done
-                let _ = std::fs::remove_file(&lock_file);
+                    eprintln!("Downloading {} catalog...", preset_name);
+                    let download_result = Self::download_to_cache(url, &cache_file, &cache_dir);
+                    // Always release the lock, whatever the outcome.
+                    let _ = std::fs::remove_file(&lock_file);
 
-                match download_result {
-                    Ok(()) => {
-                        eprintln!("Cached {} catalog to: {}", preset_name, cache_file.display());
-                    }
-                    Err(DownloadError::FallbackToCache(msg)) => {
-                        if cache_file.exists() {
-                            eprintln!("Warning: {}, using cached version", msg);
-                        } else {
-                            eprintln!("ERROR: Failed to download {} catalog: {}", preset_name, msg);
-                            eprintln!("Please check your network connection and try again.");
-                            eprintln!("URL: {}", url);
-                            std::process::exit(1);
+                    match download_result {
+                        Ok(()) => {
+                            eprintln!(
+                                "Cached {} catalog to: {}",
+                                preset_name,
+                                cache_file.display()
+                            );
                         }
-                    }
-                    Err(DownloadError::InMemoryData(data)) => {
-                        // Cache write failed but we have in-memory data
-                        if cache_filename.ends_with(".gz") {
-                            match Self::decompress_gzip(&data) {
-                                Ok(decompressed) => {
-                                    return Self::from_string_data(
-                                        &decompressed,
-                                        chrom_lengths,
-                                        max_locus,
-                                    );
-                                }
-                                Err(e) => {
-                                    eprintln!("ERROR: Failed to decompress gzipped catalog: {}", e);
-                                    std::process::exit(1);
-                                }
+                        Err(DownloadError::FallbackToCache(msg)) => {
+                            if cache_file.exists() {
+                                eprintln!("Warning: {}, using cached version", msg);
+                            } else {
+                                eprintln!(
+                                    "ERROR: Failed to download {} catalog: {}",
+                                    preset_name, msg
+                                );
+                                eprintln!("Please check your network connection and try again.");
+                                eprintln!("URL: {}", url);
+                                std::process::exit(1);
                             }
-                        } else {
-                            let text = String::from_utf8_lossy(&data).to_string();
-                            return Self::from_string_data(&text, chrom_lengths, max_locus);
+                        }
+                        Err(DownloadError::InMemoryData(data)) => {
+                            // Cache write failed but we have validated in-memory data.
+                            if cache_filename.ends_with(".gz") {
+                                match Self::decompress_gzip(&data) {
+                                    Ok(decompressed) => {
+                                        return Self::from_string_data(
+                                            &decompressed,
+                                            chrom_lengths,
+                                            max_locus,
+                                        );
+                                    }
+                                    Err(e) => {
+                                        eprintln!(
+                                            "ERROR: Failed to decompress gzipped catalog: {}",
+                                            e
+                                        );
+                                        std::process::exit(1);
+                                    }
+                                }
+                            } else {
+                                let text = String::from_utf8_lossy(&data).to_string();
+                                return Self::from_string_data(&text, chrom_lengths, max_locus);
+                            }
                         }
                     }
+                    break;
+                }
+                // Another process holds the lock.
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    // If the lock is older than STALE_LOCK the holder likely
+                    // crashed; reclaim it and retry. Otherwise block until the
+                    // active download finishes (the holder removes the lock),
+                    // then loop: we acquire the lock, see a fresh cache, and read.
+                    let stale = std::fs::metadata(&lock_file)
+                        .and_then(|m| m.modified())
+                        .map(|t| {
+                            std::time::SystemTime::now()
+                                .duration_since(t)
+                                .map(|age| age > STALE_LOCK)
+                                .unwrap_or(false)
+                        })
+                        .unwrap_or(false);
+                    if stale {
+                        eprintln!(
+                            "Removing stale {} download lock (no progress for over {} minutes)",
+                            preset_name,
+                            STALE_LOCK.as_secs() / 60
+                        );
+                        let _ = std::fs::remove_file(&lock_file);
+                        continue;
+                    }
+                    if !announced_wait {
+                        eprintln!(
+                            "Waiting for another process to finish downloading the {} catalog...",
+                            preset_name
+                        );
+                        announced_wait = true;
+                    }
+                    std::thread::sleep(std::time::Duration::from_secs(1));
+                }
+                Err(e) => {
+                    eprintln!("ERROR: Failed to open lock file {}: {}", lock_file.display(), e);
+                    std::process::exit(1);
                 }
             }
         }
 
-        // Read from cached file (possibly gzipped)
+        Self::read_cached(&cache_file, cache_filename, chrom_lengths, max_locus)
+    }
+
+    /// Returns true if the cached catalog exists and is younger than 7 days.
+    fn is_cache_fresh(cache_file: &std::path::Path) -> bool {
+        match std::fs::metadata(cache_file).and_then(|m| m.modified()) {
+            Ok(modified) => std::time::SystemTime::now()
+                .duration_since(modified)
+                .map(|age| age <= std::time::Duration::from_secs(7 * 24 * 60 * 60))
+                .unwrap_or(false),
+            Err(_) => false, // missing file or unreadable mtime: treat as not fresh
+        }
+    }
+
+    /// Read a cached catalog file (gzipped or plain) into a TargetLoader.
+    fn read_cached(
+        cache_file: &std::path::Path,
+        cache_filename: &str,
+        chrom_lengths: HashMap<String, u64>,
+        max_locus: Option<u32>,
+    ) -> Self {
         if cache_filename.ends_with(".gz") {
             Self::from_gzipped_bed(&cache_file.to_string_lossy(), chrom_lengths, max_locus)
         } else {
@@ -436,6 +482,10 @@ impl TargetLoader {
             return Err(DownloadError::FallbackToCache(format!("HTTP status {}", resp.status())));
         }
 
+        // Capture the advertised length (if any) before consuming the response,
+        // so we can detect a truncated transfer below.
+        let expected_len = resp.content_length();
+
         let body = match resp.bytes() {
             Ok(b) => b,
             Err(e) => {
@@ -445,6 +495,21 @@ impl TargetLoader {
                 )));
             }
         };
+
+        // Reject truncated or corrupt downloads before publishing them to the
+        // cache, so concurrent readers never genotype against a partial catalog.
+        if let Some(expected) = expected_len
+            && body.len() as u64 != expected
+        {
+            return Err(DownloadError::FallbackToCache(format!(
+                "incomplete download ({} of {} bytes received)",
+                body.len(),
+                expected
+            )));
+        }
+        if let Err(msg) = Self::validate_catalog_bytes(&body, cache_file) {
+            return Err(DownloadError::FallbackToCache(msg));
+        }
 
         // Write to a temporary file in the same directory, then atomically rename.
         // This prevents concurrent readers from seeing a partially-written file.
@@ -465,6 +530,35 @@ impl TargetLoader {
             return Err(DownloadError::InMemoryData(body.to_vec()));
         }
         Ok(())
+    }
+
+    /// Validate downloaded catalog bytes before they are published to the cache.
+    /// For gzipped catalogs this verifies the gzip stream decompresses cleanly
+    /// (catching truncated transfers); for all catalogs it requires at least one
+    /// non-empty, non-comment record line.
+    fn validate_catalog_bytes(body: &[u8], cache_file: &std::path::Path) -> Result<(), String> {
+        if body.is_empty() {
+            return Err("downloaded catalog is empty".to_string());
+        }
+        let is_gz = cache_file
+            .extension()
+            .map(|e| e.eq_ignore_ascii_case("gz"))
+            .unwrap_or(false);
+        let text = if is_gz {
+            Self::decompress_gzip(body)
+                .map_err(|e| format!("downloaded gzip catalog is corrupt or incomplete: {}", e))?
+        } else {
+            String::from_utf8_lossy(body).into_owned()
+        };
+        let has_record = text.lines().any(|l| {
+            let t = l.trim();
+            !t.is_empty() && !t.starts_with('#')
+        });
+        if has_record {
+            Ok(())
+        } else {
+            Err("downloaded catalog contains no records".to_string())
+        }
     }
 
     /// Decompress gzipped data
@@ -934,5 +1028,38 @@ mod tests {
                     .join(", ")
             );
         }
+    }
+
+    #[test]
+    fn test_validate_catalog_bytes() {
+        use flate2::Compression;
+        use flate2::write::GzEncoder;
+        use std::path::Path;
+
+        let bed = b"chr1\t100\t200\tCAG\nchr2\t300\t400\tGT\n";
+
+        // Plain catalog with records is accepted.
+        assert!(TargetLoader::validate_catalog_bytes(bed, Path::new("catalog.bed")).is_ok());
+
+        // Empty body is rejected.
+        assert!(TargetLoader::validate_catalog_bytes(b"", Path::new("catalog.bed")).is_err());
+
+        // Body with only comments/blank lines has no records and is rejected.
+        assert!(
+            TargetLoader::validate_catalog_bytes(b"# header only\n\n", Path::new("catalog.bed"))
+                .is_err()
+        );
+
+        // A valid gzip catalog (judged by the .gz extension) is accepted.
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(bed).unwrap();
+        let gz = encoder.finish().unwrap();
+        assert!(TargetLoader::validate_catalog_bytes(&gz, Path::new("catalog.bed.gz")).is_ok());
+
+        // Truncated gzip stream fails the decompression check.
+        let truncated = &gz[..gz.len() / 2];
+        assert!(
+            TargetLoader::validate_catalog_bytes(truncated, Path::new("catalog.bed.gz")).is_err()
+        );
     }
 }
