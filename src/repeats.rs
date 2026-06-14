@@ -562,23 +562,31 @@ impl TargetLoader {
     }
 
     /// Decompress gzipped data
+    ///
+    /// Uses `MultiGzDecoder` so that block-gzip (BGZF) catalogs, which are a
+    /// concatenation of many independent gzip members, are decoded in full.
+    /// A plain `GzDecoder` would stop after the first member and silently return
+    /// only a small prefix of the catalog.
     fn decompress_gzip(data: &[u8]) -> Result<String, std::io::Error> {
-        use flate2::read::GzDecoder;
+        use flate2::read::MultiGzDecoder;
         use std::io::Read;
 
-        let mut decoder = GzDecoder::new(data);
+        let mut decoder = MultiGzDecoder::new(data);
         let mut decompressed = String::new();
         decoder.read_to_string(&mut decompressed)?;
         Ok(decompressed)
     }
 
     /// Read from a gzipped BED file
+    ///
+    /// Uses `MultiGzDecoder` so block-gzip (BGZF) catalogs are read in full
+    /// rather than truncated to their first gzip member.
     fn from_gzipped_bed(
         path: &str,
         chrom_lengths: HashMap<String, u64>,
         max_locus: Option<u32>,
     ) -> Self {
-        use flate2::read::GzDecoder;
+        use flate2::read::MultiGzDecoder;
         use std::io::Read;
 
         let file = std::fs::File::open(path).unwrap_or_else(|e| {
@@ -586,7 +594,7 @@ impl TargetLoader {
             std::process::exit(1);
         });
 
-        let mut decoder = GzDecoder::new(file);
+        let mut decoder = MultiGzDecoder::new(file);
         let mut contents = String::new();
         decoder.read_to_string(&mut contents).unwrap_or_else(|e| {
             eprintln!("ERROR: Failed to decompress gzipped BED file {}: {}", path, e);
@@ -1061,5 +1069,27 @@ mod tests {
         assert!(
             TargetLoader::validate_catalog_bytes(truncated, Path::new("catalog.bed.gz")).is_err()
         );
+    }
+
+    #[test]
+    fn test_decompress_multimember_gzip() {
+        // Block-gzip (BGZF) catalogs are a concatenation of independent gzip
+        // members. The decoder must read every member, not just the first one.
+        use flate2::Compression;
+        use flate2::write::GzEncoder;
+
+        let member = |bytes: &[u8]| {
+            let mut e = GzEncoder::new(Vec::new(), Compression::default());
+            e.write_all(bytes).unwrap();
+            e.finish().unwrap()
+        };
+
+        let mut concatenated = member(b"chr1\t100\t200\tCAG\n");
+        concatenated.extend(member(b"chr2\t300\t400\tGT\n"));
+        concatenated.extend(member(b"chr3\t500\t600\tAT\n"));
+
+        let text = TargetLoader::decompress_gzip(&concatenated).expect("multi-member gzip decodes");
+        let records: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+        assert_eq!(records.len(), 3, "all gzip members must be decoded, got: {:?}", records);
     }
 }

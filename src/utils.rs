@@ -1,4 +1,4 @@
-use flate2::read::GzDecoder;
+use flate2::read::MultiGzDecoder;
 use noodles_bgzf as bgzf;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read};
@@ -87,7 +87,7 @@ pub fn reader(filename: &str) -> BufReader<Box<dyn Read>> {
             eprintln!("\nPlease check that the file exists and you have permission to read it.");
             std::process::exit(1);
         });
-        BufReader::new(Box::new(GzDecoder::new(file)) as Box<dyn Read>)
+        BufReader::new(Box::new(MultiGzDecoder::new(file)) as Box<dyn Read>)
     } else if is_gzip_file(filename) {
         // Handle gzip files without .gz extension
         let file = File::open(path).unwrap_or_else(|e| {
@@ -96,7 +96,7 @@ pub fn reader(filename: &str) -> BufReader<Box<dyn Read>> {
             eprintln!("\nPlease check that the file exists and you have permission to read it.");
             std::process::exit(1);
         });
-        BufReader::new(Box::new(GzDecoder::new(file)) as Box<dyn Read>)
+        BufReader::new(Box::new(MultiGzDecoder::new(file)) as Box<dyn Read>)
     } else {
         // Handle uncompressed files
         let file = File::open(path).unwrap_or_else(|e| {
