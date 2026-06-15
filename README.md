@@ -823,3 +823,7 @@ inquiSTR relate combined.tsv --output relatedness.tsv
 ## 🤝 Contributing
 
 Contributions are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, code quality guidelines, and instructions on how to contribute.
+
+## Citation
+
+If you use inquiSTR in your research, please cite our [preprint](https://www.biorxiv.org/content/10.64898/2026.06.09.731080v1).
