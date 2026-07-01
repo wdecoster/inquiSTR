@@ -30,7 +30,7 @@ clap = { version = "4.6.0", features = ["derive"] }
 rust-htslib = { git = "https://github.com/wdecoster/rust-htslib.git" }
 log = "0.4.30"
 env_logger = "0.11.10"
-bio = "3.0.0"
+bio = "4.0.1"
 rayon = "1.11.0"
 flate2 = "1.1.8"
 histo_fp = "0.2.1"
