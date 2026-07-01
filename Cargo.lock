@@ -1493,7 +1493,7 @@ dependencies = [
 [[package]]
 name = "kuva"
 version = "0.2.0"
-source = "git+https://github.com/wdecoster/kuva.git?branch=manhattan-label-collision-avoidance#b2ace887cad15d61e13b5f437387b41c587cdef7"
+source = "git+https://github.com/wdecoster/kuva.git?branch=manhattan-label-collision-avoidance#ed328001b3049f0740a5101def80726fd052a773"
 dependencies = [
  "chrono",
  "colorous",
