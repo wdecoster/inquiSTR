@@ -96,8 +96,8 @@ pub fn genotype_repeats(
         && !bam.starts_with("https://")
         && !bam.starts_with("ftp://")
     {
-        error!("ERROR: path to bam file {} is not valid!\n\n", &bam);
-        return Err(InquiSTRError::new(format!("Path to bam file {} is not valid", &bam)));
+        error!("ERROR: path to bam file {} is not valid!\n\n", bam);
+        return Err(InquiSTRError::new(format!("Path to bam file {} is not valid", bam)));
     };
 
     // Unified batch-level producer-consumer approach for both single and multi-threaded
