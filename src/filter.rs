@@ -305,7 +305,7 @@ fn determine_columns_to_keep(
     }
 
     // Validate all column pairs upfront
-    for (pair_index, column_pair) in sample_columns.chunks_exact(2).enumerate() {
+    for (pair_index, column_pair) in sample_columns.as_chunks::<2>().0.iter().enumerate() {
         if let Err(e) = validate_column_pair(column_pair, pair_index) {
             eprintln!("ERROR: Invalid sample column structure: {}", e);
             eprintln!(
@@ -320,7 +320,9 @@ fn determine_columns_to_keep(
     if samples_to_keep.is_none() && samples_to_drop.is_none() {
         let all_indices: Vec<usize> = (0..header_fields.len()).collect();
         let all_samples: Vec<String> = sample_columns
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|pair| clean_sample_name(pair[0]).to_string())
             .collect();
         return (all_indices, all_samples);
@@ -333,7 +335,7 @@ fn determine_columns_to_keep(
         // Keep only specified samples
         let keep_set: HashSet<String> = to_keep.iter().cloned().collect();
 
-        for (i, column_pair) in sample_columns.chunks_exact(2).enumerate() {
+        for (i, column_pair) in sample_columns.as_chunks::<2>().0.iter().enumerate() {
             let sample_name = clean_sample_name(column_pair[0]);
 
             if keep_set.contains(sample_name) {
@@ -357,7 +359,9 @@ fn determine_columns_to_keep(
             }
             eprintln!("\nAvailable samples:");
             let mut available: Vec<String> = sample_columns
-                .chunks_exact(2)
+                .as_chunks::<2>()
+                .0
+                .iter()
                 .map(|pair| clean_sample_name(pair[0]).to_string())
                 .collect();
             available.sort();
@@ -371,7 +375,7 @@ fn determine_columns_to_keep(
         // Drop specified samples, keep all others
         let drop_set: HashSet<String> = to_drop.iter().cloned().collect();
 
-        for (i, column_pair) in sample_columns.chunks_exact(2).enumerate() {
+        for (i, column_pair) in sample_columns.as_chunks::<2>().0.iter().enumerate() {
             let sample_name = clean_sample_name(column_pair[0]);
 
             if !drop_set.contains(sample_name) {
@@ -387,7 +391,9 @@ fn determine_columns_to_keep(
 
         // Check if all dropped samples existed
         let all_samples: Vec<String> = sample_columns
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|pair| clean_sample_name(pair[0]).to_string())
             .collect();
         let found_samples: HashSet<_> = all_samples.into_iter().collect();
