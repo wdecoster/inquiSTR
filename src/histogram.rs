@@ -1,5 +1,5 @@
+use crate::histo::Histogram;
 use crate::locus_search::{LocusSearchConfig, OverlapStrategy, select_overlapping_locus};
-use histo_fp::Histogram;
 use std::path::PathBuf;
 
 pub fn histogram(combined: PathBuf, region: String) {
@@ -44,7 +44,7 @@ pub fn histogram(combined: PathBuf, region: String) {
 
     let locus_match = select_overlapping_locus(config);
 
-    let mut histogram = Histogram::with_buckets(100, Some(2));
+    let mut histogram = Histogram::with_buckets(100);
     for value in locus_match.values {
         if !value.is_nan() {
             histogram.add(value);

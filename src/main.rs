@@ -210,6 +210,7 @@ pub mod errors;
 pub mod filetype;
 pub mod filter;
 pub mod genotype_batch;
+pub mod histo;
 pub mod histogram;
 pub mod locus_search;
 pub mod optimize;
