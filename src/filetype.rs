@@ -22,6 +22,9 @@ pub enum FileType {
     IndividualKmer,
     CombinedKmer,
     TargetKmer,
+    /// Per-locus allele-length summary produced by `varindex`, or imported from a published
+    /// population table. Carries an optional variability-index column.
+    LocusStats,
 }
 
 impl FileType {
@@ -57,6 +60,7 @@ pub fn read_file_type_metadata(file_path: &Path) -> Option<FileType> {
                 "individual_kmer" => Some(FileType::IndividualKmer),
                 "combined_kmer" => Some(FileType::CombinedKmer),
                 "target_kmer" => Some(FileType::TargetKmer),
+                "locus_stats" => Some(FileType::LocusStats),
                 _ => None,
             };
         } else if !line.starts_with('#') {
