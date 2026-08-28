@@ -129,6 +129,9 @@ fn combine_str_files(calls: Vec<PathBuf>, _actual_threads: usize) {
             individual_files.len()
         );
 
+        // The cohort-merge path must be checked too: incremental cohort building is the
+        // workflow most likely to mix catalogs over time.
+        verify_provenance(&calls);
         merge_combined_files(combined_files, individual_files);
     } else {
         // All files are individual files - use original logic
@@ -144,8 +147,12 @@ fn combine_str_files(calls: Vec<PathBuf>, _actual_threads: usize) {
             std::process::exit(1);
         }
 
+        // Refuse mismatched inputs before any of them are merged
+        let provenance = verify_provenance(&calls);
+        let _ = &provenance;
+
         // Output combined header
-        output_combined_header(&headers);
+        output_combined_header(&headers, &provenance);
 
         // Process data with parallel chunked reading
         process_data_parallel(&calls);
@@ -268,18 +275,11 @@ fn merge_combined_files(combined_files: Vec<PathBuf>, individual_files: Vec<Path
         individual_files
             .iter()
             .map(|file| {
-                let mut reader = reader(&file.to_string_lossy()).lines();
-                reader
-                    .next()
-                    .unwrap_or_else(|| {
-                        eprintln!("Error: File is empty: {}", file.display());
-                        std::process::exit(1);
-                    })
-                    .unwrap_or_else(|e| {
-                        eprintln!("Error: Failed to read file: {}", file.display());
-                        eprintln!("Reason: {}", e);
-                        std::process::exit(1);
-                    })
+                // Skip the `#` metadata block. Reading the raw first line here saw
+                // `# file_type=individual_call` instead of the column header, concluded the
+                // file had no header, and rejected every mixed combine as a header mismatch.
+                let mut lines = reader(&file.to_string_lossy()).lines();
+                crate::utils::skip_metadata_lines(&mut lines, &file.to_string_lossy())
             })
             .collect()
     };
@@ -377,7 +377,10 @@ fn merge_combined_files(combined_files: Vec<PathBuf>, individual_files: Vec<Path
             if fields.len() < 5 {
                 panic!("Invalid individual file header format: {}", header);
             }
-            merged_header.extend(&fields[3..]);
+            // All four fixed columns, not three: `info` is already contributed by the
+            // combined file, and taking it again produced a duplicate column in the header
+            // while the data rows carried only one.
+            merged_header.extend(&fields[crate::filetype::STR_FIXED_COLUMNS..]);
         }
 
         println!("{}", merged_header.join("\t"));
@@ -387,6 +390,9 @@ fn merge_combined_files(combined_files: Vec<PathBuf>, individual_files: Vec<Path
 
     // Read first combined file data into HashMap
     let mut combined_data: HashMap<String, String> = HashMap::new();
+    // Insertion order is kept separately so the output is deterministic: the merge below is
+    // keyed through a HashMap, whose iteration order is not.
+    let mut combined_order: Vec<String> = Vec::new();
 
     for (line_num, line_result) in combined_reader.enumerate() {
         let line = line_result.unwrap_or_else(|e| {
@@ -401,7 +407,9 @@ fn merge_combined_files(combined_files: Vec<PathBuf>, individual_files: Vec<Path
 
         // Use chr:start-end as key
         let key = format!("{}:{}−{}", fields[0], fields[1], fields[2]);
-        combined_data.insert(key, line);
+        if combined_data.insert(key.clone(), line).is_none() {
+            combined_order.push(key);
+        }
     }
 
     if combined_data.is_empty() {
@@ -461,7 +469,9 @@ fn merge_combined_files(combined_files: Vec<PathBuf>, individual_files: Vec<Path
                 merged_loci += 1;
             } else {
                 // New locus - add it
-                combined_data.insert(key, line);
+                if combined_data.insert(key.clone(), line).is_none() {
+                    combined_order.push(key);
+                }
                 new_loci += 1;
             }
         }
@@ -473,9 +483,11 @@ fn merge_combined_files(combined_files: Vec<PathBuf>, individual_files: Vec<Path
     let mut individual_readers: Vec<_> = individual_files
         .iter()
         .map(|file| {
+            // Skip the metadata block as well as the column header. Advancing by a single line
+            // left the reader inside the `#` block, and the first "data" line was metadata.
             let mut file_reader = reader(&file.to_string_lossy()).lines();
             if has_individual_headers {
-                file_reader.next(); // Skip header
+                crate::utils::skip_metadata_lines(&mut file_reader, &file.to_string_lossy());
             }
             file_reader
         })
@@ -558,14 +570,28 @@ fn merge_combined_files(combined_files: Vec<PathBuf>, individual_files: Vec<Path
         // Add combined file sample columns
         merged_fields.extend(&combined_fields[3..]);
 
-        // Add individual file sample columns
+        // Add individual file sample columns, skipping their `info`: the combined file already
+        // supplied it above, and taking it again added a spurious column per input file.
         for line in &individual_lines {
             let fields: Vec<&str> = line.split('\t').collect();
-            merged_fields.extend(&fields[3..]);
+            merged_fields.extend(&fields[crate::filetype::STR_FIXED_COLUMNS..]);
         }
 
         println!("{}", merged_fields.join("\t"));
         processed_lines += 1;
+    }
+
+    // Merging combined files with no individual files to add is a complete operation on its
+    // own, but the loop above is driven by individual-file readers and never runs. Without
+    // this the merged cohort was assembled in memory and then silently discarded, leaving a
+    // header-only file and a zero exit status.
+    if individual_files.is_empty() {
+        for key in &combined_order {
+            if let Some(line) = combined_data.get(key) {
+                println!("{}", line);
+                processed_lines += 1;
+            }
+        }
     }
 
     eprintln!("Processed {} loci", processed_lines);
@@ -762,6 +788,100 @@ fn process_kmer_data(calls: &[PathBuf]) {
 }
 
 /// Read and validate headers from all files
+/// Read one `# key=value` metadata field from a file's header block
+fn read_metadata_field(path: &Path, key: &str) -> Option<String> {
+    let prefix = format!("# {}=", key);
+    for line in reader(&path.to_string_lossy()).lines() {
+        let line = line.ok()?;
+        if let Some(v) = line.strip_prefix(&prefix) {
+            return Some(v.trim().to_string());
+        }
+        if !line.starts_with('#') {
+            break;
+        }
+    }
+    None
+}
+
+/// Refuse to combine files that were called against different loci or a different genome.
+///
+/// Merging them would line up rows that do not correspond, and nothing downstream could detect
+/// it. Files written before provenance was recorded carry no fields; those are warned about,
+/// not rejected, so existing data stays usable.
+fn verify_provenance(calls: &[PathBuf]) -> (Option<String>, Option<String>, Option<String>) {
+    let mut catalog: Option<String> = None;
+    let mut catalog_digest: Option<String> = None;
+    let mut genome_digest: Option<String> = None;
+    let mut without_catalog = 0usize;
+    let mut without_genome = 0usize;
+
+    for path in calls {
+        let c = read_metadata_field(path, "catalog");
+        let cd = read_metadata_field(path, "catalog_sha256");
+        let gd = read_metadata_field(path, "genome_sha256");
+        if cd.is_none() {
+            without_catalog += 1;
+        }
+        if gd.is_none() {
+            without_genome += 1;
+        }
+        for (label, seen, found) in [
+            ("catalog_sha256", &mut catalog_digest, &cd),
+            ("genome_sha256", &mut genome_digest, &gd),
+        ] {
+            if crate::provenance::fields_conflict(seen.as_deref(), found.as_deref()) {
+                eprintln!(
+                    "ERROR: {} was called against a different {} than the earlier inputs.",
+                    path.display(),
+                    if label == "genome_sha256" {
+                        "reference genome"
+                    } else {
+                        "catalog"
+                    }
+                );
+                eprintln!("  expected {}", seen.as_deref().unwrap_or("?"));
+                eprintln!("  found    {}", found.as_deref().unwrap_or("?"));
+                eprintln!(
+                    "Combining these would align rows that do not describe the same loci. \
+                     Re-run the affected samples against the same catalog and reference."
+                );
+                std::process::exit(1);
+            }
+            if seen.is_none() {
+                *seen = found.clone();
+            }
+        }
+        if catalog.is_none() {
+            catalog = c;
+        }
+    }
+    for (label, missing) in [
+        ("catalog", without_catalog),
+        ("reference genome", without_genome),
+    ] {
+        if missing > 0 {
+            eprintln!(
+                "Warning: {} of {} input files record no {} fingerprint and could not be \
+                 checked against the others.",
+                missing,
+                calls.len(),
+                label
+            );
+        }
+    }
+    // A digest is only carried forward when every input agreed on it. Propagating a value that
+    // some inputs never asserted would let the combined file claim provenance it does not have,
+    // and that claim would then pass verification downstream.
+    if without_catalog > 0 {
+        catalog_digest = None;
+        catalog = None;
+    }
+    if without_genome > 0 {
+        genome_digest = None;
+    }
+    (catalog, catalog_digest, genome_digest)
+}
+
 fn read_and_validate_headers(calls: &[PathBuf]) -> Vec<String> {
     let headers: Vec<String> = calls
         .par_iter()
@@ -813,7 +933,10 @@ fn read_and_validate_headers(calls: &[PathBuf]) -> Vec<String> {
 }
 
 /// Output the combined header line
-fn output_combined_header(headers: &[String]) {
+fn output_combined_header(
+    headers: &[String],
+    provenance: &(Option<String>, Option<String>, Option<String>),
+) {
     let first_header_fields: Vec<&str> = headers[0].split('\t').collect();
     if first_header_fields.len() < crate::filetype::STR_MIN_COLUMNS {
         eprintln!("Error: Invalid header format in first file.");
@@ -829,6 +952,16 @@ fn output_combined_header(headers: &[String]) {
     println!("# file_type=combined_call");
     println!("# version={}", crate::VERSION);
     println!("# command=combine");
+    // Carried through so the combined file remains checkable against later inputs
+    if let Some(v) = &provenance.0 {
+        println!("# catalog={}", v);
+    }
+    if let Some(v) = &provenance.1 {
+        println!("# catalog_sha256={}", v);
+    }
+    if let Some(v) = &provenance.2 {
+        println!("# genome_sha256={}", v);
+    }
 
     // Start with chr, begin, end, info
     let mut combined_header = vec![
