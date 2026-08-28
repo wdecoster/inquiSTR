@@ -191,13 +191,19 @@ const MAX_RETRIES: usize = 3;
 
 /// Wrapper around process_sample that retries on transient network errors.
 /// Uses exponential backoff (1s, 2s, 4s) between retries.
+/// Settings shared by every sample in a batch run
+pub struct RunContext<'a> {
+    pub genotype: &'a GenotypeConfig,
+    pub processing: &'a ProcessingConfig,
+    pub reference: &'a Option<String>,
+    pub provenance: &'a crate::provenance::Provenance,
+}
+
 fn process_sample_with_retry(
     sample: &SampleInfo,
     batches: &[crate::batching::Batch],
     chrom_mapper: &crate::repeats::ChromosomeMapper,
-    genotype_config: &GenotypeConfig,
-    processing_config: &ProcessingConfig,
-    reference: &Option<String>,
+    run: &RunContext<'_>,
     output_path: &Path,
 ) -> Result<(), String> {
     let mut last_err = String::new();
@@ -210,15 +216,7 @@ fn process_sample_with_retry(
             );
             std::thread::sleep(std::time::Duration::from_secs(wait_secs));
         }
-        match process_sample(
-            sample,
-            batches,
-            chrom_mapper,
-            genotype_config,
-            processing_config,
-            reference,
-            output_path,
-        ) {
+        match process_sample(sample, batches, chrom_mapper, run, output_path) {
             Ok(()) => return Ok(()),
             Err(e) if is_transient_error(&e) && attempt < MAX_RETRIES => {
                 last_err = e;
@@ -235,11 +233,11 @@ fn process_sample(
     sample: &SampleInfo,
     batches: &[crate::batching::Batch],
     chrom_mapper: &crate::repeats::ChromosomeMapper,
-    genotype_config: &GenotypeConfig,
-    processing_config: &ProcessingConfig,
-    reference: &Option<String>,
+    run: &RunContext<'_>,
     output_path: &Path,
 ) -> Result<(), String> {
+    let (genotype_config, processing_config, reference, provenance) =
+        (run.genotype, run.processing, run.reference, run.provenance);
     use std::fs::File;
     use std::io::{BufWriter, Write};
 
@@ -354,6 +352,9 @@ fn process_sample(
                 .unwrap_or_else(|| "None".to_string())
         )
         .unwrap();
+        // Same content fingerprints `call` records, so a batch-produced file is checkable
+        // against files from any other path.
+        provenance.write(&mut writer).unwrap();
 
         // Write data header
         writeln!(writer, "chromosome\tbegin\tend\tinfo\t{}_H1\t{}_H2", sample_name, sample_name)
@@ -866,6 +867,19 @@ pub fn batch_process(config: BatchConfig, mode: BatchMode) {
         None
     };
 
+    // Captured once: the catalog is the same for every sample, and the digest is memoised, so
+    // this costs one hash for the whole run rather than one per sample.
+    let provenance = Arc::new(match (&adjusted_mode, samples.first()) {
+        (BatchMode::StrGenotyping { target_config, .. }, Some(first)) => {
+            crate::provenance::Provenance::capture(
+                target_config,
+                &first.bam_path,
+                &config.reference,
+            )
+        }
+        _ => crate::provenance::Provenance::default(),
+    });
+
     // Create progress tracking
     let individual_files = Arc::new(Mutex::new(Vec::new()));
     let failed_samples = Arc::new(Mutex::new(Vec::new()));
@@ -976,9 +990,12 @@ pub fn batch_process(config: BatchConfig, mode: BatchMode) {
                         sample,
                         batches,
                         chrom_mapper,
-                        genotype_config,
-                        processing_config,
-                        &config.reference,
+                        &RunContext {
+                            genotype: genotype_config,
+                            processing: processing_config,
+                            reference: &config.reference,
+                            provenance: &provenance,
+                        },
                         &individual_file,
                     )
                 }
@@ -1080,9 +1097,12 @@ pub fn batch_process(config: BatchConfig, mode: BatchMode) {
                                 sample,
                                 batches,
                                 chrom_mapper,
-                                genotype_config,
-                                processing_config,
-                                &config.reference,
+                                &RunContext {
+                                    genotype: genotype_config,
+                                    processing: processing_config,
+                                    reference: &config.reference,
+                                    provenance: &provenance,
+                                },
                                 &individual_file,
                             )
                         }

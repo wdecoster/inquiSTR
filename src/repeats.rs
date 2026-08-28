@@ -112,6 +112,49 @@ pub struct TargetConfig {
     pub max_locus: Option<u32>,
 }
 
+/// Directory where downloaded preset catalogs are cached
+pub fn preset_cache_dir() -> std::path::PathBuf {
+    std::env::var_os("XDG_CACHE_HOME")
+        .map(std::path::PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .or_else(|| {
+            std::env::var_os("HOME").map(|h| {
+                let home = std::path::PathBuf::from(h);
+                if cfg!(target_os = "macos") {
+                    home.join("Library").join("Caches")
+                } else {
+                    home.join(".cache")
+                }
+            })
+        })
+        .unwrap_or_else(std::env::temp_dir)
+        .join("inquistr")
+}
+
+impl TargetConfig {
+    /// The catalog file this configuration reads, when there is one.
+    ///
+    /// A single `--region` has no catalog file to fingerprint; a `--region-file` is used
+    /// directly, and a preset resolves to its cached download.
+    pub fn catalog_path(&self) -> Option<std::path::PathBuf> {
+        if let Some(f) = &self.region_file {
+            return Some(f.clone());
+        }
+        self.preset.map(|p| preset_cache_dir().join(p.metadata().1))
+    }
+
+    /// Human-readable catalog name for the metadata header
+    pub fn catalog_name(&self) -> Option<String> {
+        if let Some(p) = self.preset {
+            return Some(format!("{:?}", p).to_lowercase());
+        }
+        self.region_file
+            .as_ref()
+            .and_then(|f| f.file_name())
+            .map(|n| n.to_string_lossy().to_string())
+    }
+}
+
 impl TargetConfig {
     /// Get target intervals based on the configuration
     /// Returns both the repeat intervals and the chromosome mapper for ID->name lookups

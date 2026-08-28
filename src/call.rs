@@ -103,6 +103,13 @@ pub fn genotype_repeats(
     // Unified batch-level producer-consumer approach for both single and multi-threaded
     // Batch size is configurable for performance optimization
     let (repeats, chrom_mapper) = targets.get_targets(&bam, &reference)?;
+
+    // Fingerprinted only after `get_targets`, which downloads or refreshes a preset catalog on
+    // demand. Hashing beforehand would digest a stale cached copy - or, on a first run, a file
+    // that does not exist yet. Both digests are memoised, so a per-sample workflow pays the
+    // hash once for a given catalog rather than once per sample.
+    let provenance = crate::provenance::Provenance::capture(&targets, &bam, &reference);
+
     let total_loci = repeats.len();
     let batches = create_batches(repeats, processing.batch_size_kb * 1000, &chrom_mapper); // Convert kb to basepair
     // Note: `repeats` is moved into `batches`, so it's freed when batches are consumed
@@ -167,6 +174,9 @@ pub fn genotype_repeats(
                 .unwrap_or_else(|| "None".to_string())
         )
         .expect("Failed writing metadata.");
+        // Content fingerprints, so that downstream commands can tell whether two files describe
+        // the same loci and the same reference build rather than trusting a name.
+        provenance.write(handle).expect("Failed writing metadata.");
     }
 
     // Write data header to either stdout (if TSV) or temp file (if VCF)
