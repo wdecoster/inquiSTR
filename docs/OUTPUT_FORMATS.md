@@ -17,7 +17,17 @@ Each file starts with metadata comment lines, followed by a column header and th
 # support=<minimum read support threshold>
 # unphased=<true|false>
 # haploid=<comma-separated chromosome names, or None>
+# catalog=<preset name or catalog file name>
+# catalog_sha256=<SHA-256 of the decompressed catalog>
+# genome_sha256=<SHA-256 of the chromosome length map>
 ```
+
+The last three identify *what* was genotyped, by content rather than by name. `catalog_sha256`
+is taken over the decompressed catalog, so a recompressed copy of the same file still matches
+and the value can be checked by hand with `zcat catalog.bed.gz | sha256sum`. `genome_sha256` is
+taken over the sorted chromosome length map from the BAM header, which distinguishes reference
+builds without needing the FASTA. Files produced before inquiSTR recorded provenance carry none
+of the three.
 
 ### Columns
 
@@ -46,7 +56,14 @@ The combined file merges results from multiple individual call files.
 # file_type=combined_call
 # version=<inquiSTR version>
 # command=combine
+# catalog=<preset name or catalog file name>
+# catalog_sha256=<SHA-256 of the decompressed catalog>
+# genome_sha256=<SHA-256 of the chromosome length map>
 ```
+
+`combine` refuses to merge inputs whose `catalog_sha256` or `genome_sha256` disagree — doing so
+would align rows that do not describe the same loci — and carries the agreed values forward.
+Inputs lacking the fields are warned about rather than rejected.
 
 ### Columns
 

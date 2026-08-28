@@ -197,6 +197,7 @@ struct BatchUnmappedArgs {
     combine_revcomp: bool,
 }
 
+pub mod annotate;
 pub mod assoc;
 pub mod bam_pool;
 pub mod bam_utils;
@@ -213,16 +214,22 @@ pub mod genotype_batch;
 pub mod histo;
 pub mod histogram;
 pub mod locus_search;
+pub mod locus_stats;
 pub mod optimize;
 pub mod outlier;
+pub mod outlier_methods;
+pub mod outlier_scan;
 pub mod pca;
 pub mod plot;
+pub mod prioritize;
+pub mod provenance;
 pub mod query;
 pub mod relate;
 pub mod repeats;
 pub mod sample_info;
 pub mod unmapped;
 pub mod utils;
+pub mod varindex;
 pub mod vcf;
 
 // The arguments end up in the Cli struct
@@ -373,17 +380,54 @@ enum Commands {
         #[clap(value_parser, required = true)]
         combined: PathBuf,
 
-        /// minimal length of expansion to be present in cohort
-        #[clap(long, value_parser, default_value_t = 10)]
+        /// Skip loci where no allele reaches this length change relative to the reference.
+        /// Applied to raw base pairs before scoring, so it is a blunt pre-filter: leave it at
+        /// 0 and use --min-units, which is in repeat units and comparable across loci.
+        #[clap(long, value_parser, default_value_t = 0)]
         minsize: u32,
 
-        /// zscore cutoff to decide if a value is an outlier
+        /// zscore cutoff for the zscore and robustz methods
         #[clap(short, long, value_parser, default_value_t = 3.0)]
-        zscore: f32,
+        zscore: f64,
 
         /// method to test for outliers
-        #[clap(long, value_enum, value_parser, default_value_t = outlier::Method::Zscore)]
-        method: outlier::Method,
+        #[clap(long, value_enum, value_parser, default_value_t = outlier_methods::Method::Percentile)]
+        method: outlier_methods::Method,
+
+        /// which allele to test; `both` tests each and reports the more extreme
+        #[clap(long, value_enum, value_parser, default_value_t = outlier_scan::Zygosity::Both)]
+        zygosity: outlier_scan::Zygosity,
+
+        /// Report an allele when at most this many reference alleles are at least as long.
+        /// Zero means longer than everything in the reference (percentile method only).
+        #[clap(long, value_parser, default_value_t = 0)]
+        max_exceedance: usize,
+
+        /// Minimum score, in repeat units, for a result to be reported
+        #[clap(long, value_parser, default_value_t = 0.0)]
+        min_units: f64,
+
+        /// File of related-sample groups, one group per line, tab or comma separated.
+        /// Members are excluded from each other's reference distribution.
+        #[clap(long, value_parser)]
+        related: Option<PathBuf>,
+
+        /// Also emit a row for each uncalled genotype. Produces one row per missing call, so
+        /// it is intended for use with a restricted set of loci.
+        #[clap(long, value_parser)]
+        report_dropout: bool,
+
+        /// Skip loci called in fewer than this fraction of alleles
+        #[clap(long, value_parser, default_value_t = 0.0)]
+        min_call_rate: f64,
+
+        /// Restrict the scan to loci overlapping this BED file
+        #[clap(long, value_parser)]
+        regions: Option<PathBuf>,
+
+        /// Output file; writes to stdout when omitted. A .gz suffix compresses the output.
+        #[clap(short, long, value_parser)]
+        output: Option<PathBuf>,
 
         /// sample(s) to consider: can be a single sample name, comma-separated sample names, or a file path containing sample names (one per line)
         #[clap(short = 's', long, value_parser)]
@@ -671,6 +715,116 @@ enum Commands {
         #[clap(short, long, value_parser, default_value = "optimize_results")]
         output: PathBuf,
     },
+    /// Join a published population table to a local catalog, producing an auditable mapping
+    #[clap(arg_required_else_help = true)]
+    Annotate {
+        /// Published locus statistics table (e.g. from the Zenodo release)
+        #[clap(long = "plvi", value_parser, required = true)]
+        table: PathBuf,
+
+        /// BED catalog the local calls were made against
+        #[clap(long, value_parser, required = true)]
+        catalog: PathBuf,
+
+        /// Output mapping file
+        #[clap(long = "out", short, value_parser, required = true)]
+        output: PathBuf,
+
+        /// Which quantity the imported table describes. `lps` is the published PLVI axis;
+        /// `length` is the axis inquiSTR measures. They are not interchangeable.
+        #[clap(long, value_enum, value_parser)]
+        axis: Option<annotate::Axis>,
+
+        /// Genome build of the local catalog
+        #[clap(long, value_parser, default_value = "GRCh38")]
+        build: String,
+
+        /// Minimum reciprocal overlap for a non-exact match
+        #[clap(long, value_parser, default_value_t = 0.5)]
+        min_overlap: f64,
+
+        /// Refuse to write a mapping if fewer than this fraction of catalog loci map
+        #[clap(long, value_parser, default_value_t = 0.5)]
+        min_match_rate: f64,
+
+        /// Minimum loci per motif-length bin when ranking imported values
+        #[clap(long, value_parser, default_value_t = 1000)]
+        min_bin_size: usize,
+    },
+    /// Rank outlier calls per sample using locus-level evidence
+    #[clap(arg_required_else_help = true)]
+    Prioritize {
+        /// Outlier calls produced by `inquiSTR outlier`
+        #[clap(value_parser, required = true)]
+        calls: PathBuf,
+
+        /// Locus statistics table produced by `inquiSTR varindex`
+        #[clap(long, value_parser, required = true)]
+        index: PathBuf,
+
+        /// Optional external annotation mapping produced by `inquiSTR annotate`
+        #[clap(long, value_parser)]
+        annotation: Option<PathBuf>,
+
+        /// Output file; writes to stdout when omitted
+        #[clap(short, long, value_parser)]
+        output: Option<PathBuf>,
+
+        /// Keep loci in the top percent by variability index
+        #[clap(long, value_parser, default_value_t = 5.0)]
+        top_index_pct: f64,
+
+        /// Keep at most this many candidates per sample; 0 keeps all
+        #[clap(long, value_parser, default_value_t = 0)]
+        top_n: usize,
+
+        /// Drop alleles longer than this multiple of the locus reference length; 0 disables.
+        /// Very large multiples are usually alignment artifacts rather than repeats.
+        #[clap(long, value_parser, default_value_t = 0.0)]
+        max_fold: f64,
+
+        /// Require the locus to have at least this many called alleles
+        #[clap(long, value_parser, default_value_t = 0)]
+        min_locus_alleles: usize,
+
+        /// Flag samples producing more than this multiple of the cohort median call count;
+        /// 0 disables
+        #[clap(long, value_parser, default_value_t = 5.0)]
+        sample_outlier_factor: f64,
+
+        /// Write the filtering funnel to this file as well as to stderr
+        #[clap(long, value_parser)]
+        funnel: Option<PathBuf>,
+    },
+    /// Summarise a combined file per locus and compute the length-variability index
+    #[clap(arg_required_else_help = true)]
+    Varindex {
+        /// Combined file of calls
+        #[clap(value_parser, required = true)]
+        combined: PathBuf,
+
+        /// Output locus statistics file
+        #[clap(short, long, value_parser, required = true)]
+        output: PathBuf,
+
+        /// Number of threads to use
+        #[clap(short = 't', long, value_parser, default_value_t = 1)]
+        threads: usize,
+
+        /// Minimum number of loci a motif-length bin must hold before loci in it can be ranked.
+        /// Adjacent motif lengths are merged until this is met, so that no locus is ranked
+        /// against a group too small to be meaningful.
+        #[clap(long, value_parser, default_value_t = 1000)]
+        min_bin_size: usize,
+
+        /// Minimum number of called alleles a locus needs before it is assigned an index
+        #[clap(long, value_parser, default_value_t = 10)]
+        min_alleles: usize,
+
+        /// Temporary directory for intermediate files (default: alongside the output)
+        #[clap(long, value_parser)]
+        tmpdir: Option<PathBuf>,
+    },
     /// Convert VCF files to inquiSTR format
     #[clap(arg_required_else_help = true)]
     Convert {
@@ -801,13 +955,70 @@ fn main() {
         } => {
             filter::filter(input, minlen, minchange, bed, call_rate, min_cv, samples, drop_samples);
         }
-        Commands::Outlier { combined, minsize, zscore, method, sample, threads, count } => {
+        Commands::Outlier {
+            combined,
+            minsize,
+            zscore,
+            method,
+            zygosity,
+            max_exceedance,
+            min_units,
+            related,
+            report_dropout,
+            min_call_rate,
+            regions,
+            output,
+            sample,
+            threads,
+            count,
+        } => {
             if !combined.exists() {
                 eprintln!("ERROR: Combined file does not exist: {}", combined.display());
                 std::process::exit(1);
             }
-            let subset = sample.map(|s| utils::parse_sample_input(&s));
-            outlier::outlier(combined, minsize, zscore, method, subset, threads, count);
+            if count.is_some() {
+                eprintln!(
+                    "Warning: --count is no longer produced by outlier; per-sample counts are \
+                     part of the prioritize funnel report."
+                );
+            }
+            // Kmer frequency files are a different data shape - one value per sample, no
+            // alleles and no motif - and still use the original scan and output format.
+            if filetype::is_kmer_file(&combined) {
+                let legacy = match method {
+                    outlier_methods::Method::Zscore => outlier::Method::Zscore,
+                    outlier_methods::Method::Dbscan => outlier::Method::Dbscan,
+                    other => {
+                        eprintln!(
+                            "ERROR: --method {} is not available for kmer frequency files; \
+                             use zscore or dbscan.",
+                            other.as_str()
+                        );
+                        std::process::exit(1);
+                    }
+                };
+                eprintln!("Note: kmer frequency input detected; using the original output format.");
+                let subset = sample.map(|s| utils::parse_sample_input(&s));
+                outlier::outlier(combined, minsize, zscore as f32, legacy, subset, threads, count);
+                return;
+            }
+            let samples = sample.map(|s| utils::parse_sample_input(&s));
+            outlier_scan::scan(outlier_scan::ScanConfig {
+                combined,
+                output,
+                method,
+                threads,
+                zygosity,
+                max_exceedance,
+                zscore,
+                min_units,
+                minsize,
+                samples,
+                related,
+                report_dropout,
+                min_call_rate,
+                regions,
+            });
         }
         Commands::Query { combined, region } => {
             query::query(combined, region);
@@ -972,6 +1183,62 @@ fn main() {
                     std::process::exit(1);
                 }
             }
+        }
+        Commands::Annotate {
+            table,
+            catalog,
+            output,
+            axis,
+            build,
+            min_overlap,
+            min_match_rate,
+            min_bin_size,
+        } => {
+            annotate::annotate(annotate::AnnotateConfig {
+                table,
+                catalog,
+                output,
+                axis,
+                build,
+                min_overlap,
+                min_match_rate,
+                min_bin_size,
+            });
+        }
+        Commands::Prioritize {
+            calls,
+            index,
+            annotation,
+            output,
+            top_index_pct,
+            top_n,
+            max_fold,
+            min_locus_alleles,
+            sample_outlier_factor,
+            funnel,
+        } => {
+            prioritize::prioritize(prioritize::PrioritizeConfig {
+                calls,
+                index,
+                annotation,
+                output,
+                top_index_pct,
+                top_n,
+                max_fold,
+                min_locus_alleles,
+                sample_outlier_factor,
+                funnel,
+            });
+        }
+        Commands::Varindex { combined, output, threads, min_bin_size, min_alleles, tmpdir } => {
+            varindex::varindex(varindex::VarIndexConfig {
+                combined,
+                output,
+                threads,
+                min_bin_size,
+                min_alleles,
+                tmpdir,
+            });
         }
         Commands::Convert { vcf } => {
             if let Err(e) = convert::convert_vcf(vcf) {

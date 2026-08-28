@@ -30,7 +30,10 @@ For detailed options, presets and additional commands, see the full documentatio
   - [inquiSTR convert - VCF to inquiSTR Format](#inquistr-convert---vcf-to-inquistr-format)
   - [inquiSTR filter - Filter STR Data](#inquistr-filter---filter-str-data)
   - [inquiSTR query - Genotype Lookup](#inquistr-query---genotype-lookup)
+  - [inquiSTR varindex - Locus Variability Index](#inquistr-varindex---locus-variability-index)
   - [inquiSTR outlier - Outlier Detection](#inquistr-outlier---outlier-detection)
+  - [inquiSTR prioritize - Rank Candidates per Sample](#inquistr-prioritize---rank-candidates-per-sample)
+  - [inquiSTR annotate - External Population Annotation](#inquistr-annotate---external-population-annotation)
   - [inquiSTR histogram - Data Visualization](#inquistr-histogram---data-visualization)
   - [inquiSTR plot - Group Comparison Plots](#inquistr-plot---group-comparison-plots)
   - [inquiSTR unmapped - Kmer Frequency Analysis](#inquistr-unmapped---kmer-frequency-analysis)
@@ -187,6 +190,13 @@ Available presets:
 - **codis**: CODIS forensic STR markers from the USAT catalog - standard forensic STR markers used for human identification (**20 loci**). See also [Wang et al., 2024](https://link.springer.com/article/10.1186/s12859-022-05021-1).
 
 ### `inquiSTR combine` - Multi-sample Analysis
+
+> **Provenance checking.** `inquiSTR call` records the catalog and reference genome it used as
+> SHA-256 content digests, and `combine` refuses to merge files whose digests disagree — merging
+> them would line up rows that do not describe the same loci. Files produced before inquiSTR
+> recorded provenance carry no digests and are warned about rather than rejected. The digests
+> are memoised on disk, so computing them costs microseconds after the first run for a given
+> catalog. See [docs/OUTPUT_FORMATS.md](docs/OUTPUT_FORMATS.md) for the header fields.
 
 Combine data from multiple samples with `inquiSTR combine`. This command supports either STR call files (from [`inquiSTR call`](#inquistr-call---str-genotyping)) or kmer frequency files (from [`inquiSTR unmapped`](#inquistr-unmapped---kmer-frequency-analysis)), automatically detecting the input format. You can also add new samples to an existing combined file by providing both the combined file and new individual files. This enables efficient cohort expansion without reprocessing all samples. While the input files are validated, the goal is to use inquiSTR combine with files generated for the same loci or motifs.
 
@@ -463,38 +473,179 @@ inquiSTR filter combined.tsv --minchange 10 --bed exons.bed > changes_10bp_codin
 inquiSTR filter combined.tsv --minlen 15 --call-rate 0.9 --min-cv 0.05 > filtered.tsv
 ```
 
+### `inquiSTR varindex` - Locus Variability Index
+
+> **Which tool should you use?** If you have case/control labels or a quantitative phenotype,
+> start with [`inquiSTR association`](#inquistr-association---statistical-association-testing).
+> The `varindex` / `outlier` / `prioritize` pipeline described here finds rare, high-effect
+> expansions where one individual is extreme; common risk alleles carried by many people are
+> largely invisible to it, because each carrier masks the others. See
+> [docs/PRIORITIZATION.md](docs/PRIORITIZATION.md) for the full comparison and a worked example.
+
+Summarise a combined file into one row per locus: the cohort's allele-length distribution, plus
+a variability index. Disease-associated repeats are, as a class, among the most length-variable
+loci in the population for their motif size, so the index is a useful prioritisation signal even
+when no one in your cohort carries an expansion.
+
+Lengths are reported as absolute base pairs, not relative to the reference, so the table can be
+compared directly against published population tables. Loci are ranked within groups of
+comparable motif length, since variability scales with motif size; groups too small to rank
+meaningfully are merged with their neighbours.
+
+```text
+Usage: inquiSTR varindex [OPTIONS] --output <OUTPUT> <COMBINED>
+
+Options:
+  -o, --output <OUTPUT>              Output locus statistics file
+  -t, --threads <THREADS>            Number of threads to use [default: 1]
+      --min-bin-size <MIN_BIN_SIZE>  Minimum loci a motif-length bin must hold before its loci
+                                     can be ranked [default: 1000]
+      --min-alleles <MIN_ALLELES>    Minimum called alleles a locus needs before it is assigned
+                                     an index [default: 10]
+      --tmpdir <TMPDIR>              Temporary directory for intermediate files
+```
+
+**Example:**
+
+```bash
+# A .gz output is compressed; the resulting table is read transparently everywhere
+inquiSTR varindex combined.tsv -o cohort.stats.gz --threads 8
+```
+
 ### `inquiSTR outlier` - Outlier Detection
 
-Identify outliers from combined data using `inquiSTR outlier`. This command works with both STR call data (from [`inquiSTR call`](#inquistr-call---str-genotyping)) and kmer frequency data (from [`inquiSTR unmapped`](#inquistr-unmapped---kmer-frequency-analysis)) (automatically detecting the format), using either z-scores or DBSCAN algorithms.
+Test every allele of every sample against a reference distribution at its locus, and report those
+extreme enough to be worth ranking. Each sample is compared against the rest of the cohort with
+its own alleles removed, so a carrier holding the longest allele at a locus is not measured
+against themselves.
+
+Works with STR call data (from [`inquiSTR call`](#inquistr-call---str-genotyping)) and kmer
+frequency data (from [`inquiSTR unmapped`](#inquistr-unmapped---kmer-frequency-analysis)),
+detecting the format automatically. Kmer input uses the original output format and supports only
+the `zscore` and `dbscan` methods.
+
+Output is a scored table: every row carries a score in repeat units, a significance, and
+method-specific evidence including how many reference alleles it exceeded and how many there
+were. Deciding what counts as a finding is left to
+[`inquiSTR prioritize`](#inquistr-prioritize---rank-candidates-per-sample).
 
 ```text
 Usage: inquiSTR outlier [OPTIONS] <COMBINED>
 
-Arguments:
-  <COMBINED>  combined file from inquiSTR combine (STR calls or kmer frequencies)
-
 Options:
-      --minsize <MINSIZE>  minimal length of expansion to be present in cohort [default: 10]
-  -z, --zscore <ZSCORE>    zscore cutoff to decide if a value is an outlier [default: 3]
-      --method <METHOD>    method to test for outliers [default: zscore] [possible values: zscore, dbscan]
-  -s, --sample <SAMPLE>    sample(s) to consider: can be a single sample name, comma-separated sample names, 
-                           or a file path containing sample names (one per line)
-  -t, --threads <THREADS>  Number of threads to use for parallel processing [default: 1]
-  -h, --help               Print help
+      --method <METHOD>          percentile, robustz, zscore or dbscan [default: percentile]
+      --zygosity <ZYGOSITY>      both, max or min [default: both]
+      --minsize <MINSIZE>        skip loci where no allele reaches this raw bp change; a blunt
+                                 pre-filter, prefer --min-units [default: 0]
+  -z, --zscore <ZSCORE>          cutoff for the zscore and robustz methods [default: 3]
+      --max-exceedance <N>       report an allele when at most this many reference alleles are at
+                                 least as long; 0 means longer than everything [default: 0]
+      --min-units <MIN_UNITS>    minimum score, in repeat units, to report [default: 0]
+      --min-call-rate <RATE>     skip loci called in fewer than this fraction of alleles [default: 0]
+      --related <RELATED>        file of related-sample groups, one per line; members are excluded
+                                 from each other's reference
+      --regions <REGIONS>        restrict the scan to loci overlapping this BED file
+      --report-dropout           also emit a row for each uncalled genotype
+  -s, --sample <SAMPLE>          sample(s) to consider
+  -o, --output <OUTPUT>          output file; stdout when omitted, .gz compresses
+  -t, --threads <THREADS>        number of threads [default: 1]
 ```
 
-**Sample Specification:**
+**Choosing a method:** `percentile` is the default because it assumes nothing about the shape of
+the distribution, which matters for repeat lengths that are often multimodal. `zscore` and
+`robustz` divide by a measure of locus spread — the same quantity the variability index rewards —
+so they are least sensitive at exactly the high-variability loci prioritisation is meant to
+surface.
 
-All specified samples are automatically validated against the combined file to ensure they exist. The `--sample` option accepts three formats either a specific single sample name, a comma-separated list of sample names, or a file path containing sample names (one per line).
+At most loci more than half the cohort carries the same allele, so the median absolute deviation
+is exactly zero and the scale falls back to one repeat unit — the finest difference that means
+anything at a tandem repeat. This keeps the cleanest signals visible, but it also makes the
+z-based methods report considerably more at the default `-z 3` than `percentile` does,
+especially at homopolymers where one repeat unit is a single base. Raise `-z` if the output is
+larger than you want.
+
+**Zygosity:** `both` tests each allele and reports the more extreme. Use `min` for biallelic
+conditions such as RFC1 or FXN, where the *shorter* allele being long is the signal; `max` would
+miss those entirely.
+
+**Related samples:** siblings sharing an expanded allele suppress each other's significance. Pass
+`--related` with one group per line to exclude group members from each other's reference.
 
 **Examples:**
 
 ```bash
-# Find outliers in STR call data using default z-score method with a minimum expansion size
-inquiSTR outlier str_combined.tsv --minsize 100
+# Scan a cohort, writing scored calls for ranking
+inquiSTR outlier combined.tsv -o calls.tsv.gz --threads 8
+```
 
-# Find outliers in kmer frequency data using a z-score cutoff of 2.5 for a few specific samples only
-inquiSTR outlier kmer_combined.tsv --zscore 2.5 --sample "Sample1,Sample2,Sample3"
+### `inquiSTR prioritize` - Rank Candidates per Sample
+
+Join outlier calls to locus-level evidence and rank them within each sample. Neither input
+answers the question alone: the scan knows which alleles are extreme but not which loci matter,
+while the index knows which loci are unstable but nothing about any individual.
+
+Reads only the small derived tables, never the combined call file, so re-ranking at a different
+cutoff takes seconds. Reports a filtering funnel showing how many candidates survive each stage —
+the quickest way to tell whether your thresholds are doing anything.
+
+```text
+Usage: inquiSTR prioritize [OPTIONS] --index <INDEX> <CALLS>
+
+Options:
+      --index <INDEX>              locus statistics table from inquiSTR varindex
+      --annotation <ANNOTATION>    optional mapping from inquiSTR annotate
+      --top-index-pct <PCT>        keep loci in the top percent by variability index [default: 5]
+      --top-n <TOP_N>              keep at most this many candidates per sample; 0 keeps all
+      --max-fold <MAX_FOLD>        drop alleles longer than this multiple of the locus reference
+                                   length; 0 disables [default: 0]
+      --min-locus-alleles <N>      require the locus to have at least this many called alleles
+      --sample-outlier-factor <F>  flag samples producing more than this multiple of the cohort
+                                   median call count [default: 5]
+      --funnel <FUNNEL>            write the filtering funnel to this file as well as to stderr
+  -o, --output <OUTPUT>            output file; stdout when omitted
+```
+
+**On `--max-fold`:** very large multiples of the reference length are usually alignment artifacts
+rather than repeats, but genuine pathogenic expansions can be large too, so the filter is off by
+default. Inspect your own data before setting it.
+
+**Example:**
+
+```bash
+inquiSTR prioritize calls.tsv.gz --index cohort.stats.gz --top-index-pct 5 -o shortlist.tsv
+```
+
+### `inquiSTR annotate` - External Population Annotation
+
+Join a published population table to your catalog, producing an auditable mapping file with a
+reported match rate. This is a separate step rather than a hidden lookup, so you can see how well
+the two sources correspond before any ranking depends on it.
+
+The published index is derived from the longest *pure* segment of each repeat, which inquiSTR
+does not measure. Imported values are therefore named for their own axis (`plvi_lps_external`)
+and never substituted for a locally computed length-based index. Where several published loci
+overlap one of yours, the match is reported as ambiguous and left unvalued rather than resolved
+by taking the largest.
+
+```text
+Usage: inquiSTR annotate [OPTIONS] --plvi <TABLE> --catalog <CATALOG> --out <OUTPUT>
+
+Options:
+      --plvi <TABLE>             published locus statistics table
+      --catalog <CATALOG>        BED catalog your calls were made against
+  -o, --out <OUTPUT>             output mapping file
+      --axis <AXIS>              lps or length - what the imported table measures
+      --build <BUILD>            genome build of your catalog [default: GRCh38]
+      --min-overlap <OVERLAP>    minimum reciprocal overlap for a non-exact match [default: 0.5]
+      --min-match-rate <RATE>    refuse to write a mapping below this match rate [default: 0.5]
+      --min-bin-size <SIZE>      minimum loci per motif-length bin when ranking imported values
+                                 [default: 1000]
+```
+
+**Example:**
+
+```bash
+inquiSTR annotate --plvi population_table.txt.gz --catalog catalog.bed --axis lps -o mapping.tsv
 ```
 
 ### `inquiSTR histogram` - Data Visualization
