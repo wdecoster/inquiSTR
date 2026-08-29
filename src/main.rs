@@ -138,7 +138,7 @@ struct BatchStrArgs {
     #[clap(short = 'R', long, value_parser)]
     region_file: Option<PathBuf>,
 
-    /// Use a predefined TR catalog (pathogenic, adotto, trexplorer, or codis)
+    /// Use a predefined TR catalog (pathogenic, adotto, trexplorer, or codis), downloaded and cached on first use
     #[clap(long, value_parser)]
     preset: Option<repeats::TRPreset>,
 
@@ -257,7 +257,7 @@ enum Commands {
         #[clap(short = 'R', long, value_parser)]
         region_file: Option<PathBuf>,
 
-        /// Use a predefined TR catalog (pathogenic, adotto, trexplorer, or codis)
+        /// Use a predefined TR catalog (pathogenic, adotto, trexplorer, or codis), downloaded and cached on first use
         #[clap(long, value_parser)]
         preset: Option<repeats::TRPreset>,
 
@@ -687,7 +687,7 @@ enum Commands {
         #[clap(short = 'R', long, value_parser)]
         region_file: Option<PathBuf>,
 
-        /// Use a predefined TR catalog (pathogenic, adotto, trexplorer, or codis)
+        /// Use a predefined TR catalog (pathogenic, adotto, trexplorer, or codis), downloaded and cached on first use
         #[clap(long, value_parser)]
         preset: Option<repeats::TRPreset>,
 

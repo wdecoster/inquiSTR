@@ -175,10 +175,42 @@ pub struct TargetLoader {
 }
 
 enum DownloadError {
-    /// Download failed but a cached version may be available
-    FallbackToCache(String),
+    /// Download failed but a cached version may be available. `transport` marks the
+    /// failures that mean "this machine could not reach the server" (as opposed to a
+    /// 404, or a server that answered with something unusable), which are the only
+    /// ones for which offline advice is the right advice.
+    FallbackToCache { msg: String, transport: bool },
     /// Cache write failed but the data is available in memory
     InMemoryData(Vec<u8>),
+}
+
+/// Render an error together with its underlying cause chain.
+///
+/// `reqwest::Error`'s own `Display` stops at "error sending request for url (...)",
+/// which hides the distinction that matters on a cluster: no DNS, no route to the
+/// host, or a proxy that still needs configuring.
+fn describe_error(err: &dyn std::error::Error) -> String {
+    // A cause is dropped only when it repeats the segment before it verbatim:
+    // a substring test would swallow a distinct cause whose text happens to occur
+    // in, say, the URL. The depth cap guards against a pathological chain.
+    let mut msg = err.to_string();
+    let mut previous = msg.clone();
+    let mut source = err.source();
+    let mut depth = 0;
+    while let Some(cause) = source {
+        if depth >= 8 {
+            break;
+        }
+        let text = cause.to_string();
+        if !text.is_empty() && text != previous {
+            msg.push_str(": ");
+            msg.push_str(&text);
+            previous = text;
+        }
+        source = cause.source();
+        depth += 1;
+    }
+    msg
 }
 
 impl TargetLoader {
@@ -401,7 +433,7 @@ impl TargetLoader {
                                 cache_file.display()
                             );
                         }
-                        Err(DownloadError::FallbackToCache(msg)) => {
+                        Err(DownloadError::FallbackToCache { msg, transport }) => {
                             if cache_file.exists() {
                                 eprintln!("Warning: {}, using cached version", msg);
                             } else {
@@ -409,8 +441,31 @@ impl TargetLoader {
                                     "ERROR: Failed to download {} catalog: {}",
                                     preset_name, msg
                                 );
-                                eprintln!("Please check your network connection and try again.");
-                                eprintln!("URL: {}", url);
+                                eprintln!();
+                                if transport {
+                                    eprintln!(
+                                        "If this machine has no internet access (a compute node on an"
+                                    );
+                                    eprintln!(
+                                        "HPC cluster, for example), there are two ways forward:"
+                                    );
+                                } else {
+                                    eprintln!(
+                                        "The server was reachable but did not return a usable catalog."
+                                    );
+                                    eprintln!("Two ways forward:");
+                                }
+                                eprintln!();
+                                eprintln!(
+                                    "  1. Pass your own BED file of target regions with --region-file"
+                                );
+                                eprintln!("     <targets.bed> instead of --preset.");
+                                eprintln!();
+                                eprintln!("  2. Fetch the catalog somewhere with internet access:");
+                                eprintln!("       curl -L -o {} \\", cache_filename);
+                                eprintln!("         {}", url);
+                                eprintln!("     then copy it to this path on this machine:");
+                                eprintln!("       {}", cache_file.display());
                                 std::process::exit(1);
                             }
                         }
@@ -516,13 +571,39 @@ impl TargetLoader {
         cache_file: &std::path::Path,
         cache_dir: &std::path::Path,
     ) -> Result<(), DownloadError> {
-        let resp = match reqwest::blocking::get(url) {
+        // `reqwest::blocking` defaults to a 30 s request timeout, which is re-applied
+        // as a fresh budget for the body read - too tight for the multi-megabyte
+        // catalogs on a slow link. Raise the overall budget, and bound the connect
+        // phase separately so an unreachable host fails promptly and legibly.
+        let client = match reqwest::blocking::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(15))
+            .timeout(std::time::Duration::from_secs(180))
+            .build()
+        {
+            Ok(c) => c,
+            Err(e) => {
+                return Err(DownloadError::FallbackToCache {
+                    msg: format!("Failed to create HTTP client: {}", e),
+                    transport: false,
+                });
+            }
+        };
+
+        let resp = match client.get(url).send() {
             Ok(r) => r,
-            Err(e) => return Err(DownloadError::FallbackToCache(e.to_string())),
+            Err(e) => {
+                return Err(DownloadError::FallbackToCache {
+                    msg: describe_error(&e),
+                    transport: true,
+                });
+            }
         };
 
         if !resp.status().is_success() {
-            return Err(DownloadError::FallbackToCache(format!("HTTP status {}", resp.status())));
+            return Err(DownloadError::FallbackToCache {
+                msg: format!("HTTP status {}", resp.status()),
+                transport: false,
+            });
         }
 
         // Capture the advertised length (if any) before consuming the response,
@@ -532,10 +613,10 @@ impl TargetLoader {
         let body = match resp.bytes() {
             Ok(b) => b,
             Err(e) => {
-                return Err(DownloadError::FallbackToCache(format!(
-                    "Failed to read response body ({})",
-                    e
-                )));
+                return Err(DownloadError::FallbackToCache {
+                    msg: format!("Failed to read response body ({})", describe_error(&e)),
+                    transport: true,
+                });
             }
         };
 
@@ -544,14 +625,13 @@ impl TargetLoader {
         if let Some(expected) = expected_len
             && body.len() as u64 != expected
         {
-            return Err(DownloadError::FallbackToCache(format!(
-                "incomplete download ({} of {} bytes received)",
-                body.len(),
-                expected
-            )));
+            return Err(DownloadError::FallbackToCache {
+                msg: format!("incomplete download ({} of {} bytes received)", body.len(), expected),
+                transport: true,
+            });
         }
         if let Err(msg) = Self::validate_catalog_bytes(&body, cache_file) {
-            return Err(DownloadError::FallbackToCache(msg));
+            return Err(DownloadError::FallbackToCache { msg, transport: false });
         }
 
         // Write to a temporary file in the same directory, then atomically rename.
@@ -853,6 +933,78 @@ mod tests {
     use crate::bam_utils::get_chrom_lengths_from_bam_header;
     use std::fs::File;
     use std::io::Write;
+
+    /// A layered error, mimicking the reqwest -> hyper -> io chain a failed
+    /// download produces, without touching a socket.
+    #[derive(Debug)]
+    struct ChainedError {
+        message: String,
+        cause: Option<Box<ChainedError>>,
+    }
+
+    impl std::fmt::Display for ChainedError {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "{}", self.message)
+        }
+    }
+
+    impl std::error::Error for ChainedError {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            self.cause
+                .as_ref()
+                .map(|c| c.as_ref() as &(dyn std::error::Error + 'static))
+        }
+    }
+
+    fn chained(messages: &[&str]) -> ChainedError {
+        let mut iter = messages.iter().rev();
+        let mut err = ChainedError {
+            message: iter.next().expect("at least one message").to_string(),
+            cause: None,
+        };
+        for message in iter {
+            err = ChainedError { message: message.to_string(), cause: Some(Box::new(err)) };
+        }
+        err
+    }
+
+    /// A connection failure must report why it failed, not just that it did:
+    /// on an offline cluster node the cause is the whole diagnosis.
+    #[test]
+    fn test_describe_error_includes_cause_chain() {
+        let err = chained(&[
+            "error sending request for url (https://example.org/catalog.bed)",
+            "client error (Connect)",
+            "Connection refused (os error 111)",
+        ]);
+        assert_eq!(
+            describe_error(&err),
+            "error sending request for url (https://example.org/catalog.bed): \
+             client error (Connect): Connection refused (os error 111)"
+        );
+    }
+
+    /// An error without a cause is reported as-is, not decorated.
+    #[test]
+    fn test_describe_error_without_source() {
+        let err = chained(&["HTTP status 404 Not Found"]);
+        assert_eq!(describe_error(&err), "HTTP status 404 Not Found");
+    }
+
+    /// A cause that merely repeats its parent adds nothing and is skipped, but a
+    /// cause whose text appears in an *earlier* segment (here, in the URL) is kept.
+    #[test]
+    fn test_describe_error_skips_repeats_but_keeps_distinct_causes() {
+        let err = chained(&[
+            "error sending request for url (https://example.org/timeout/catalog.bed)",
+            "error sending request for url (https://example.org/timeout/catalog.bed)",
+            "timeout",
+        ]);
+        assert_eq!(
+            describe_error(&err),
+            "error sending request for url (https://example.org/timeout/catalog.bed): timeout"
+        );
+    }
 
     #[test]
     fn test_max_locus_filter() {

@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-inquiSTR is a single-binary Rust CLI (edition 2024, MSRV 1.88) for genotyping and analyzing short tandem repeats (STRs / tandem repeats) from long-read sequencing data (BAM/CRAM, ONT-focused). Everything lives in `src/` as flat modules declared in `src/main.rs`; there is no `lib.rs` and no `tests/` directory — all tests are inline `#[cfg(test)]` modules.
+inquiSTR is a single-binary Rust CLI (edition 2024, MSRV 1.88) for genotyping and analyzing short tandem repeats (STRs / tandem repeats) from long-read sequencing data (BAM/CRAM, ONT-focused). Everything lives in `src/` as flat modules declared in `src/main.rs`; there is no `lib.rs`, so most tests are inline `#[cfg(test)]` modules. `tests/` holds the exception: end-to-end tests that drive the compiled binary via `env!("CARGO_BIN_EXE_inquiSTR")`, for behaviour an inline test cannot reach (a subcommand writing to stdout, for instance). Prefer an inline test unless the behaviour only exists at the process boundary.
 
 ## Commands
 
