@@ -189,6 +189,29 @@ Available presets:
 - **trexplorer**: Broad Institute TR Explorer catalog - genome-wide TR catalog covering 1-1000bp motifs (**4,863,041 loci**). See also [Weisburd et al., 2025](https://www.biorxiv.org/content/10.1101/2024.10.04.615514v2).
 - **codis**: CODIS forensic STR markers from the USAT catalog - standard forensic STR markers used for human identification (**20 loci**). See also [Wang et al., 2024](https://link.springer.com/article/10.1186/s12859-022-05021-1).
 
+#### Using presets without internet access
+
+Compute nodes on HPC clusters often have no outbound network. Presets still work there, in one of two ways:
+
+1. **Skip the preset** and pass the regions directly with `--region-file targets.bed`. This is the simplest option for most users - the BED file can be a preset catalog you downloaded earlier, or your own list of loci.
+2. **Prime the cache** from a machine that does have access, such as a login node. Download the catalog and save it in `~/.cache/inquistr/` (on macOS, `~/Library/Caches/inquistr/`) under the filename listed below; `--preset` then finds it locally. Note that the filename to save under is not always the last part of the URL, so use `-o` as in the example rather than saving the link directly. If a download does fail, the error message prints the exact path inquiSTR looked in.
+
+```bash
+# On a machine with internet access:
+mkdir -p ~/.cache/inquistr
+curl -L -o ~/.cache/inquistr/STRchive-disease-loci.hg38.TRGT.bed \
+  https://raw.githubusercontent.com/dashnowlab/STRchive/refs/heads/main/data/catalogs/STRchive-disease-loci.hg38.longTR.bed
+```
+
+| Preset | Filename in `~/.cache/inquistr/` (link = download URL) |
+| --- | --- |
+| `pathogenic` | [`STRchive-disease-loci.hg38.TRGT.bed`](https://raw.githubusercontent.com/dashnowlab/STRchive/refs/heads/main/data/catalogs/STRchive-disease-loci.hg38.longTR.bed) |
+| `adotto` | [`adotto_TRregions_v1.2.1.bed.gz`](https://zenodo.org/records/13987414/files/adotto_TRregions_v1.2.1.bed.gz) |
+| `trexplorer` | [`repeat_catalog_v1.hg38.1_to_1000bp_motifs.bed.gz`](https://github.com/broadinstitute/tandem-repeat-catalog/releases/download/v1.0/repeat_catalog_v1.hg38.1_to_1000bp_motifs.bed.gz) |
+| `codis` | [`USAT-CODIS-STRRegionsV5.bed`](https://raw.githubusercontent.com/XuewenWangUGA/USAT/refs/heads/main/settings/STRRegionsV5xwlinuxBest.bed) |
+
+A cached catalog older than 7 days triggers a refresh attempt on the next run. Without network access that attempt gives up within about 15 seconds when the connection is refused, or after at most three minutes if the network silently drops traffic, and inquiSTR then continues with the cached copy after printing a warning. To avoid that delay, keep the copied file's timestamp current: `cp -p`, `scp -p` and `rsync -a` all preserve the original mtime, so a freshly copied catalog can arrive already stale - `touch` it afterwards.
+
 ### `inquiSTR combine` - Multi-sample Analysis
 
 > **Provenance checking.** `inquiSTR call` records the catalog and reference genome it used as
