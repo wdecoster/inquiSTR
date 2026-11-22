@@ -1,5 +1,15 @@
 use std::io::{self, Write};
 
+/// Columns of the intermediate TSV the VCF is built from: the call columns, then the reads
+/// supporting each haplotype and the read depth (see `Genotype::format_output_with_support`).
+const SUPPORT_COLUMNS: usize = crate::filetype::STR_MIN_COLUMNS + 3;
+
+/// Parse an allele length from the TSV. A no-call is written as `NaN`, which Rust's float parser
+/// accepts, so it has to be mapped to `None` explicitly to come out as a missing allele.
+fn parse_allele(s: &str) -> Option<f64> {
+    s.parse::<f64>().ok().filter(|v| v.is_finite())
+}
+
 struct SampleFields {
     gt: &'static str,
     rb: [String; 2],
@@ -104,6 +114,18 @@ pub fn write_vcf_to_stdout(
     .expect("Failed writing VCF header");
 
     // Add ALT definition for STR
+    writeln!(
+        writer,
+        "##FORMAT=<ID=SUPPORT,Number=2,Type=Integer,Description=\"Number of reads assigned to each haplotype\">"
+    )
+    .expect("Failed writing VCF header");
+    writeln!(
+        writer,
+        "##FORMAT=<ID=DP,Number=1,Type=Integer,Description=\"Number of reads overlapping the locus\">"
+    )
+    .expect("Failed writing VCF header");
+
+    // Add ALT definition for STR
     writeln!(writer, "##ALT=<ID=STR,Description=\"Short Tandem Repeat\">")
         .expect("Failed writing VCF header");
 
@@ -125,10 +147,10 @@ pub fn write_vcf_to_stdout(
         }
 
         let fields: Vec<&str> = line.split('\t').collect();
-        if fields.len() != crate::filetype::STR_MIN_COLUMNS {
+        if fields.len() != SUPPORT_COLUMNS {
             eprintln!(
                 "ERROR: Malformed line in TSV (expected {} columns, got {})",
-                crate::filetype::STR_MIN_COLUMNS,
+                SUPPORT_COLUMNS,
                 fields.len()
             );
             std::process::exit(1);
@@ -145,22 +167,56 @@ pub fn write_vcf_to_stdout(
         let pos = start + 1; // VCF is 1-based
         let id = format!("STR_{}", idx);
 
-        // Parse phase values (handle "nan" or numeric values)
-        let phase1: Option<f64> = phase1_str.parse().ok();
-        let phase2: Option<f64> = phase2_str.parse().ok();
+        let phase1 = parse_allele(phase1_str);
+        let phase2 = parse_allele(phase2_str);
+        let support = &fields[crate::filetype::STR_MIN_COLUMNS..];
 
         let s = sample_fields(phase1, phase2, (end - start) as f64);
 
         let info = format!("END={};SVTYPE=STR;SVLEN={}", end, s.svlen);
-        let sample_data = format!("{}:{},{}:{},{}", s.gt, s.rb[0], s.rb[1], s.frb[0], s.frb[1]);
+        let sample_data = format!(
+            "{}:{},{}:{},{}:{},{}:{}",
+            s.gt, s.rb[0], s.rb[1], s.frb[0], s.frb[1], support[0], support[1], support[2]
+        );
 
         writeln!(
             writer,
-            "{}\t{}\t{}\tN\t<STR>\t.\t.\t{}\tGT:RB:FRB\t{}",
+            "{}\t{}\t{}\tN\t<STR>\t.\t.\t{}\tGT:RB:FRB:SUPPORT:DP\t{}",
             chrom, pos, id, info, sample_data
         )
         .expect("Failed writing VCF record");
     }
 
     writer.flush().expect("Failed to flush VCF to stdout");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_nan_allele_is_missing() {
+        // The TSV writes no-calls as `NaN`, which `f64::from_str` accepts
+        assert_eq!(parse_allele("NaN"), None);
+        assert_eq!(parse_allele("nan"), None);
+        assert_eq!(parse_allele("12.5"), Some(12.5));
+        assert_eq!(parse_allele("-3"), Some(-3.0));
+    }
+
+    #[test]
+    fn test_nocall_writes_missing_genotype() {
+        let s = sample_fields(parse_allele("NaN"), parse_allele("NaN"), 30.0);
+        assert_eq!(s.gt, "./.");
+        assert_eq!(s.rb, [".".to_string(), ".".to_string()]);
+        assert_eq!(s.frb, [".".to_string(), ".".to_string()]);
+        assert_eq!(s.svlen, ".");
+    }
+
+    #[test]
+    fn test_one_allele_nocall() {
+        let s = sample_fields(parse_allele("6"), parse_allele("NaN"), 30.0);
+        assert_eq!(s.gt, "1/.");
+        assert_eq!(s.rb, ["6".to_string(), ".".to_string()]);
+        assert_eq!(s.frb, ["36".to_string(), ".".to_string()]);
+    }
 }

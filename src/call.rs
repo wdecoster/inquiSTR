@@ -36,6 +36,10 @@ pub struct Genotype {
     pub repeat: RepeatInterval,
     pub phase1: f64,
     pub phase2: f64,
+    /// Reads assigned to each haplotype (the reads its median is taken over)
+    pub support: [usize; 2],
+    /// Reads overlapping the locus, assigned to a haplotype or not
+    pub depth: usize,
 }
 
 impl Ord for Genotype {
@@ -74,6 +78,18 @@ impl Genotype {
             self.repeat.info,
             self.phase1,
             self.phase2
+        )
+    }
+
+    /// The TSV line plus read-support columns, for the intermediate file the VCF is built from.
+    /// The regular TSV output does not carry these columns.
+    pub fn format_output_with_support(&self, mapper: &ChromosomeMapper) -> String {
+        format!(
+            "{}\t{}\t{}\t{}",
+            self.format_output(mapper),
+            self.support[0],
+            self.support[1],
+            self.depth
         )
     }
 }
@@ -200,6 +216,8 @@ pub fn genotype_repeats(
                             mapper: &ChromosomeMapper| {
         if !chrom_results.is_empty() {
             chrom_results.sort_unstable();
+            // The temp file feeding the VCF also carries read-support columns
+            let with_support = stdout_w.is_none();
             // Either stdout or temp is Some, never both
             let writer = stdout_w
                 .as_mut()
@@ -207,7 +225,11 @@ pub fn genotype_repeats(
                 .or_else(|| temp_w.as_mut().map(|w| w as &mut dyn std::io::Write))
                 .expect("Either stdout or temp writer must exist");
             for g in chrom_results.iter() {
-                let output_line = g.format_output(mapper);
+                let output_line = if with_support {
+                    g.format_output_with_support(mapper)
+                } else {
+                    g.format_output(mapper)
+                };
                 writeln!(writer, "{}", output_line).expect("Failed writing the result.");
             }
             chrom_results.clear();

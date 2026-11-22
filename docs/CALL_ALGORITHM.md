@@ -62,4 +62,4 @@ The output values are in base pairs relative to the reference. A value of `0` me
 
 Results are sorted by chromosomal position and written to stdout. See [Output File Formats](OUTPUT_FORMATS.md) for the column specification.
 
-With `--vcf`, the TSV intermediate is converted to a VCF file instead (see [docs/FILE_TYPE_METADATA.md](FILE_TYPE_METADATA.md) for metadata details).
+With `--vcf`, the TSV intermediate is converted to a VCF file instead (see [docs/FILE_TYPE_METADATA.md](FILE_TYPE_METADATA.md) for metadata details). Its FORMAT fields are `GT`, `RB` (length relative to reference per allele), `FRB` (full allele length), `SUPPORT` (reads assigned to each haplotype) and `DP` (reads overlapping the locus). An uncallable allele is written as `.` (a no-call is `./.`); loci with too few reads overall have `SUPPORT=0,0` but still report their `DP`.

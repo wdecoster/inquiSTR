@@ -277,7 +277,17 @@ fn process_target_from_read_info(
 
         let all_refs: Vec<&Call> = repeat_calls.iter().collect();
         let median = median_str_length(&all_refs, genotype.support, genotype.require_spanning);
-        return Ok((Genotype { repeat: repeat.clone(), phase1: median, phase2: f64::NAN }, false));
+        let n = repeat_calls.len();
+        return Ok((
+            Genotype {
+                repeat: repeat.clone(),
+                phase1: median,
+                phase2: f64::NAN,
+                support: [n, 0],
+                depth: n,
+            },
+            false,
+        ));
     }
 
     if genotype.unphased {
@@ -299,11 +309,14 @@ fn process_target_from_read_info(
         let cut: usize = ((repeat_calls.len() as f64) * (1.0 - top_fraction)) as usize;
         // Clamp to valid range to avoid empty slices
         let cut = cut.clamp(1, repeat_calls.len() - 1);
+        let depth = repeat_calls.len();
         let (hap1, hap2) = repeat_calls.split_at(cut);
 
         Ok((
             Genotype {
                 repeat: repeat.clone(),
+                support: [hap1.len(), hap2.len()],
+                depth,
                 // TODO: code below looks awful
                 phase1: median_str_length(
                     &hap1.iter().collect::<Vec<_>>(),
@@ -357,6 +370,8 @@ fn process_target_from_read_info(
             Ok((
                 Genotype {
                     repeat: repeat.clone(),
+                    support: [phase1_calls.len(), phase2_calls.len()],
+                    depth: total_reads,
                     phase1: median_str_length(
                         &phase1_calls,
                         genotype.support,
@@ -374,7 +389,13 @@ fn process_target_from_read_info(
             // If no phased reads found, should return NaN (not split unphased reads)
             if phase1_calls.is_empty() && phase2_calls.is_empty() {
                 Ok((
-                    Genotype { repeat: repeat.clone(), phase1: f64::NAN, phase2: f64::NAN },
+                    Genotype {
+                        repeat: repeat.clone(),
+                        phase1: f64::NAN,
+                        phase2: f64::NAN,
+                        support: [0, 0],
+                        depth: total_reads,
+                    },
                     found_hp_tags,
                 ))
             } else {
@@ -388,6 +409,8 @@ fn process_target_from_read_info(
                 Ok((
                     Genotype {
                         repeat: repeat.clone(),
+                        support: [hap1.len(), hap2.len()],
+                        depth: total_reads,
                         phase1: median_str_length(
                             hap1,
                             genotype.support,
@@ -530,8 +553,16 @@ pub fn process_batch_with_reader(
             }
             Err(_e) => {
                 // Output NaN genotype for failed targets (matches original behavior)
-                let failed_genotype =
-                    Genotype { repeat: repeat.clone(), phase1: f64::NAN, phase2: f64::NAN };
+                // Too few reads to split into haplotypes; still report how many there were
+                let failed_genotype = Genotype {
+                    repeat: repeat.clone(),
+                    phase1: f64::NAN,
+                    phase2: f64::NAN,
+                    support: [0, 0],
+                    depth: calls_map
+                        .get(&(repeat.start, repeat.end))
+                        .map_or(0, Vec::len),
+                };
                 results.push(failed_genotype);
             }
         }
@@ -660,8 +691,16 @@ pub fn process_batch_with_dedicated_reader(
             }
             Err(_e) => {
                 // Output NaN genotype for failed targets (matches original behavior)
-                let failed_genotype =
-                    Genotype { repeat: repeat.clone(), phase1: f64::NAN, phase2: f64::NAN };
+                // Too few reads to split into haplotypes; still report how many there were
+                let failed_genotype = Genotype {
+                    repeat: repeat.clone(),
+                    phase1: f64::NAN,
+                    phase2: f64::NAN,
+                    support: [0, 0],
+                    depth: calls_map
+                        .get(&(repeat.start, repeat.end))
+                        .map_or(0, Vec::len),
+                };
                 results.push(failed_genotype);
             }
         }
