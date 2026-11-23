@@ -151,10 +151,19 @@ pub fn genotype_repeats(
 
     // If VCF output is requested, we only write to a temp TSV file for conversion
     // Otherwise, write TSV directly to stdout
-    let temp_tsv_path = if processing.output_vcf {
-        let temp_path =
-            std::env::temp_dir().join(format!("inquiSTR_{}.tmp.tsv", std::process::id()));
-        Some(temp_path)
+    // The file gets a random, exclusively created name: a name derived from the process ID is not
+    // unique across containers or hosts sharing $TMPDIR, and concurrent runs then interleave their
+    // records in one file. It is deleted when `temp_tsv` is dropped, also on an early error return.
+    let temp_tsv = if processing.output_vcf {
+        Some(
+            tempfile::Builder::new()
+                .prefix("inquiSTR_")
+                .suffix(".tmp.tsv")
+                .tempfile()
+                .map_err(|e| {
+                    InquiSTRError::new(format!("Failed to create temporary file for VCF: {e}"))
+                })?,
+        )
     } else {
         None
     };
@@ -167,9 +176,10 @@ pub fn genotype_repeats(
         None
     };
 
-    let mut temp_writer = temp_tsv_path.as_ref().map(|path| {
-        io::BufWriter::new(std::fs::File::create(path).expect("Failed to create temp TSV file"))
-    });
+    let mut temp_writer = temp_tsv
+        .as_ref()
+        .map(|t| t.reopen().map(io::BufWriter::new))
+        .transpose()?;
 
     // Write metadata header to stdout if in TSV mode
     if let Some(ref mut handle) = stdout_writer {
@@ -373,14 +383,12 @@ pub fn genotype_repeats(
 
     // Flush temp file to ensure all data is written
     if let Some(mut temp) = temp_writer {
-        temp.flush().expect("Failed to flush temp file");
+        temp.flush()?;
     }
 
     // Write VCF if requested by converting from the temp TSV file and writing to stdout
-    if let Some(temp_path) = temp_tsv_path.as_ref() {
-        crate::vcf::write_vcf_to_stdout(temp_path, &sample, &reference, &bam);
-        // Clean up temp file
-        std::fs::remove_file(temp_path).ok(); // Ignore errors if already deleted
+    if let Some(temp) = temp_tsv.as_ref() {
+        crate::vcf::write_vcf_to_stdout(temp.path(), &sample, &reference, &bam)?;
     }
 
     // Clean up any downloaded index files

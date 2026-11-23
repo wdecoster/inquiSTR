@@ -58,7 +58,8 @@ pub fn write_vcf_to_stdout(
     sample: &str,
     reference: &Option<String>,
     bam: &str,
-) {
+) -> crate::errors::InquiSTRResult<()> {
+    use crate::errors::InquiSTRError;
     use std::fs::File;
     use std::io::{BufRead, BufReader};
 
@@ -134,12 +135,20 @@ pub fn write_vcf_to_stdout(
         .expect("Failed writing VCF header");
 
     // Read TSV and convert to VCF records
-    let tsv_file = File::open(tsv_path).expect("Failed to open temp TSV file");
-    let reader = BufReader::new(tsv_file);
+    let reader = BufReader::new(File::open(tsv_path)?);
 
     let mut idx = 0;
-    for line in reader.lines() {
-        let line = line.expect("Failed reading TSV line");
+    for (line_number, line) in reader.lines().enumerate() {
+        let line = line?;
+        // On a malformed line, finish the VCF records written so far before reporting it
+        let malformed = |writer: &mut io::BufWriter<io::Stdout>, what: String| {
+            writer.flush().ok();
+            InquiSTRError::new(format!(
+                "Malformed line {} in intermediate file {}: {what}",
+                line_number + 1,
+                tsv_path.display()
+            ))
+        };
 
         // Skip header line
         if line.starts_with("chromosome") || line.starts_with('#') {
@@ -148,17 +157,15 @@ pub fn write_vcf_to_stdout(
 
         let fields: Vec<&str> = line.split('\t').collect();
         if fields.len() != SUPPORT_COLUMNS {
-            eprintln!(
-                "ERROR: Malformed line in TSV (expected {} columns, got {})",
-                SUPPORT_COLUMNS,
-                fields.len()
-            );
-            std::process::exit(1);
+            let what = format!("expected {SUPPORT_COLUMNS} columns, got {}", fields.len());
+            return Err(malformed(&mut writer, what));
         }
 
         let chrom = fields[0];
-        let start: u32 = fields[1].parse().expect("Invalid start coordinate in TSV");
-        let end: u32 = fields[2].parse().expect("Invalid end coordinate in TSV");
+        let (Ok(start), Ok(end)) = (fields[1].parse::<u32>(), fields[2].parse::<u32>()) else {
+            let what = format!("invalid coordinates {}-{}", fields[1], fields[2]);
+            return Err(malformed(&mut writer, what));
+        };
         let _info = fields[3]; // Currently unused, but available if needed
         let phase1_str = fields[crate::filetype::STR_FIXED_COLUMNS];
         let phase2_str = fields[crate::filetype::STR_FIXED_COLUMNS + 1];
@@ -187,7 +194,8 @@ pub fn write_vcf_to_stdout(
         .expect("Failed writing VCF record");
     }
 
-    writer.flush().expect("Failed to flush VCF to stdout");
+    writer.flush()?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -218,5 +226,21 @@ mod tests {
         assert_eq!(s.gt, "1/.");
         assert_eq!(s.rb, ["6".to_string(), ".".to_string()]);
         assert_eq!(s.frb, ["36".to_string(), ".".to_string()]);
+    }
+
+    #[test]
+    fn test_malformed_intermediate_is_an_error_not_an_exit() {
+        // Two records run together, as when concurrent runs shared one intermediate file
+        let mut tsv = tempfile::NamedTempFile::new().unwrap();
+        writeln!(tsv, "chromosome\tbegin\tend\tinfo\ts_H1\ts_H2").unwrap();
+        writeln!(tsv, "chr7\t100\t130\t.\t0\t3\t5\t6\t11").unwrap();
+        writeln!(tsv, "chr7\t200\t230\t.\t0\t3\tchr7\t300\t330\t.\t0\t3\t5\t6\t11").unwrap();
+        tsv.flush().unwrap();
+
+        let err = write_vcf_to_stdout(tsv.path(), "s", &None, "test-data/small-test.bam")
+            .expect_err("a 15-column line must be rejected");
+        let msg = err.to_string();
+        assert!(msg.contains("line 3"), "{msg}");
+        assert!(msg.contains("expected 9 columns, got 15"), "{msg}");
     }
 }
