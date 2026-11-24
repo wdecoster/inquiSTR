@@ -1290,7 +1290,10 @@ fn minlen_defaults_to_two_for_call_and_batch() {
     let cmd = Cli::command();
     for name in ["call", "batch"] {
         let sub = cmd.find_subcommand(name).unwrap();
-        let minlen = sub.get_arguments().find(|a| a.get_id() == "minlen").unwrap();
+        let minlen = sub
+            .get_arguments()
+            .find(|a| a.get_id() == "minlen")
+            .unwrap();
         let default = minlen.get_default_values().first().unwrap();
         assert_eq!(default.to_str().unwrap(), "2", "--minlen default for {name}");
     }
