@@ -142,8 +142,9 @@ struct BatchStrArgs {
     #[clap(long, value_parser)]
     preset: Option<repeats::TRPreset>,
 
-    /// Minimal length of insertion/deletion operation
-    #[clap(short, long, value_parser, default_value_t = 1)]
+    /// Minimal length of insertion/deletion operation, inclusive (default 2; use 1 to count 1 bp
+    /// indels, which helps on low-error reads such as PacBio HiFi but adds noise on ONT)
+    #[clap(short, long, value_parser, default_value_t = DEFAULT_MINLEN)]
     minlen: u32,
 
     /// Minimal number of supporting reads
@@ -233,6 +234,10 @@ pub mod varindex;
 pub mod vcf;
 
 // The arguments end up in the Cli struct
+/// Default for `--minlen`. Counting 1 bp indels (`--minlen 1`) recovers 1 bp alleles on PacBio but
+/// lowers exact-match accuracy on ONT, so the default stays at 2 for ONT-focused use.
+const DEFAULT_MINLEN: u32 = 2;
+
 #[derive(Parser, Debug)]
 #[clap(author, version, about="Tool to genotype STRs from long reads", long_about = None)]
 struct Cli {
@@ -261,8 +266,9 @@ enum Commands {
         #[clap(long, value_parser)]
         preset: Option<repeats::TRPreset>,
 
-        /// minimal length of insertion/deletion operation
-        #[clap(short, long, value_parser, default_value_t = 1)]
+        /// minimal length of insertion/deletion operation, inclusive (default 2; use 1 to count 1 bp
+        /// indels, which helps on low-error reads such as PacBio HiFi but adds noise on ONT)
+        #[clap(short, long, value_parser, default_value_t = DEFAULT_MINLEN)]
         minlen: u32,
 
         /// minimal number of supporting reads
@@ -1276,6 +1282,18 @@ fn main() {
 #[ctor::ctor(unsafe)]
 fn init() {
     env_logger::init();
+}
+
+#[test]
+fn minlen_defaults_to_two_for_call_and_batch() {
+    use clap::CommandFactory;
+    let cmd = Cli::command();
+    for name in ["call", "batch"] {
+        let sub = cmd.find_subcommand(name).unwrap();
+        let minlen = sub.get_arguments().find(|a| a.get_id() == "minlen").unwrap();
+        let default = minlen.get_default_values().first().unwrap();
+        assert_eq!(default.to_str().unwrap(), "2", "--minlen default for {name}");
+    }
 }
 
 #[test]
