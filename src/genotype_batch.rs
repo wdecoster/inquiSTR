@@ -308,7 +308,13 @@ fn process_target_from_read_info(
         let top_fraction = genotype.imbalance.unwrap_or(0.5);
         let cut: usize = ((repeat_calls.len() as f64) * (1.0 - top_fraction)) as usize;
         // Clamp to valid range to avoid empty slices
-        let cut = cut.clamp(1, repeat_calls.len() - 1);
+        // With fewer than two reads there is nothing to split: everything goes to hap1 and
+        // hap2 stays empty (reported as NaN), instead of panicking in clamp(1, 0).
+        let cut = if repeat_calls.len() < 2 {
+            repeat_calls.len()
+        } else {
+            cut.clamp(1, repeat_calls.len() - 1)
+        };
         let depth = repeat_calls.len();
         let (hap1, hap2) = repeat_calls.split_at(cut);
 
@@ -757,4 +763,46 @@ pub fn process_batch_worker(
     drop(bam);
 
     Ok(results)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::call::GenotypeConfig;
+
+    fn unphased_config(support: usize) -> GenotypeConfig {
+        GenotypeConfig {
+            minlen: 5,
+            support,
+            unphased: true,
+            require_spanning: false,
+            no_extend: false,
+            imbalance: None,
+            haploid: None,
+        }
+    }
+
+    fn run(n_reads: usize, support: usize) -> Result<(Genotype, bool), String> {
+        let repeat = RepeatInterval { chrom_id: 0, start: 100, end: 200, info: "".into() };
+        let calls = (0..n_reads)
+            .map(|i| Call { value: CallType::Span(i as i64 * 10), hp_tag: None })
+            .collect();
+        let mut batch_calls = HashMap::from([((100, 200), calls)]);
+        process_target_from_read_info(&mut batch_calls, &repeat, &unphased_config(support), "chr1")
+    }
+
+    #[test]
+    fn test_unphased_single_read_support_1_does_not_panic() {
+        let (g, _) = run(1, 1).unwrap();
+        assert_eq!(g.phase1, 0.0);
+        assert!(g.phase2.is_nan());
+        assert_eq!(g.support, [1, 0]);
+    }
+
+    #[test]
+    fn test_unphased_two_reads_support_1_splits() {
+        let (g, _) = run(2, 1).unwrap();
+        assert_eq!(g.phase1, 0.0);
+        assert_eq!(g.phase2, 10.0);
+    }
 }
