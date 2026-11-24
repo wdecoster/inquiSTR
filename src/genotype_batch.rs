@@ -156,12 +156,12 @@ fn from_record_with_target(
 /// The algorithm:
 /// - Insertions (I) and soft-clips (S) add to the call value (expansions)
 /// - Deletions (D) subtract from the call value (contractions)
-/// - Only events occurring within the target region and exceeding minlen are counted
+/// - Only events occurring within the target region and at least `minlen` long are counted
 /// - Returns `Call::Clip` if soft-clips contributed, `Call::Span` otherwise
 ///
 /// # Arguments
 /// * `record` - BAM record containing CIGAR string
-/// * `minlen` - Minimum length for indels/clips to be counted
+/// * `minlen` - Minimum length (inclusive) for indels/clips to be counted
 /// * `start` - Start of target region
 /// * `end` - End of target region
 ///
@@ -185,14 +185,14 @@ fn calculate_str_call_for_region(
                 reference_position += *len;
             }
             rust_htslib::bam::record::Cigar::Del(len) => {
-                if *len > minlen && start < reference_position && reference_position < end {
+                if *len >= minlen && start < reference_position && reference_position < end {
                     call -= i64::from(*len);
                 }
                 reference_position += *len;
             }
             rust_htslib::bam::record::Cigar::SoftClip(len)
                 if !is_accidental_2d(record)
-                    && *len > minlen
+                    && *len >= minlen
                     && start < reference_position
                     && reference_position < end =>
             {
@@ -200,7 +200,7 @@ fn calculate_str_call_for_region(
                 clipped = true;
             }
             rust_htslib::bam::record::Cigar::Ins(len)
-                if *len > minlen && start < reference_position && reference_position < end =>
+                if *len >= minlen && start < reference_position && reference_position < end =>
             {
                 call += i64::from(*len);
             }
@@ -797,6 +797,47 @@ mod tests {
         assert_eq!(g.phase1, 0.0);
         assert!(g.phase2.is_nan());
         assert_eq!(g.support, [1, 0]);
+    }
+
+    /// A read starting at reference position 90 with a single indel inside the target (100-200)
+    fn read_with_indel(op: rust_htslib::bam::record::Cigar) -> rust_htslib::bam::Record {
+        use rust_htslib::bam::record::{Cigar, CigarString};
+        let cigar = CigarString(vec![Cigar::Match(20), op, Cigar::Match(20)]);
+        let mut record = rust_htslib::bam::Record::new();
+        let seq_len = cigar
+            .iter()
+            .map(|c| match c {
+                Cigar::Match(n) | Cigar::Ins(n) => *n as usize,
+                _ => 0,
+            })
+            .sum();
+        record.set(b"read", Some(&cigar), &vec![b'A'; seq_len], &vec![30; seq_len]);
+        record.set_pos(90);
+        record
+    }
+
+    #[test]
+    fn test_minlen_is_inclusive() {
+        use rust_htslib::bam::record::Cigar;
+        // --minlen N keeps indels of N bp and longer, so the default of 1 keeps a 1 bp indel
+        let ins = read_with_indel(Cigar::Ins(1));
+        let del = read_with_indel(Cigar::Del(1));
+        assert!(matches!(
+            calculate_str_call_for_region(&ins, 1, 100, 200).value,
+            CallType::Span(1)
+        ));
+        assert!(matches!(
+            calculate_str_call_for_region(&del, 1, 100, 200).value,
+            CallType::Span(-1)
+        ));
+        assert!(matches!(
+            calculate_str_call_for_region(&ins, 2, 100, 200).value,
+            CallType::Span(0)
+        ));
+        assert!(matches!(
+            calculate_str_call_for_region(&del, 2, 100, 200).value,
+            CallType::Span(0)
+        ));
     }
 
     #[test]

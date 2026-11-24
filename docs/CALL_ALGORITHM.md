@@ -21,7 +21,7 @@ For each batch, all reads overlapping the batch region are retrieved from the BA
 For each read–locus pair, inquiSTR walks the CIGAR string and sums the lengths of INDEL/soft-clip events that:
 
 1. fall within the locus interval (± 10 bp padding, unless `--noextend` is set), and
-2. exceed the minimum length threshold (`--minlen`, default 1 bp).
+2. are at least `--minlen` long (default 1 bp, so 1 bp indels are counted).
 
 The signed sum is the *call value* for that read at that locus:
 
