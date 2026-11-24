@@ -650,6 +650,17 @@ enum Commands {
         /// Tolerance in bp for considering calls as matching (default: 3)
         #[clap(long, value_parser, default_value_t = 3)]
         tolerance: u32,
+
+        /// Match loci by interval overlap instead of an identical start coordinate. Use this
+        /// when the catalog and the truth set describe the same repeats with slightly
+        /// different boundaries, which otherwise discards most loci.
+        #[clap(long)]
+        match_overlap: bool,
+
+        /// With --match-overlap, the minimum shared fraction of the longer of the two
+        /// intervals for a pair to be accepted (default: 0.5)
+        #[clap(long, value_parser, default_value_t = 0.5)]
+        min_reciprocal_overlap: f64,
     },
     /// Compute relatedness between samples
     #[clap(arg_required_else_help = true)]
@@ -1104,10 +1115,20 @@ fn main() {
             max_locus,
             nonzero,
             tolerance,
+            match_overlap,
+            min_reciprocal_overlap,
         } => {
             // Validate tolerance parameter
             if tolerance < 1 {
                 eprintln!("Error: Tolerance must be at least 1 bp (got {})", tolerance);
+                std::process::exit(1);
+            }
+
+            if !(0.0..=1.0).contains(&min_reciprocal_overlap) {
+                eprintln!(
+                    "Error: --min-reciprocal-overlap must be between 0 and 1 (got {})",
+                    min_reciprocal_overlap
+                );
                 std::process::exit(1);
             }
 
@@ -1122,6 +1143,8 @@ fn main() {
                 max_locus,
                 nonzero,
                 tolerance,
+                match_overlap,
+                min_reciprocal_overlap,
             );
         }
         Commands::Relate { combined, output, threads, min_spacing, tolerance } => {

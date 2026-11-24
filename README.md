@@ -814,12 +814,27 @@ Options:
       --max-locus <MAX_LOCUS>             Exclude loci larger than this size (bp) from truth data
       --nonzero                           Exclude zero-zero pairs (loci unchanged in both) from correlation
       --tolerance <TOLERANCE>             Tolerance in bp for counting calls as matching [default: 3]
+      --match-overlap                     Match loci by interval overlap instead of an identical start coordinate
+      --min-reciprocal-overlap <FRACTION>  Minimum shared fraction of the longer interval with --match-overlap [default: 0.5]
   -h, --help                              Print help
+```
+
+By default a call is compared with the truth locus that starts at exactly the same coordinate.
+Catalogs and truth sets that describe the same repeats often disagree on where each interval
+begins, which silently discards the loci whose boundaries were adjusted. `--match-overlap`
+instead pairs each call with the truth locus it shares the most bases with, keeping the pair only
+if those bases cover at least `--min-reciprocal-overlap` of the longer of the two intervals, and
+awarding each truth locus to a single call so no truth genotype is counted twice.
+
+```bash
+# Score calls against a truth set whose intervals were defined independently of the catalog
+inquiSTR benchmark --test sample.inq.gz --truth truth.bed.gz --tier1 --match-overlap
 ```
 
 **Output:**
 
 - Correlation statistics (R², exact match rate, within-tolerance rate) printed to stdout
+- A breakdown of how every locus was accounted for: paired, uncalled in either file, or unmatched
 - Optional interactive SVG plot (`--plot`; open in browser for interactivity)
 - Optional TSV of the largest discrepancies (`--diff-out`)
 

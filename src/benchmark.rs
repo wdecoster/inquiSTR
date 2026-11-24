@@ -18,13 +18,104 @@ struct InquiSTRRecord {
 
 #[derive(Debug, Clone)]
 struct TruthRecord {
-    #[allow(dead_code)]
     chromosome: String,
-    #[allow(dead_code)]
+    /// Interval start, in the same 0-based coordinate space as the test file.
     pos: u32,
+    /// Interval end, used only by `--match-overlap`.
+    end: u32,
     h1: f64,
     h2: f64,
     tier: String,
+}
+
+/// Intervals of one chromosome, sorted by start, supporting overlap queries.
+///
+/// `max_end_prefix[i]` is the largest end among intervals `0..=i`, which bounds how far back
+/// a backwards scan has to go and keeps the query correct even if intervals overlap each other.
+#[derive(Default)]
+struct ChromIntervals {
+    begins: Vec<u32>,
+    ends: Vec<u32>,
+    keys: Vec<String>,
+    max_end_prefix: Vec<u32>,
+}
+
+/// Interval index over truth loci, for matching by overlap instead of by exact start.
+#[derive(Default)]
+struct IntervalIndex {
+    by_chromosome: HashMap<String, ChromIntervals>,
+}
+
+impl IntervalIndex {
+    /// Index every truth record for which `keep` returns true.
+    fn build<F>(records: &HashMap<String, TruthRecord>, keep: F) -> Self
+    where
+        F: Fn(&TruthRecord) -> bool,
+    {
+        let mut by_chromosome: HashMap<String, ChromIntervals> = HashMap::new();
+        for (key, record) in records {
+            if !keep(record) {
+                continue;
+            }
+            let entry = by_chromosome.entry(record.chromosome.clone()).or_default();
+            entry.begins.push(record.pos);
+            entry.ends.push(record.end);
+            entry.keys.push(key.clone());
+        }
+
+        for intervals in by_chromosome.values_mut() {
+            let mut order: Vec<usize> = (0..intervals.begins.len()).collect();
+            order.sort_by_key(|&i| (intervals.begins[i], intervals.ends[i]));
+            intervals.begins = order.iter().map(|&i| intervals.begins[i]).collect();
+            intervals.ends = order.iter().map(|&i| intervals.ends[i]).collect();
+            intervals.keys = order.iter().map(|&i| intervals.keys[i].clone()).collect();
+
+            let mut running = 0;
+            intervals.max_end_prefix = intervals
+                .ends
+                .iter()
+                .map(|&end| {
+                    running = running.max(end);
+                    running
+                })
+                .collect();
+        }
+
+        IntervalIndex { by_chromosome }
+    }
+
+    /// The indexed interval sharing the most bases with `[begin, end)`, and the reciprocal
+    /// overlap of that pair: shared bases divided by the length of the *longer* of the two
+    /// intervals, so 1.0 means identical and a small value means one interval dwarfs the other.
+    ///
+    /// Ties are broken on the interval start, so the result does not depend on hash order.
+    fn best_overlap(&self, chromosome: &str, begin: u32, end: u32) -> Option<(&str, f64)> {
+        let intervals = self.by_chromosome.get(chromosome)?;
+        if end <= begin {
+            return None;
+        }
+
+        // Intervals starting at or after `end` cannot overlap.
+        let upper = intervals.begins.partition_point(|&b| b < end);
+        let mut best: Option<(u32, usize)> = None;
+        for i in (0..upper).rev() {
+            // Nothing at or before `i` can reach `begin` any more.
+            if intervals.max_end_prefix[i] <= begin {
+                break;
+            }
+            if intervals.ends[i] <= begin {
+                continue;
+            }
+            let shared = intervals.ends[i].min(end) - intervals.begins[i].max(begin);
+            if best.is_none_or(|(best_shared, _)| shared > best_shared) {
+                best = Some((shared, i));
+            }
+        }
+
+        let (shared, i) = best?;
+        let longer = (end - begin).max(intervals.ends[i] - intervals.begins[i]);
+        Some((intervals.keys[i].as_str(), f64::from(shared) / f64::from(longer)))
+    }
 }
 
 /// Parse BED file with 9 columns (last 2 are haplotype lengths)
@@ -81,6 +172,7 @@ fn parse_bed_file(
         let record = TruthRecord {
             chromosome: chromosome.clone(),
             pos: begin, // Using begin position for matching
+            end,
             h1,
             h2,
             tier,
@@ -253,6 +345,7 @@ fn parse_inquistr_as_truth(
         let record = TruthRecord {
             chromosome: chromosome.clone(),
             pos: begin,
+            end,
             h1,
             h2,
             tier: "Tier1".to_string(),
@@ -341,8 +434,17 @@ fn parse_vcf_file(
             (0.0, 0.0) // No ALT alleles
         };
 
-        let record =
-            TruthRecord { chromosome: chromosome.clone(), pos, h1, h2, tier: "Tier1".to_string() };
+        // VCF POS is 1-based and inclusive; `pos`/`end` are the same interval in the 0-based
+        // half-open space the test file uses, so `--match-overlap` compares like with like.
+        // The exact-match key below deliberately keeps the 1-based POS it has always used.
+        let record = TruthRecord {
+            chromosome: chromosome.clone(),
+            pos: pos.saturating_sub(1),
+            end: pos.saturating_sub(1) + ref_seq.len() as u32,
+            h1,
+            h2,
+            tier: "Tier1".to_string(),
+        };
 
         // Use chromosome:pos as key for matching
         let key = format!("{}:{}", chromosome, pos);
@@ -413,6 +515,106 @@ fn pearson_correlation(x: &[f64], y: &[f64]) -> f64 {
     }
 }
 
+/// How test loci were paired with truth loci, before genotypes are looked at.
+#[derive(Default)]
+struct Pairing<'a> {
+    pairs: Vec<(&'a InquiSTRRecord, &'a TruthRecord)>,
+    /// Test loci with no truth locus at that position at all.
+    test_only: usize,
+    /// Test loci whose only truth partner is a Tier2 variant (`--tier1` only).
+    tier2_only: usize,
+    /// Test loci overlapping a truth locus too weakly to accept (`--match-overlap` only).
+    below_min_overlap: usize,
+    /// Test loci dropped because a better-overlapping test locus claimed the same truth
+    /// locus (`--match-overlap` only), so one truth locus is never counted twice.
+    contested: usize,
+}
+
+/// Pair test and truth loci on an identical `chromosome:begin` key.
+fn pair_on_exact_start<'a>(
+    test_records: &'a HashMap<String, InquiSTRRecord>,
+    truth_records: &'a HashMap<String, TruthRecord>,
+    all_truth_records: &'a HashMap<String, TruthRecord>,
+    tier1_only: bool,
+) -> Pairing<'a> {
+    let mut pairing = Pairing::default();
+    for (key, test_record) in test_records {
+        if let Some(truth_record) = truth_records.get(key) {
+            pairing.pairs.push((test_record, truth_record));
+        } else if tier1_only && all_truth_records.contains_key(key) {
+            pairing.tier2_only += 1;
+        } else {
+            pairing.test_only += 1;
+        }
+    }
+    pairing
+}
+
+/// Pair each test locus with the truth locus it shares the most bases with.
+///
+/// Catalogs and truth sets that describe the same repeats rarely agree on exact interval
+/// boundaries, which makes matching on the start coordinate alone discard most loci. A pair is
+/// kept only if its reciprocal overlap reaches `min_reciprocal_overlap`, and each truth locus is
+/// awarded to its single best test locus so that no truth genotype is scored more than once.
+fn pair_on_overlap<'a>(
+    test_records: &'a HashMap<String, InquiSTRRecord>,
+    truth_records: &'a HashMap<String, TruthRecord>,
+    all_truth_records: &'a HashMap<String, TruthRecord>,
+    tier1_only: bool,
+    min_reciprocal_overlap: f64,
+) -> Pairing<'a> {
+    let index = IntervalIndex::build(truth_records, |_| true);
+    let tier2_index = tier1_only
+        .then(|| IntervalIndex::build(all_truth_records, |record| record.tier != "Tier1"));
+
+    let mut pairing = Pairing::default();
+    // Best test locus per truth locus, keyed by truth key: (reciprocal overlap, test key).
+    let mut claims: HashMap<&str, (f64, &str)> = HashMap::new();
+
+    for (test_key, test_record) in test_records {
+        let best = index.best_overlap(&test_record.chromosome, test_record.begin, test_record.end);
+        let Some((truth_key, reciprocal)) = best else {
+            let overlaps_tier2 = tier2_index.as_ref().is_some_and(|idx| {
+                idx.best_overlap(&test_record.chromosome, test_record.begin, test_record.end)
+                    .is_some()
+            });
+            if overlaps_tier2 {
+                pairing.tier2_only += 1;
+            } else {
+                pairing.test_only += 1;
+            }
+            continue;
+        };
+
+        if reciprocal < min_reciprocal_overlap {
+            pairing.below_min_overlap += 1;
+            continue;
+        }
+
+        // Keep the strongest claim; fall back to the key so hash order cannot change the result.
+        match claims.get(truth_key) {
+            Some(&(best_reciprocal, best_key))
+                if (best_reciprocal, best_key) >= (reciprocal, test_key.as_str()) =>
+            {
+                pairing.contested += 1;
+            }
+            Some(_) => {
+                pairing.contested += 1;
+                claims.insert(truth_key, (reciprocal, test_key.as_str()));
+            }
+            None => {
+                claims.insert(truth_key, (reciprocal, test_key.as_str()));
+            }
+        }
+    }
+
+    pairing.pairs = claims
+        .into_iter()
+        .map(|(truth_key, (_, test_key))| (&test_records[test_key], &truth_records[truth_key]))
+        .collect();
+    pairing
+}
+
 /// Main benchmark function
 #[allow(clippy::too_many_arguments)]
 pub fn benchmark(
@@ -426,6 +628,8 @@ pub fn benchmark(
     max_locus: Option<u32>,
     nonzero: bool,
     tolerance: u32,
+    match_overlap: bool,
+    min_reciprocal_overlap: f64,
 ) {
     println!("Loading inquiSTR file: {}", inquistr_file.display());
     let inquistr_records = match parse_inquistr_file(&inquistr_file) {
@@ -497,67 +701,101 @@ pub fn benchmark(
         (truth_records, cloned)
     };
 
-    // Find matching loci and collect data for correlation
+    // Pair loci first, then look at the genotypes of each pair. Keeping the two steps apart is
+    // what lets every test locus be accounted for exactly once below.
+    let pairing = if match_overlap {
+        println!(
+            "Matching loci by interval overlap (minimum reciprocal overlap: {:.2})",
+            min_reciprocal_overlap
+        );
+        pair_on_overlap(
+            &inquistr_records,
+            &truth_records_filtered,
+            &all_truth_records,
+            tier1_only,
+            min_reciprocal_overlap,
+        )
+    } else {
+        println!("Matching loci on an exact chromosome:begin coordinate");
+        pair_on_exact_start(
+            &inquistr_records,
+            &truth_records_filtered,
+            &all_truth_records,
+            tier1_only,
+        )
+    };
+
+    // Collect data for correlation
     let mut inquistr_values = Vec::new();
     let mut truth_values = Vec::new();
     let mut loci_info = Vec::new(); // Store (chromosome, begin, end) for each matched locus
-    let mut nan_count = 0;
-    let mut matched_loci = Vec::new();
-    let mut matched_tier2_only = 0; // Track inquiSTR loci that only match Tier2 variants
+    let mut nan_count = 0; // Paired, but the test locus has no callable allele
+    let mut truth_nan_count = 0; // Paired, but the truth locus has no callable allele
     let mut zero_zero_filtered = 0; // Track zero-zero pairs filtered out by --nonzero flag
 
-    for (key, inquistr_record) in &inquistr_records {
-        if let Some(truth_record) = truth_records_filtered.get(key) {
-            // Calculate inquiSTR value (MAX or MIN of H1 and H2)
-            let inquistr_alleles = vec![inquistr_record.h1, inquistr_record.h2];
+    for (inquistr_record, truth_record) in &pairing.pairs {
+        // Calculate inquiSTR value (MAX or MIN of H1 and H2)
+        let inquistr_alleles = vec![inquistr_record.h1, inquistr_record.h2];
+        let Some(inquistr_value) = select_allele(&inquistr_alleles, &mode) else {
+            nan_count += 1;
+            continue;
+        };
 
-            if let Some(inquistr_value) = select_allele(&inquistr_alleles, &mode) {
-                // Calculate truth value (MAX or MIN of H1 and H2)
-                let truth_alleles = vec![truth_record.h1, truth_record.h2];
+        // Calculate truth value (MAX or MIN of H1 and H2)
+        let truth_alleles = vec![truth_record.h1, truth_record.h2];
+        let Some(truth_value) = select_allele(&truth_alleles, &mode) else {
+            truth_nan_count += 1;
+            continue;
+        };
 
-                if let Some(truth_value) = select_allele(&truth_alleles, &mode) {
-                    // Skip zero-zero pairs if --nonzero flag is set
-                    if nonzero && inquistr_value == 0.0 && truth_value == 0.0 {
-                        zero_zero_filtered += 1;
-                        continue;
-                    }
-
-                    inquistr_values.push(inquistr_value);
-                    truth_values.push(truth_value);
-                    loci_info.push((
-                        inquistr_record.chromosome.clone(),
-                        inquistr_record.begin,
-                        inquistr_record.end,
-                    ));
-                    matched_loci.push(key.clone());
-                }
-            } else {
-                // inquiSTR locus was targeted but has NaN values
-                nan_count += 1;
-            }
-        } else if tier1_only && all_truth_records.contains_key(key) {
-            // This inquiSTR locus matches a Tier2 variant (not in filtered set, but in full set)
-            matched_tier2_only += 1;
+        // Skip zero-zero pairs if --nonzero flag is set
+        if nonzero && inquistr_value == 0.0 && truth_value == 0.0 {
+            zero_zero_filtered += 1;
+            continue;
         }
+
+        inquistr_values.push(inquistr_value);
+        truth_values.push(truth_value);
+        loci_info.push((
+            inquistr_record.chromosome.clone(),
+            inquistr_record.begin,
+            inquistr_record.end,
+        ));
     }
 
     let matched_count = inquistr_values.len();
-    let inquistr_only = inquistr_records.len() - matched_count - nan_count - matched_tier2_only;
-    let truth_only = truth_records_filtered.len() - matched_count;
+    // Both pairing strategies award each truth locus to at most one test locus, so the number
+    // of pairs is also the number of truth loci that found a partner.
+    let truth_only = truth_records_filtered.len() - pairing.pairs.len();
 
     println!("\n=== Loci Assessment Summary ===");
     println!("Total inquiSTR loci: {}", inquistr_records.len());
     println!("Total truth loci (after max-locus filtering): {}", truth_records_filtered.len());
-    println!("\nBreakdown:");
-    println!("  Loci found in inquiSTR only: {}", inquistr_only);
-    if matched_tier2_only > 0 {
-        println!("  Loci in inquiSTR matching Tier2 variants only: {}", matched_tier2_only);
+    println!("\nBreakdown of the {} inquiSTR loci:", inquistr_records.len());
+    println!("  Paired with a truth locus: {}", pairing.pairs.len());
+    println!("    - assessed: {}", matched_count);
+    println!("    - uncalled in inquiSTR (NaN): {}", nan_count);
+    println!("    - uncalled in truth data (NaN): {}", truth_nan_count);
+    if nonzero {
+        println!("    - zero-zero pairs excluded (--nonzero): {}", zero_zero_filtered);
     }
-    println!("  Loci found in truth data only: {}", truth_only);
-    println!("  Loci with NaN in inquiSTR (excluded): {}", nan_count);
-    if nonzero && zero_zero_filtered > 0 {
-        println!("  Zero-zero pairs filtered out (--nonzero): {}", zero_zero_filtered);
+    if pairing.tier2_only > 0 {
+        println!("  Matching Tier2 variants only: {}", pairing.tier2_only);
     }
+    if match_overlap {
+        println!(
+            "  Overlapping a truth locus below the minimum reciprocal overlap: {}",
+            pairing.below_min_overlap
+        );
+        println!(
+            "  Dropped, truth locus claimed by a better-overlapping locus: {}",
+            pairing.contested
+        );
+    }
+    println!("  Without a truth locus: {}", pairing.test_only);
+    println!("\nBreakdown of the {} truth loci:", truth_records_filtered.len());
+    println!("  Paired with an inquiSTR locus: {}", pairing.pairs.len());
+    println!("  Without an inquiSTR locus: {}", truth_only);
     println!("\n  Loci successfully matched and assessed: {} ✓", matched_count);
     println!("===============================\n");
 
@@ -639,12 +877,14 @@ pub fn benchmark(
         let diff = (inq_val - truth_val).abs();
         if diff == 0.0 {
             exact_matches += 1;
-            within_tolerance += 1; // Exact matches are also within tolerance
-            off_by_one += 1; // Exact matches are also within off-by-one (difference of 0 is within 1)
-        } else if diff == 1.0 {
+        }
+        // A genotype is a median, so it can be a half-integer and a difference can be 0.5.
+        // These are thresholds rather than equality tests, or such a pair counts as neither
+        // exact nor off-by-one. --tolerance is at least 1, so each count nests in the next.
+        if diff <= 1.0 {
             off_by_one += 1;
-            within_tolerance += 1; // Off-by-one is also within tolerance (assuming tolerance >= 1)
-        } else if diff <= tolerance as f64 {
+        }
+        if diff <= f64::from(tolerance) {
             within_tolerance += 1;
         }
     }
@@ -812,5 +1052,173 @@ pub fn benchmark(
     println!("WITHIN_TOLERANCE: {}", within_tolerance);
     println!("WITHIN_TOLERANCE_PERCENT: {:.2}", within_tolerance_percent);
     println!("TOLERANCE_BP: {}", tolerance);
+    println!(
+        "MATCH_MODE: {}",
+        if match_overlap {
+            "overlap"
+        } else {
+            "exact_start"
+        }
+    );
+    if match_overlap {
+        println!("MIN_RECIPROCAL_OVERLAP: {:.2}", min_reciprocal_overlap);
+    }
+    println!("LOCI_PAIRED: {}", pairing.pairs.len());
+    println!("TEST_NOCALL: {}", nan_count);
+    println!("TRUTH_NOCALL: {}", truth_nan_count);
+    println!("TEST_ONLY: {}", pairing.test_only);
+    println!("TRUTH_ONLY: {}", truth_only);
     println!("=========================");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn truth(chromosome: &str, pos: u32, end: u32, tier: &str) -> TruthRecord {
+        TruthRecord {
+            chromosome: chromosome.to_string(),
+            pos,
+            end,
+            h1: 0.0,
+            h2: 0.0,
+            tier: tier.to_string(),
+        }
+    }
+
+    fn test_locus(chromosome: &str, begin: u32, end: u32) -> InquiSTRRecord {
+        InquiSTRRecord { chromosome: chromosome.to_string(), begin, end, h1: 0.0, h2: 0.0 }
+    }
+
+    fn truth_map(records: Vec<(&str, TruthRecord)>) -> HashMap<String, TruthRecord> {
+        records
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v))
+            .collect()
+    }
+
+    fn test_map(records: Vec<(&str, InquiSTRRecord)>) -> HashMap<String, InquiSTRRecord> {
+        records
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v))
+            .collect()
+    }
+
+    #[test]
+    fn best_overlap_prefers_the_largest_shared_span() {
+        let records = truth_map(vec![
+            ("chr1:100", truth("chr1", 100, 160, "Tier1")),
+            ("chr1:150", truth("chr1", 150, 400, "Tier1")),
+        ]);
+        let index = IntervalIndex::build(&records, |_| true);
+
+        // [140, 400) shares 20 bp with the first and 250 bp with the second; the reciprocal
+        // overlap is then 250 shared bases over the 260 bp query, the longer of the two.
+        let (key, reciprocal) = index.best_overlap("chr1", 140, 400).unwrap();
+        assert_eq!(key, "chr1:150");
+        assert!((reciprocal - 250.0 / 260.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn best_overlap_reports_the_fraction_of_the_longer_interval() {
+        let records = truth_map(vec![("chr1:100", truth("chr1", 100, 110, "Tier1"))]);
+        let index = IntervalIndex::build(&records, |_| true);
+
+        // A 10 bp truth locus fully inside a 100 bp test locus: 10 / 100.
+        let (_, reciprocal) = index.best_overlap("chr1", 50, 150).unwrap();
+        assert!((reciprocal - 0.1).abs() < 1e-9);
+    }
+
+    #[test]
+    fn best_overlap_ignores_touching_and_distant_intervals() {
+        let records = truth_map(vec![("chr1:100", truth("chr1", 100, 200, "Tier1"))]);
+        let index = IntervalIndex::build(&records, |_| true);
+
+        assert!(index.best_overlap("chr1", 200, 300).is_none(), "half-open ends must not touch");
+        assert!(index.best_overlap("chr1", 0, 100).is_none(), "half-open starts must not touch");
+        assert!(index.best_overlap("chr2", 100, 200).is_none(), "other chromosome");
+    }
+
+    #[test]
+    fn exact_pairing_separates_tier2_and_unmatched_loci() {
+        let tests = test_map(vec![
+            ("chr1:100", test_locus("chr1", 100, 200)),
+            ("chr1:300", test_locus("chr1", 300, 400)),
+            ("chr1:500", test_locus("chr1", 500, 600)),
+        ]);
+        let all_truth = truth_map(vec![
+            ("chr1:100", truth("chr1", 100, 200, "Tier1")),
+            ("chr1:300", truth("chr1", 300, 400, "Tier2")),
+        ]);
+        let tier1: HashMap<String, TruthRecord> = all_truth
+            .iter()
+            .filter(|(_, r)| r.tier == "Tier1")
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+
+        let pairing = pair_on_exact_start(&tests, &tier1, &all_truth, true);
+        assert_eq!(pairing.pairs.len(), 1);
+        assert_eq!(pairing.tier2_only, 1);
+        assert_eq!(pairing.test_only, 1);
+    }
+
+    #[test]
+    fn overlap_pairing_rejects_weak_overlaps() {
+        let tests = test_map(vec![("chr1:0", test_locus("chr1", 0, 1000))]);
+        // 10 bp of truth inside a 1000 bp test locus is a reciprocal overlap of 0.01.
+        let truth_records = truth_map(vec![("chr1:100", truth("chr1", 100, 110, "Tier1"))]);
+        let all_truth = truth_records.clone();
+
+        let accepted = pair_on_overlap(&tests, &truth_records, &all_truth, false, 0.005);
+        assert_eq!(accepted.pairs.len(), 1);
+        assert_eq!(accepted.below_min_overlap, 0);
+
+        let rejected = pair_on_overlap(&tests, &truth_records, &all_truth, false, 0.5);
+        assert_eq!(rejected.pairs.len(), 0);
+        assert_eq!(rejected.below_min_overlap, 1);
+        assert_eq!(rejected.test_only, 0, "a weak overlap is not the same as no overlap");
+    }
+
+    #[test]
+    fn overlap_pairing_awards_a_truth_locus_to_one_test_locus_only() {
+        // Both test loci overlap the same truth locus; the second one matches it exactly.
+        let tests = test_map(vec![
+            ("chr1:100", test_locus("chr1", 100, 260)),
+            ("chr1:200", test_locus("chr1", 200, 300)),
+        ]);
+        let truth_records = truth_map(vec![("chr1:200", truth("chr1", 200, 300, "Tier1"))]);
+        let all_truth = truth_records.clone();
+
+        let pairing = pair_on_overlap(&tests, &truth_records, &all_truth, false, 0.1);
+        assert_eq!(pairing.pairs.len(), 1, "the truth locus must not be scored twice");
+        assert_eq!(pairing.pairs[0].0.begin, 200, "the better overlap wins");
+        assert_eq!(pairing.contested, 1);
+    }
+
+    #[test]
+    fn overlap_pairing_accounts_for_every_test_locus_exactly_once() {
+        let tests = test_map(vec![
+            ("chr1:100", test_locus("chr1", 100, 200)), // exact overlap
+            ("chr1:150", test_locus("chr1", 150, 250)), // contests the same truth locus
+            ("chr1:400", test_locus("chr1", 400, 4000)), // overlaps too weakly
+            ("chr1:9000", test_locus("chr1", 9000, 9100)), // no truth locus at all
+        ]);
+        let truth_records = truth_map(vec![
+            ("chr1:100", truth("chr1", 100, 200, "Tier1")),
+            ("chr1:410", truth("chr1", 410, 420, "Tier1")),
+        ]);
+        let all_truth = truth_records.clone();
+
+        let pairing = pair_on_overlap(&tests, &truth_records, &all_truth, false, 0.5);
+        let total = pairing.pairs.len()
+            + pairing.tier2_only
+            + pairing.below_min_overlap
+            + pairing.contested
+            + pairing.test_only;
+        assert_eq!(total, tests.len(), "the breakdown must partition the test loci");
+        assert_eq!(pairing.pairs.len(), 1);
+        assert_eq!(pairing.contested, 1);
+        assert_eq!(pairing.below_min_overlap, 1);
+        assert_eq!(pairing.test_only, 1);
+    }
 }
