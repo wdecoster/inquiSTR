@@ -240,8 +240,8 @@ fn get_str_call_for_region(
 /// Depending on the genotype configuration:
 /// - **Unphased mode**: Splits all reads into two groups and returns median of each
 /// - **Phased mode**: Separates reads by HP tag (1 vs 2) and returns median per haplotype
-///   - Falls back to unphased if insufficient reads in either phase
-///   - Returns NaN if no phased reads found at all
+///   - Falls back to a rank-order split of all reads when one or both haplotypes have no
+///     HP-tagged reads at the locus (e.g. runs of homozygosity, gaps between phase blocks)
 ///
 /// # Arguments
 /// * `read_infos` - Pre-computed read information for all reads in the batch
@@ -392,45 +392,26 @@ fn process_target_from_read_info(
                 found_hp_tags,
             ))
         } else {
-            // If no phased reads found, should return NaN (not split unphased reads)
-            if phase1_calls.is_empty() && phase2_calls.is_empty() {
-                Ok((
-                    Genotype {
-                        repeat: repeat.clone(),
-                        phase1: f64::NAN,
-                        phase2: f64::NAN,
-                        support: [0, 0],
-                        depth: total_reads,
-                    },
-                    found_hp_tags,
-                ))
-            } else {
-                // Fall back to unphased processing only if we have some phased reads but insufficient in one phase
-                let mut all_calls = phase1_calls;
-                all_calls.extend(phase2_calls);
-                all_calls.extend(unphased_calls);
-                all_calls.sort_unstable_by_key(|call| call.value());
+            // Not both haplotypes are tagged here: either only one is, or none is, as in runs of
+            // homozygosity or gaps between phase blocks, where the phaser has no heterozygous
+            // variants to assign reads with. Split all reads by length rank instead, as in
+            // --unphased; whether the file is phased at all is checked up front.
+            let mut all_calls = phase1_calls;
+            all_calls.extend(phase2_calls);
+            all_calls.extend(unphased_calls);
+            all_calls.sort_unstable_by_key(|call| call.value());
 
-                let (hap1, hap2) = all_calls.split_at(all_calls.len() / 2);
-                Ok((
-                    Genotype {
-                        repeat: repeat.clone(),
-                        support: [hap1.len(), hap2.len()],
-                        depth: total_reads,
-                        phase1: median_str_length(
-                            hap1,
-                            genotype.support,
-                            genotype.require_spanning,
-                        ),
-                        phase2: median_str_length(
-                            hap2,
-                            genotype.support,
-                            genotype.require_spanning,
-                        ),
-                    },
-                    found_hp_tags,
-                ))
-            }
+            let (hap1, hap2) = all_calls.split_at(all_calls.len() / 2);
+            Ok((
+                Genotype {
+                    repeat: repeat.clone(),
+                    support: [hap1.len(), hap2.len()],
+                    depth: total_reads,
+                    phase1: median_str_length(hap1, genotype.support, genotype.require_spanning),
+                    phase2: median_str_length(hap2, genotype.support, genotype.require_spanning),
+                },
+                found_hp_tags,
+            ))
         }
     }
 }
@@ -838,6 +819,42 @@ mod tests {
             calculate_str_call_for_region(&del, 2, 100, 200).value,
             CallType::Span(0)
         ));
+    }
+
+    /// Runs phased mode on reads given as (length, HP tag), with HP 0 meaning untagged
+    fn run_phased(reads: &[(i64, u8)]) -> Genotype {
+        let repeat = RepeatInterval { chrom_id: 0, start: 100, end: 200, info: "".into() };
+        let calls = reads
+            .iter()
+            .map(|&(v, hp)| Call {
+                value: CallType::Span(v),
+                hp_tag: match hp {
+                    1 => Some(Phase::Phase1),
+                    2 => Some(Phase::Phase2),
+                    _ => None,
+                },
+            })
+            .collect();
+        let mut batch_calls = HashMap::from([((100, 200), calls)]);
+        let config = GenotypeConfig { unphased: false, ..unphased_config(3) };
+        process_target_from_read_info(&mut batch_calls, &repeat, &config, "chr1")
+            .unwrap()
+            .0
+    }
+
+    #[test]
+    fn test_phased_locus_without_hp_tags_is_called_by_rank_split() {
+        // A locus in a run of homozygosity: plenty of reads, none of them HP-tagged
+        let g = run_phased(&[(0, 0), (0, 0), (0, 0), (12, 0), (12, 0), (12, 0)]);
+        assert_eq!((g.phase1, g.phase2), (0.0, 12.0));
+        assert_eq!(g.support, [3, 3]);
+        assert_eq!(g.depth, 6);
+    }
+
+    #[test]
+    fn test_phased_locus_uses_hp_tags_when_both_present() {
+        let g = run_phased(&[(12, 1), (12, 1), (12, 1), (0, 2), (0, 2), (0, 2), (50, 0)]);
+        assert_eq!((g.phase1, g.phase2), (12.0, 0.0));
     }
 
     #[test]

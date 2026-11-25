@@ -40,7 +40,7 @@ Reads are separated by the `HP` auxiliary tag (`HP=1` â†’ haplotype 1, `HP=2` â†
 
 On the first batch, inquiSTR scans up to 10 000 reads to confirm that HP tags are present; if none are found it warns that the data appear unphased and recommends `--unphased`.
 
-If reads with `HP=1` and `HP=2` are both present, each haplotype is genotyped independently. If only one phase has reads (e.g. partially phased data), all reads are pooled and split by rank order as in unphased mode. If no HP tags at all are present at a locus, both haplotype values are reported as `NaN`.
+If reads with `HP=1` and `HP=2` are both present, each haplotype is genotyped independently. If only one phase has reads, or none of the reads at the locus is tagged (e.g. in runs of homozygosity or gaps between phase blocks, where the phaser has no heterozygous variants to work with), all reads are pooled and split by rank order as in unphased mode.
 
 ### Unphased mode (`--unphased`)
 
@@ -56,7 +56,7 @@ The genotype value for each haplotype is the **median** call value across its as
 4. Otherwise, supplement spanning reads with the largest soft-clip calls until `--support` is reached.
 5. Return the median of the selected values.
 
-The output values are in base pairs relative to the reference. A value of `0` means no net length change; positive values are expansions; negative values are contractions; `NaN` means the locus could not be called (insufficient support or no phased reads).
+The output values are in base pairs relative to the reference. A value of `0` means no net length change; positive values are expansions; negative values are contractions; `NaN` means the locus could not be called (insufficient support).
 
 ## Step 6: Output
 
